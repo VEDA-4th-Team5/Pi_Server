@@ -1,0 +1,12 @@
+# Local credentials and generated databases
+.env.camera.local
+.env.gemini.local
+.env.iva.local
+data/db/parking.db
+data/db/test_*.db
+db_backup_*.db
+data/db/backups/*.db
+build/
+cmake-build/
+*.o
+*.d
