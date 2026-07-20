@@ -17,6 +17,8 @@ pkg_check_modules(HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE SERVER_CPP CONFIGURE_DEPENDS src/*.cpp)
+# 타이머는 별도 타깃(parking-timer-core / parking-timer)으로 빌드하므로 제외.
+list(FILTER SERVER_CPP EXCLUDE REGEX "src/timer/")
 add_executable(pi-server ${SERVER_CPP} src/database/db_manager.c)
 target_include_directories(pi-server PRIVATE include)
 target_compile_options(pi-server PRIVATE -Wall -Wextra)
@@ -69,6 +71,42 @@ add_test(NAME parking-domain-test
 add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+
+# ---- parking timer (timer_ 프로젝트 통합분) ----
+add_library(parking-timer-core STATIC
+    src/timer/EventDatabase.cpp
+    src/timer/EventManager.cpp
+    src/timer/ParkingSlotManager.cpp
+    src/timer/RuntimeConfig.cpp
+    src/timer/TimerManager.cpp
+    src/timer/Types.cpp)
+target_include_directories(parking-timer-core PUBLIC include)
+target_compile_options(parking-timer-core PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+set_target_properties(parking-timer-core PROPERTIES CXX_STANDARD 20)
+target_link_libraries(parking-timer-core PUBLIC sqlite3 Threads::Threads)
+
+add_executable(parking-timer src/timer/main.cpp)
+target_link_libraries(parking-timer PRIVATE parking-timer-core)
+target_compile_options(parking-timer PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+set_target_properties(parking-timer PROPERTIES CXX_STANDARD 20)
+target_compile_definitions(parking-timer PRIVATE
+    PARKING_TIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+# 실행/테스트가 빌드 디렉터리에서도 리소스를 찾을 수 있게 복사.
+foreach(resource db/schema.sql db/seed.sql config/timer.conf)
+    configure_file(${resource} ${resource} COPYONLY)
+endforeach()
+
+add_executable(parking-timer-tests tests/timer/timer_tests.cpp)
+target_link_libraries(parking-timer-tests PRIVATE parking-timer-core)
+target_compile_options(parking-timer-tests PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+set_target_properties(parking-timer-tests PROPERTIES CXX_STANDARD 20)
+target_compile_definitions(parking-timer-tests PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
 
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
