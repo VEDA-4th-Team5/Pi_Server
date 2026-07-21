@@ -74,7 +74,10 @@ add_test(NAME sensor-parking-pipeline-test
 
 # ---- parking timer (timer_ 프로젝트 통합분) ----
 add_library(parking-timer-core STATIC
-    src/timer/EventDatabase.cpp
+    src/database/EventDatabase.cpp
+    src/database/EventDatabaseTimer.cpp
+    src/database/db_manager.c
+    src/util/Logger.cpp
     src/timer/EventManager.cpp
     src/timer/ParkingSlotManager.cpp
     src/timer/RuntimeConfig.cpp

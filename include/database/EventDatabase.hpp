@@ -1,8 +1,17 @@
 #pragma once
 
+#include "parking_timer/Types.hpp"
+
+#include <cstdint>
+#include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
+
+struct sqlite3;
 
 namespace database {
 
@@ -48,6 +57,7 @@ struct ImageView {
 class EventDatabase {
 public:
     EventDatabase();
+    explicit EventDatabase(const std::filesystem::path& database_path);
     ~EventDatabase();
 
     bool open(const std::string& db_path);
@@ -72,10 +82,31 @@ public:
     bool listSessionImages(int session_id, std::vector<ImageView>& rows);
     bool getImage(int image_id, ImageView& row);
 
+    void initialize(const std::filesystem::path& schema_file,
+                    const std::filesystem::path& seed_file);
+    parking_timer::VehicleCategory classifyVehicle(std::string_view car_number) const;
+    std::int64_t insertParked(const std::string& car_number, int zone_id,
+                              const std::string& parked_at,
+                              const std::string& image_path_1);
+    bool markViolation(std::int64_t log_id, const std::string& violation_at,
+                       const std::string& image_path_2);
+    bool cancelUnscheduled(std::int64_t log_id, const std::string& canceled_at);
+    std::optional<parking_timer::LogRecord> departActiveByZone(
+        int zone_id, const std::string& departed_at);
+    std::optional<parking_timer::LogRecord> findActiveByZone(int zone_id) const;
+    std::optional<parking_timer::LogRecord> findLogById(std::int64_t log_id) const;
+    std::vector<parking_timer::LogRecord> listLogs() const;
+    std::vector<std::pair<std::string, std::string>> listVehicles() const;
+    void clearTimerLogs();
+
 private:
+    void executeSqlUnlocked(const std::string& sql);
+    static std::string readTextFile(const std::filesystem::path& path);
+
     bool opened_;
     std::string db_path_;
-    std::mutex db_mutex_;
+    mutable std::mutex db_mutex_;
+    sqlite3* db_{};
 };
 
 }

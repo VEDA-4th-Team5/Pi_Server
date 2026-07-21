@@ -1,6 +1,6 @@
 # DB Schema Proposal
 
-The compatible baseline schema is defined in `tools/db_init.sql` and contains
+The compatible baseline schema is defined in `db/schema.sql` and contains
 `VEHICLE`, `PARKING_SLOT`, `PARKING_SESSION`, `IMAGE_LOG`, and `EVENT_LOG`.
 
 Before changing the schema, add versioned migrations. Candidate additions are:
