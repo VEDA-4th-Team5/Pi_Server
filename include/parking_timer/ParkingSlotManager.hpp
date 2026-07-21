@@ -16,11 +16,11 @@ public:
                        EventManager& events,
                        std::chrono::milliseconds parking_timeout);
 
-    EntryResult handleEntry(int zone_id,
+    EntryResult handleEntry(const std::string& slot_id,
                             const std::string& car_number,
                             const std::string& image_path_1 = {});
 
-    std::optional<LogRecord> handleExit(int zone_id);
+    std::optional<LogRecord> handleExit(const std::string& slot_id);
     std::size_t pendingTimerCount() const;
 
 private:

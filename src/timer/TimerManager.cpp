@@ -78,14 +78,14 @@ TimerManager::~TimerManager() {
  * @brief 주차 세션의 만료시각을 계산해 최소 우선순위 큐에 등록한다.
  *
  * @param[in] log_id `timer_log`의 불변 세션 ID.
- * @param[in] zone_id 충전구역 ID.
+ * @param[in] slot_id 주차면 ID.
  * @param[in] car_number 차량번호. 큐 항목이 자체 소유하도록 값으로 받는다.
  * @param[in] delay 현재부터 만료까지의 단조시간 간격.
  * @throws std::invalid_argument `delay`가 0 이하인 경우.
  * @throws std::runtime_error 관리자가 이미 종료 중인 경우.
  */
 void TimerManager::schedule(const std::int64_t log_id,
-                            const int zone_id,
+                            std::string slot_id,
                             std::string car_number,
                             const std::chrono::milliseconds delay) {
     if (delay <= std::chrono::milliseconds::zero()) {
@@ -93,7 +93,7 @@ void TimerManager::schedule(const std::int64_t log_id,
     }
 
     // system_clock 보정/NTP 변경에 흔들리지 않도록 deadline은 steady_clock으로만 계산한다.
-    TimerItem item{Clock::now() + delay, 0, log_id, zone_id,
+    TimerItem item{Clock::now() + delay, 0, log_id, std::move(slot_id),
                    std::move(car_number), 0, {}};
     bool became_earliest{};
     {
@@ -212,7 +212,7 @@ void TimerManager::processExpired(TimerItem item) {
         }
 
         if (callback_) {
-            callback_(ViolationEvent{item.log_id, item.zone_id, item.car_number,
+            callback_(ViolationEvent{item.log_id, item.slot_id, item.car_number,
                                      item.violation_at, image_path});
         }
     } catch (const std::exception& error) {
@@ -276,7 +276,7 @@ void TimerManager::retryAfterDatabaseError(TimerItem item, std::string message) 
 void TimerManager::reportError(const TimerItem& item, std::string message) noexcept {
     try {
         if (error_callback_) {
-            error_callback_(TimerError{item.log_id, item.zone_id, item.car_number,
+            error_callback_(TimerError{item.log_id, item.slot_id, item.car_number,
                                        std::move(message)});
             return;
         }

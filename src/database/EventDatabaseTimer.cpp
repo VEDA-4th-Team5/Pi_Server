@@ -143,7 +143,7 @@ LogRecord readLogRecord(sqlite3_stmt* statement) {
     LogRecord record;
     record.id = sqlite3_column_int64(statement, 0);
     record.car_number = columnText(statement, 1);
-    record.zone_id = sqlite3_column_int(statement, 2);
+    record.slot_id = columnText(statement, 2);
     record.status = columnText(statement, 3);
     record.parked_at = columnText(statement, 4);
     record.violation_at = optionalColumnText(statement, 5);
@@ -170,7 +170,7 @@ void requireDone(sqlite3* database, sqlite3_stmt* statement) {
 }
 
 constexpr std::string_view kLogSelect =
-    "SELECT s.session_id, COALESCE(s.plate_number, ''), CAST(s.slot_id AS INTEGER), "
+    "SELECT s.session_id, COALESCE(s.plate_number, ''), s.slot_id, "
     "CASE s.status WHEN 'ACTIVE' THEN 'PARKED' WHEN 'ENDED' THEN 'DEPARTS' "
     "ELSE s.status END, s.entry_time, s.violation_at, s.exit_time, "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
@@ -289,14 +289,14 @@ VehicleCategory EventDatabase::classifyVehicle(const std::string_view car_number
  * @brief EV/PHEV 입차 세션을 `PARKED` 상태로 INSERT한다.
  *
  * @param[in] car_number 차량번호.
- * @param[in] zone_id 충전구역 ID.
+ * @param[in] slot_id 주차면 ID.
  * @param[in] parked_at 최초 주차 판정 UTC 시각.
  * @param[in] image_path_1 최초 증거 이미지 경로.
  * @return 새 `timer_log` 행의 64비트 ID.
  * @throws std::runtime_error SQL 제약조건 또는 실행 오류가 발생한 경우.
  */
 std::int64_t EventDatabase::insertParked(const std::string& car_number,
-                                         const int zone_id,
+                                         const std::string& slot_id,
                                          const std::string& parked_at,
                                          const std::string& image_path_1) {
     std::lock_guard lock(db_mutex_);
@@ -307,7 +307,7 @@ std::int64_t EventDatabase::insertParked(const std::string& car_number,
             "INSERT INTO PARKING_SESSION(vehicle_id, slot_id, plate_number, entry_time, status) "
             "VALUES ((SELECT vehicle_id FROM VEHICLE WHERE plate_number = ?), ?, ?, ?, 'ACTIVE');");
         statement.bindText(1, car_number);
-        statement.bindText(2, std::to_string(zone_id));
+        statement.bindText(2, slot_id);
         statement.bindText(3, car_number);
         statement.bindText(4, parked_at);
         requireDone(db_, statement.get());
@@ -387,14 +387,14 @@ bool EventDatabase::cancelUnscheduled(const std::int64_t log_id,
 /**
  * @brief 지정 구역의 활성 세션을 출차 완료 상태로 원자적으로 갱신한다.
  *
- * @param[in] zone_id 출차가 감지된 충전구역 ID.
+ * @param[in] slot_id 출차가 감지된 주차면 ID.
  * @param[in] departed_at 출차 UTC 시각.
  * @return 갱신된 로그. 활성 세션이 없으면 `std::nullopt`.
  * @throws std::runtime_error 조회·UPDATE·재조회 중 하나라도 실패한 경우.
  * @note 위반 후 출차도 최종 status는 `DEPARTS`가 되지만 기존 `violation_at`은 보존한다.
  */
-std::optional<LogRecord> EventDatabase::departActiveByZone(
-    const int zone_id,
+std::optional<LogRecord> EventDatabase::departActiveBySlot(
+    const std::string& slot_id,
     const std::string& departed_at) {
     std::lock_guard lock(db_mutex_);
     // 조회와 UPDATE 사이에 다른 DB 쓰기가 끼어들지 않도록 write lock을 먼저 확보한다.
@@ -404,7 +404,7 @@ std::optional<LogRecord> EventDatabase::departActiveByZone(
         Statement find_statement(db_, std::string{kLogSelect} +
             "WHERE s.slot_id = ? AND s.exit_time IS NULL "
             "ORDER BY s.session_id DESC LIMIT 1;");
-        find_statement.bindText(1, std::to_string(zone_id));
+        find_statement.bindText(1, slot_id);
         const int find_result = sqlite3_step(find_statement.get());
         if (find_result == SQLITE_DONE) {
             executeSqlUnlocked("COMMIT;");
@@ -451,16 +451,17 @@ std::optional<LogRecord> EventDatabase::departActiveByZone(
 /**
  * @brief 지정 구역에서 아직 출차하지 않은 세션을 조회한다.
  *
- * @param[in] zone_id 조회할 충전구역 ID.
+ * @param[in] slot_id 조회할 주차면 ID.
  * @return 활성 로그 또는 활성 행이 없을 때 `std::nullopt`.
  * @throws std::runtime_error SQLite 조회가 실패한 경우.
  */
-std::optional<LogRecord> EventDatabase::findActiveByZone(const int zone_id) const {
+std::optional<LogRecord> EventDatabase::findActiveBySlot(
+    const std::string& slot_id) const {
     std::lock_guard lock(db_mutex_);
     Statement statement(db_, std::string{kLogSelect} +
         "WHERE s.slot_id = ? AND s.exit_time IS NULL "
         "ORDER BY s.session_id DESC LIMIT 1;");
-    statement.bindText(1, std::to_string(zone_id));
+    statement.bindText(1, slot_id);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) {
         return std::nullopt;

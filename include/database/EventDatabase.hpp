@@ -85,15 +85,17 @@ public:
     void initialize(const std::filesystem::path& schema_file,
                     const std::filesystem::path& seed_file);
     parking_timer::VehicleCategory classifyVehicle(std::string_view car_number) const;
-    std::int64_t insertParked(const std::string& car_number, int zone_id,
+    std::int64_t insertParked(const std::string& car_number,
+                              const std::string& slot_id,
                               const std::string& parked_at,
                               const std::string& image_path_1);
     bool markViolation(std::int64_t log_id, const std::string& violation_at,
                        const std::string& image_path_2);
     bool cancelUnscheduled(std::int64_t log_id, const std::string& canceled_at);
-    std::optional<parking_timer::LogRecord> departActiveByZone(
-        int zone_id, const std::string& departed_at);
-    std::optional<parking_timer::LogRecord> findActiveByZone(int zone_id) const;
+    std::optional<parking_timer::LogRecord> departActiveBySlot(
+        const std::string& slot_id, const std::string& departed_at);
+    std::optional<parking_timer::LogRecord> findActiveBySlot(
+        const std::string& slot_id) const;
     std::optional<parking_timer::LogRecord> findLogById(std::int64_t log_id) const;
     std::vector<parking_timer::LogRecord> listLogs() const;
     std::vector<std::pair<std::string, std::string>> listVehicles() const;

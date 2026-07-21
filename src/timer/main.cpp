@@ -192,10 +192,10 @@ void printLogs(const EventDatabase& database) {
         std::cout << "PARKING_SESSION is empty.\n";
         return;
     }
-    std::cout << "id | zone | car_number | status | parked_at | violation_at | "
+    std::cout << "id | slot | car_number | status | parked_at | violation_at | "
                  "departed_at | canceled\n";
     for (const auto& log : logs) {
-        std::cout << log.id << " | " << log.zone_id << " | " << log.car_number << " | "
+        std::cout << log.id << " | " << log.slot_id << " | " << log.car_number << " | "
                   << log.status << " | " << log.parked_at << " | "
                   << displayOptional(log.violation_at) << " | "
                   << displayOptional(log.departed_at) << " | "
@@ -221,8 +221,8 @@ void printVehicles(const EventDatabase& database) {
 void printInteractiveHelp() {
     std::cout
         << "Commands:\n"
-        << "  entry <zone_id> <car_number> [image_path]  OFF -> ON entry event\n"
-        << "  exit <zone_id>                            ON -> OFF exit event\n"
+        << "  entry <slot_id> <car_number> [image_path]  OFF -> ON entry event\n"
+        << "  exit <slot_id>                            ON -> OFF exit event\n"
         << "  wait <seconds>                            keep process alive while timers run\n"
         << "  logs                                      show PARKING_SESSION rows\n"
         << "  vehicles                                  show VEHICLE rows\n"
@@ -252,15 +252,15 @@ void runInteractive(ParkingSlotManager& slots, EventDatabase& database) {
         // 잘못된 한 명령이 전체 타이머 프로세스를 종료시키지 않도록 명령 단위로 예외를 잡는다.
         try {
             if (command == "entry" || command == "arrive") {
-                int zone_id{};
+                std::string slot_id;
                 std::string car_number;
                 std::string image_path;
-                if (!(input >> zone_id >> car_number)) {
-                    std::cout << "usage: entry <zone_id> <car_number> [image_path]\n";
+                if (!(input >> slot_id >> car_number)) {
+                    std::cout << "usage: entry <slot_id> <car_number> [image_path]\n";
                     continue;
                 }
                 input >> image_path;
-                const auto result = slots.handleEntry(zone_id, car_number, image_path);
+                const auto result = slots.handleEntry(slot_id, car_number, image_path);
                 std::cout << "entry: " << result.message << " ("
                           << parking_timer::toString(result.category) << ")";
                 if (result.log_id.has_value()) {
@@ -268,12 +268,12 @@ void runInteractive(ParkingSlotManager& slots, EventDatabase& database) {
                 }
                 std::cout << '\n';
             } else if (command == "exit" || command == "leave") {
-                int zone_id{};
-                if (!(input >> zone_id)) {
-                    std::cout << "usage: exit <zone_id>\n";
+                std::string slot_id;
+                if (!(input >> slot_id)) {
+                    std::cout << "usage: exit <slot_id>\n";
                     continue;
                 }
-                slots.handleExit(zone_id);
+                slots.handleExit(slot_id);
             } else if (command == "wait") {
                 std::string seconds_text;
                 if (!(input >> seconds_text)) {
@@ -314,22 +314,22 @@ void runInteractive(ParkingSlotManager& slots, EventDatabase& database) {
 void runDemo(ParkingSlotManager& slots,
              EventDatabase& database,
              const std::chrono::milliseconds timeout) {
-    std::cout << "[demo] EV enters zone 1; PHEV enters zone 2.\n";
-    slots.handleEntry(1, "123가4567", "snapshots/demo_ev_parked.jpg");
-    slots.handleEntry(2, "234나5678", "snapshots/demo_phev_parked.jpg");
+    std::cout << "[demo] EV enters EV01; PHEV enters EV02.\n";
+    slots.handleEntry("EV01", "123가4567", "snapshots/demo_ev_parked.jpg");
+    slots.handleEntry("EV02", "234나5678", "snapshots/demo_phev_parked.jpg");
 
-    std::cout << "[demo] A gasoline vehicle is classified and rejected from the timer.\n";
-    slots.handleEntry(3, "345다6789");
+    std::cout << "[demo] A non-EV vehicle is rejected from the timer.\n";
+    slots.handleEntry("EV03", "345다6789");
 
     // PHEV는 전체 제한시간의 1/4 지점에 출차시켜 lazy cancellation을 눈으로 확인한다.
     const auto early_exit_delay = std::max(std::chrono::milliseconds{50}, timeout / 4);
     std::this_thread::sleep_for(early_exit_delay);
-    std::cout << "[demo] PHEV exits zone 2 before its deadline.\n";
-    slots.handleExit(2);
+    std::cout << "[demo] PHEV exits EV02 before its deadline.\n";
+    slots.handleExit("EV02");
 
-    std::cout << "[demo] Waiting for the zone 1 EV deadline...\n";
+    std::cout << "[demo] Waiting for the EV01 deadline...\n";
     std::this_thread::sleep_for(timeout - early_exit_delay + std::chrono::milliseconds{200});
-    slots.handleExit(1);
+    slots.handleExit("EV01");
 
     std::cout << "[demo] Final database rows:\n";
     printLogs(database);
