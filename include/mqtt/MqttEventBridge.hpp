@@ -29,6 +29,10 @@ public:
     bool start();
     void stop();
 
+    // 상위 계층이 MQTT 를 직접 알지 않도록, 이 메서드를 콜백으로 감아서 넘긴다.
+    // (화재 알림 등 카메라 이벤트가 아닌 발행 경로에서 사용)
+    bool publish(const std::string& topic, const std::string& payload);
+
 private:
     static void onMessageStatic(
         mosquitto* mosq,
@@ -37,7 +41,6 @@ private:
     );
 
     void onMessage(mosquitto* mosq, const mosquitto_message* message);
-    bool publish(const std::string& topic, const std::string& payload);
 
 private:
     const app::AppConfig& config_;

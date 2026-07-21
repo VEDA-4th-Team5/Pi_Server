@@ -97,6 +97,16 @@ AppConfig AppConfig::loadFromEnv() {
     config.qt_event_topic_prefix = getEnvOrDefault("QT_EVENT_TOPIC_PREFIX", "parking/camera");
     config.default_channel_id = getEnvOrDefault("DEFAULT_CHANNEL_ID", "ch01");
 
+    config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
+    config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");
+    config.fire_uart_baud = getEnvIntOrDefault("FIRE_UART_BAUD", 115200);
+    config.fire_uart_reopen_delay_ms =
+        getEnvIntOrDefault("FIRE_UART_REOPEN_DELAY_MS", 2000);
+    config.fire_topic_prefix =
+        getEnvOrDefault("FIRE_TOPIC_PREFIX", "parking/fire");
+    // "FIRE01=EV01:ch01,FIRE02=EV02" 형식.
+    config.fire_sensor_slot_map = getEnvOrDefault("FIRE_SENSOR_SLOT_MAP", "");
+
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
     config.gemini_api_key =

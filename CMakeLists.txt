@@ -65,6 +65,19 @@ add_executable(sensor-parking-pipeline-test
 target_include_directories(sensor-parking-pipeline-test PRIVATE include)
 target_compile_options(sensor-parking-pipeline-test PRIVATE -Wall -Wextra)
 
+add_executable(fire-alarm-test
+    tests/unit/FireAlarmTest.cpp
+    src/event/FireAlarmManager.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/sensor/FireSensorMessage.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/util/Logger.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-alarm-test PRIVATE include)
+target_compile_options(fire-alarm-test PRIVATE -Wall -Wextra)
+add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
+
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
