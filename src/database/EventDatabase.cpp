@@ -8,7 +8,7 @@
 namespace database {
 
 EventDatabase::EventDatabase()
-    : opened_(false) {
+    : opened_(false), db_(nullptr) {
 }
 
 EventDatabase::~EventDatabase() {
@@ -29,6 +29,7 @@ bool EventDatabase::open(const std::string& db_path) {
         return false;
     }
 
+    db_ = db_native_handle();
     opened_ = true;
     util::logInfo("MVP parking DB opened: " + db_path_);
     return true;
@@ -38,6 +39,7 @@ void EventDatabase::close() {
     std::lock_guard<std::mutex> lock(db_mutex_);
     if (!opened_) return;
     db_close();
+    db_ = nullptr;
     opened_ = false;
 }
 

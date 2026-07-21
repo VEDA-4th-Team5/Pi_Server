@@ -98,7 +98,7 @@ EntryResult ParkingSlotManager::handleEntry(const int zone_id,
         throw;
     }
     events_.publish("ARRIVAL", zone_id, car_number, now,
-                    "timer_log inserted; overtime timer started");
+                    "PARKING_SESSION inserted; overtime timer started");
     return {true, category, log_id, "timer started"};
 }
 
@@ -126,7 +126,7 @@ std::optional<LogRecord> ParkingSlotManager::handleExit(const int zone_id) {
     }
 
     events_.publish("DEPARTURE", zone_id, record->car_number, now,
-                    "timer_log updated; queued timer lazily canceled");
+                    "PARKING_SESSION updated; queued timer lazily canceled");
     return record;
 }
 

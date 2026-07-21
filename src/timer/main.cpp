@@ -165,7 +165,7 @@ void printUsage(const char* executable) {
         << "  --sql-dir PATH         directory containing schema.sql and seed.sql\n"
         << "  --db PATH              SQLite database path\n"
         << "  --timeout-seconds N    demo/operation timeout (default: 60)\n"
-        << "  --reset-logs           delete timer_log rows before starting\n"
+        << "  --reset-logs           delete timer-owned PARKING_SESSION rows before starting\n"
         << "  --demo                 run an automatic entry/exit/timeout scenario\n"
         << "  -h, --help             show this help\n";
 }
@@ -189,7 +189,7 @@ std::string displayOptional(const std::optional<std::string>& value) {
 void printLogs(const EventDatabase& database) {
     const auto logs = database.listLogs();
     if (logs.empty()) {
-        std::cout << "timer_log is empty.\n";
+        std::cout << "PARKING_SESSION is empty.\n";
         return;
     }
     std::cout << "id | zone | car_number | status | parked_at | violation_at | "
@@ -224,8 +224,8 @@ void printInteractiveHelp() {
         << "  entry <zone_id> <car_number> [image_path]  OFF -> ON entry event\n"
         << "  exit <zone_id>                            ON -> OFF exit event\n"
         << "  wait <seconds>                            keep process alive while timers run\n"
-        << "  logs                                      show timer_log\n"
-        << "  vehicles                                  show mock_vehicle_master\n"
+        << "  logs                                      show PARKING_SESSION rows\n"
+        << "  vehicles                                  show VEHICLE rows\n"
         << "  status                                    show queued timer count\n"
         << "  help                                      show commands\n"
         << "  quit                                      exit\n";
