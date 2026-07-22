@@ -81,7 +81,7 @@ add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
 # STM32 UART 통신만 단독으로 확인하기 위한 경량 실행 파일.
 # 카메라/MQTT/DB 없이 src/sensor 코드만 빌드한다.
 add_executable(uart-fire-listener
-    src/tools/UartFireListenerMain.cpp
+    src/sensor/UartFireListenerMain.cpp
     src/sensor/SensorLinkManager.cpp
     src/sensor/SensorProtocolParser.cpp
     src/sensor/FireSensorMessage.cpp
