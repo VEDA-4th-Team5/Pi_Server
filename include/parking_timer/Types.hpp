@@ -16,7 +16,7 @@ enum class VehicleCategory {
 struct LogRecord {
     std::int64_t id{};
     std::string car_number;
-    int zone_id{};
+    std::string slot_id;
     std::string status;
     std::string parked_at;
     std::optional<std::string> violation_at;
@@ -37,4 +37,3 @@ const char* toString(VehicleCategory category) noexcept;
 std::string utcNow();
 
 }  // namespace parking_timer
-

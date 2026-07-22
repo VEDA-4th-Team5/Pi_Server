@@ -6,6 +6,11 @@
 
 static sqlite3 *g_db = NULL;
 
+sqlite3 *db_native_handle(void)
+{
+    return g_db;
+}
+
 /* 공개 DB 함수가 연결 없이 호출되는 실수를 공통으로 검사한다. */
 static int require_db(const char *context)
 {

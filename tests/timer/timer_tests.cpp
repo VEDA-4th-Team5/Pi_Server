@@ -121,17 +121,20 @@ void testEntryViolationAndExit() {
         parking_timer::ParkingSlotManager slots(database, events, 120ms);
 
         // 정상 EV는 PARKED 한 행을 만들고 타이머 큐에 등록돼야 한다.
-        const auto entry = slots.handleEntry(1, "123가4567");
+        const auto entry = slots.handleEntry("EV01", "123가4567");
         require(entry.accepted && entry.log_id.has_value(), "EV entry was not accepted");
-        require(database.findLogById(*entry.log_id)->status == "PARKED",
+        const auto parked = database.findLogById(*entry.log_id);
+        require(parked.has_value() && parked->slot_id == "EV01",
+                "EV01 slot_id was not preserved in PARKING_SESSION");
+        require(parked->status == "PARKED",
                 "entry did not INSERT a PARKED row");
 
         // 중복 구역, 일반차, 미등록 차량은 EV 점유 타이머에 들어가면 안 된다.
-        const auto duplicate = slots.handleEntry(1, "234나5678");
-        require(!duplicate.accepted, "duplicate active zone was accepted");
-        require(!slots.handleEntry(3, "345다6789").accepted,
+        const auto duplicate = slots.handleEntry("EV01", "234나5678");
+        require(!duplicate.accepted, "duplicate active slot was accepted");
+        require(!slots.handleEntry("EV03", "345다6789").accepted,
                 "non-EV was scheduled");
-        require(!slots.handleEntry(4, "999호9999").accepted,
+        require(!slots.handleEntry("EV04", "999호9999").accepted,
                 "unknown vehicle was scheduled");
 
         // worker가 실제로 deadline에 깨어 VIOLATION을 기록할 때까지 기다린다.
@@ -146,7 +149,7 @@ void testEntryViolationAndExit() {
         require(violated->violation_at.has_value(), "violation_at was not recorded");
         require(violated->image_path_2.has_value(), "second image path was not recorded");
 
-        const auto departed = slots.handleExit(1);
+        const auto departed = slots.handleExit("EV01");
         require(departed.has_value() && departed->status == "DEPARTS",
                 "exit did not UPDATE status to DEPARTS");
         require(departed->departed_at.has_value() && departed->is_canceled,
@@ -155,9 +158,9 @@ void testEntryViolationAndExit() {
                 "exit erased the earlier violation timestamp");
 
         // PHEV를 즉시 출차시켜 큐에 남은 노드가 만료 시 조용히 폐기되는지 검증한다.
-        const auto early_entry = slots.handleEntry(2, "234나5678");
+        const auto early_entry = slots.handleEntry("EV02", "234나5678");
         require(early_entry.accepted, "PHEV entry was not accepted");
-        const auto early_departure = slots.handleExit(2);
+        const auto early_departure = slots.handleExit("EV02");
         require(early_departure.has_value(), "early exit failed");
         std::this_thread::sleep_for(180ms);
         const auto canceled = database.findLogById(*early_entry.log_id);
@@ -181,9 +184,9 @@ void testEarlierDeadlineWakesWorker() {
         EventDatabase database(path);
         initialize(database);
         const auto first_id = database.insertParked(
-            "123가4567", 1, parking_timer::utcNow(), "first.jpg");
+            "123가4567", "EV01", parking_timer::utcNow(), "first.jpg");
         const auto second_id = database.insertParked(
-            "234나5678", 2, parking_timer::utcNow(), "second.jpg");
+            "234나5678", "EV02", parking_timer::utcNow(), "second.jpg");
 
         std::mutex mutex;
         std::condition_variable condition;
@@ -198,9 +201,9 @@ void testEarlierDeadlineWakesWorker() {
             });
 
         // worker가 300ms를 기다리기 시작한 뒤 50ms 타이머를 넣어 notify/re-wait 경로를 탄다.
-        timers.schedule(first_id, 1, "123가4567", 300ms);
+        timers.schedule(first_id, "EV01", "123가4567", 300ms);
         std::this_thread::sleep_for(20ms);
-        timers.schedule(second_id, 2, "234나5678", 50ms);
+        timers.schedule(second_id, "EV02", "234나5678", 50ms);
 
         std::unique_lock lock(mutex);
         require(condition.wait_for(lock, 500ms,
@@ -223,7 +226,7 @@ void testWorkerContainsCallbackExceptions() {
         EventDatabase database(path);
         initialize(database);
         const auto log_id = database.insertParked(
-            "123가4567", 1, parking_timer::utcNow(), "callback.jpg");
+            "123가4567", "EV01", parking_timer::utcNow(), "callback.jpg");
 
         std::mutex mutex;
         std::condition_variable condition;
@@ -241,7 +244,7 @@ void testWorkerContainsCallbackExceptions() {
                 condition.notify_one();
             });
 
-        timers.schedule(log_id, 1, "123가4567", 20ms);
+        timers.schedule(log_id, "EV01", "123가4567", 20ms);
         std::unique_lock lock(mutex);
         require(condition.wait_for(lock, 500ms, [&] { return error_reported; }),
                 "worker did not contain/report a callback exception");

@@ -16,7 +16,7 @@ namespace parking_timer {
 
 struct ViolationEvent {
     std::int64_t log_id{};
-    int zone_id{};
+    std::string slot_id;
     std::string car_number;
     std::string violation_at;
     std::string image_path_2;
@@ -24,7 +24,7 @@ struct ViolationEvent {
 
 struct TimerError {
     std::int64_t log_id{};
-    int zone_id{};
+    std::string slot_id;
     std::string car_number;
     std::string message;
 };
@@ -44,7 +44,7 @@ public:
     TimerManager& operator=(const TimerManager&) = delete;
 
     void schedule(std::int64_t log_id,
-                  int zone_id,
+                  std::string slot_id,
                   std::string car_number,
                   std::chrono::milliseconds delay);
 
@@ -57,7 +57,7 @@ private:
         Clock::time_point deadline;
         std::uint64_t sequence{};
         std::int64_t log_id{};
-        int zone_id{};
+        std::string slot_id;
         std::string car_number;
         std::uint32_t retry_count{};
         // 최초 steady_clock deadline 도달 때 캡처하며 DB retry에서도 보존한다.

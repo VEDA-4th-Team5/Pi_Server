@@ -12,7 +12,7 @@ namespace parking_timer {
 class EventManager {
 public:
     void publish(std::string_view event_type,
-                 int zone_id,
+                 std::string_view slot_id,
                  std::string_view car_number,
                  std::string_view occurred_at,
                  std::string_view detail = {});
@@ -22,4 +22,3 @@ private:
 };
 
 }  // namespace parking_timer
-

@@ -26,11 +26,11 @@ ParkingSlotManager::ParkingSlotManager(EventDatabase& database,
       parking_timeout_(parking_timeout),
       timers_(database_, [this](const ViolationEvent& event) {
           // 현재는 JSON stdout이지만 향후 MQTT/HTTP publisher로 교체할 통합 지점이다.
-          events_.publish("VIOLATION_TRIGGERED", event.zone_id, event.car_number,
+          events_.publish("VIOLATION_TRIGGERED", event.slot_id, event.car_number,
                           event.violation_at, event.image_path_2);
       }, [this](const TimerError& error) {
           // worker 오류도 정상 이벤트와 같은 JSON 경로로 보내 관제 측에서 확인하게 한다.
-          events_.publish("TIMER_ERROR", error.zone_id, error.car_number, utcNow(),
+          events_.publish("TIMER_ERROR", error.slot_id, error.car_number, utcNow(),
                           error.message);
       }, &transition_mutex_) {
     if (parking_timeout_ <= std::chrono::milliseconds::zero()) {
@@ -41,18 +41,18 @@ ParkingSlotManager::ParkingSlotManager(EventDatabase& database,
 /**
  * @brief 홀센서 OFF→ON과 번호판 인식 결과에 해당하는 입차 이벤트를 처리한다.
  *
- * @param[in] zone_id 차량이 들어온 충전구역 ID. 1 이상의 값이어야 한다.
+ * @param[in] slot_id 차량이 들어온 주차면 ID.
  * @param[in] car_number 차량 마스터에서 조회할 번호판 문자열.
  * @param[in] image_path_1 최초 주차 증거 이미지 경로. 비어 있으면 기본 경로를 만든다.
  * @return 타이머 등록 여부, 차량 분류, 생성된 로그 ID와 설명을 담은 결과.
- * @throws std::invalid_argument 구역 ID가 잘못됐거나 차량번호가 비어 있는 경우.
+ * @throws std::invalid_argument 주차면 ID 또는 차량번호가 비어 있는 경우.
  * @throws std::runtime_error SQLite 처리 또는 타이머 등록에 실패한 경우.
  */
-EntryResult ParkingSlotManager::handleEntry(const int zone_id,
+EntryResult ParkingSlotManager::handleEntry(const std::string& slot_id,
                                             const std::string& car_number,
                                             const std::string& image_path_1) {
-    if (zone_id <= 0) {
-        throw std::invalid_argument("zone_id must be greater than zero");
+    if (slot_id.empty()) {
+        throw std::invalid_argument("slot_id must not be empty");
     }
     if (car_number.empty()) {
         throw std::invalid_argument("car_number must not be empty");
@@ -64,30 +64,30 @@ EntryResult ParkingSlotManager::handleEntry(const int zone_id,
     const auto now = utcNow();
     // 미등록 차량은 정책이 정해지지 않았으므로 자동 타이머 대신 관리자 확인으로 보낸다.
     if (category == VehicleCategory::Unknown) {
-        events_.publish("UNKNOWN_VEHICLE", zone_id, car_number, now,
+        events_.publish("UNKNOWN_VEHICLE", slot_id, car_number, now,
                         "manual confirmation required");
         return {false, category, std::nullopt, "vehicle is not registered"};
     }
     if (category == VehicleCategory::NonEv) {
-        events_.publish("NON_EV_ALERT", zone_id, car_number, now,
+        events_.publish("NON_EV_ALERT", slot_id, car_number, now,
                         "not scheduled in the EV overtime timer");
         return {false, category, std::nullopt, "non-EV vehicle"};
     }
 
     // 부분 unique index에 맡기기 전에 의미 있는 이벤트와 오류 메시지를 제공한다.
-    if (database_.findActiveByZone(zone_id).has_value()) {
-        events_.publish("ENTRY_REJECTED", zone_id, car_number, now,
-                        "zone already has an active session");
-        return {false, category, std::nullopt, "zone is already occupied"};
+    if (database_.findActiveBySlot(slot_id).has_value()) {
+        events_.publish("ENTRY_REJECTED", slot_id, car_number, now,
+                        "slot already has an active session");
+        return {false, category, std::nullopt, "slot is already occupied"};
     }
 
     const auto first_image = image_path_1.empty()
                                  ? "snapshots/" + car_number + "_parked.jpg"
                                  : image_path_1;
-    // DB 세션 ID를 먼저 얻어 큐 노드가 zone_id가 아닌 불변 log_id를 참조하게 한다.
-    const auto log_id = database_.insertParked(car_number, zone_id, now, first_image);
+    // DB 세션 ID를 먼저 얻어 큐 노드가 slot_id가 아닌 불변 log_id를 참조하게 한다.
+    const auto log_id = database_.insertParked(car_number, slot_id, now, first_image);
     try {
-        timers_.schedule(log_id, zone_id, car_number, parking_timeout_);
+        timers_.schedule(log_id, slot_id, car_number, parking_timeout_);
     } catch (...) {
         // INSERT 뒤 메모리 큐 등록이 실패하면 활성 PARKED 고아 행이 남지 않도록
         // 보상 UPDATE를 최선 노력으로 수행한 후 원래 오류를 전달한다.
@@ -97,36 +97,36 @@ EntryResult ParkingSlotManager::handleEntry(const int zone_id,
         }
         throw;
     }
-    events_.publish("ARRIVAL", zone_id, car_number, now,
-                    "timer_log inserted; overtime timer started");
+    events_.publish("ARRIVAL", slot_id, car_number, now,
+                    "PARKING_SESSION inserted; overtime timer started");
     return {true, category, log_id, "timer started"};
 }
 
 /**
  * @brief 홀센서 ON→OFF에 해당하는 출차 이벤트를 처리한다.
  *
- * @param[in] zone_id 차량이 빠져나온 충전구역 ID.
+ * @param[in] slot_id 차량이 빠져나온 주차면 ID.
  * @return 갱신된 로그. 활성 세션이 없으면 `std::nullopt`.
- * @throws std::invalid_argument 구역 ID가 0 이하인 경우.
+ * @throws std::invalid_argument 주차면 ID가 비어 있는 경우.
  * @throws std::runtime_error SQLite 트랜잭션 처리에 실패한 경우.
  * @note 우선순위 큐에서 임의 원소를 제거하지 않고 DB의 `is_canceled`를 표시한다.
  */
-std::optional<LogRecord> ParkingSlotManager::handleExit(const int zone_id) {
-    if (zone_id <= 0) {
-        throw std::invalid_argument("zone_id must be greater than zero");
+std::optional<LogRecord> ParkingSlotManager::handleExit(const std::string& slot_id) {
+    if (slot_id.empty()) {
+        throw std::invalid_argument("slot_id must not be empty");
     }
 
     // 만료 worker와 같은 mutex를 사용한다. 먼저 DB를 바꾼 전이가 승리한다.
     std::lock_guard transition_lock(transition_mutex_);
     const auto now = utcNow();
-    auto record = database_.departActiveByZone(zone_id, now);
+    auto record = database_.departActiveBySlot(slot_id, now);
     if (!record.has_value()) {
-        events_.publish("EXIT_IGNORED", zone_id, "", now, "no active session");
+        events_.publish("EXIT_IGNORED", slot_id, "", now, "no active session");
         return std::nullopt;
     }
 
-    events_.publish("DEPARTURE", zone_id, record->car_number, now,
-                    "timer_log updated; queued timer lazily canceled");
+    events_.publish("DEPARTURE", slot_id, record->car_number, now,
+                    "PARKING_SESSION updated; queued timer lazily canceled");
     return record;
 }
 

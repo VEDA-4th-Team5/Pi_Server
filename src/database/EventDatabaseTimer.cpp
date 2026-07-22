@@ -1,4 +1,6 @@
-#include "parking_timer/EventDatabase.hpp"
+#include "database/EventDatabase.hpp"
+
+#include "database/db_manager.h"
 
 #include <sqlite3.h>
 
@@ -7,7 +9,9 @@
 #include <stdexcept>
 #include <utility>
 
-namespace parking_timer {
+namespace database {
+using parking_timer::LogRecord;
+using parking_timer::VehicleCategory;
 namespace {
 
 /**
@@ -22,8 +26,10 @@ public:
      * @param[in] sql 컴파일할 NUL 종료 SQL 문자열.
      * @throws std::runtime_error SQL prepare가 실패한 경우.
      */
-    Statement(sqlite3* database, const char* sql) : database_(database) {
-        const int result = sqlite3_prepare_v2(database_, sql, -1, &statement_, nullptr);
+    Statement(sqlite3* database, const std::string_view sql) : database_(database) {
+        const int result = sqlite3_prepare_v2(database_, sql.data(),
+                                              static_cast<int>(sql.size()),
+                                              &statement_, nullptr);
         if (result != SQLITE_OK) {
             throw std::runtime_error("SQLite prepare failed: " +
                                      std::string(sqlite3_errmsg(database_)));
@@ -137,7 +143,7 @@ LogRecord readLogRecord(sqlite3_stmt* statement) {
     LogRecord record;
     record.id = sqlite3_column_int64(statement, 0);
     record.car_number = columnText(statement, 1);
-    record.zone_id = sqlite3_column_int(statement, 2);
+    record.slot_id = columnText(statement, 2);
     record.status = columnText(statement, 3);
     record.parked_at = columnText(statement, 4);
     record.violation_at = optionalColumnText(statement, 5);
@@ -163,6 +169,25 @@ void requireDone(sqlite3* database, sqlite3_stmt* statement) {
     }
 }
 
+constexpr std::string_view kLogSelect =
+    "SELECT s.session_id, COALESCE(s.plate_number, ''), s.slot_id, "
+    "CASE s.status WHEN 'ACTIVE' THEN 'PARKED' WHEN 'ENDED' THEN 'DEPARTS' "
+    "ELSE s.status END, s.entry_time, s.violation_at, s.exit_time, "
+    "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
+    "AND i.enhancement_type='TIMER_ENTRY' ORDER BY i.image_id LIMIT 1), "
+    "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
+    "AND i.enhancement_type='TIMER_VIOLATION' ORDER BY i.image_id DESC LIMIT 1), "
+    "CASE WHEN s.exit_time IS NULL THEN 0 ELSE 1 END FROM PARKING_SESSION s ";
+
+bool tableHasColumn(sqlite3* database, const std::string_view table,
+                    const std::string_view column) {
+    Statement statement(database, "PRAGMA table_info(" + std::string{table} + ");");
+    while (sqlite3_step(statement.get()) == SQLITE_ROW) {
+        if (columnText(statement.get(), 1) == column) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 /**
@@ -179,37 +204,18 @@ EventDatabase::EventDatabase(const std::filesystem::path& database_path) {
         std::filesystem::create_directories(parent);
     }
 
-    // 한 연결을 CLI와 타이머 worker가 공유하므로 SQLite 자체도 serialized 모드로 연다.
-    const int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
-    const int result = sqlite3_open_v2(database_path.string().c_str(), &db_, flags, nullptr);
-    if (result != SQLITE_OK) {
-        const std::string message = db_ == nullptr ? "unknown SQLite error" :
-                                                    sqlite3_errmsg(db_);
-        if (db_ != nullptr) {
-            sqlite3_close(db_);
-            db_ = nullptr;
-        }
-        throw std::runtime_error("cannot open SQLite database: " + message);
+    if (!open(database_path.string())) {
+        throw std::runtime_error("cannot open SQLite database: " +
+                                 database_path.string());
     }
 
-    // PRAGMA 중 하나라도 실패하면 아직 완성되지 않은 연결을 즉시 닫는다.
+    // 메인 서버와 타이머가 동일한 연결 정책을 공유한다.
     try {
-        executeSqlUnlocked("PRAGMA foreign_keys = ON;");
         executeSqlUnlocked("PRAGMA busy_timeout = 3000;");
         executeSqlUnlocked("PRAGMA journal_mode = WAL;");
     } catch (...) {
-        sqlite3_close(db_);
-        db_ = nullptr;
+        close();
         throw;
-    }
-}
-
-/**
- * @brief 보유한 SQLite 연결을 닫는다.
- */
-EventDatabase::~EventDatabase() {
-    if (db_ != nullptr) {
-        sqlite3_close(db_);
     }
 }
 
@@ -225,7 +231,17 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                                const std::filesystem::path& seed_file) {
     const auto schema = readTextFile(schema_file);
     const auto seed = readTextFile(seed_file);
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(db_mutex_);
+    // 기존 운영 DB의 테이블 이름과 데이터를 유지한 채 신규 구분 필드만 보강한다.
+    if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
+        !tableHasColumn(db_, "VEHICLE", "is_phev")) {
+        executeSqlUnlocked("ALTER TABLE VEHICLE ADD COLUMN is_phev INTEGER NOT NULL "
+                           "DEFAULT 0 CHECK (is_phev IN (0, 1));");
+    }
+    if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+        !tableHasColumn(db_, "PARKING_SESSION", "violation_at")) {
+        executeSqlUnlocked("ALTER TABLE PARKING_SESSION ADD COLUMN violation_at TEXT;");
+    }
     // 스키마는 IF NOT EXISTS로 멱등하며, seed 전체만 별도 원자적 단위로 처리한다.
     executeSqlUnlocked(schema);
     executeSqlUnlocked("BEGIN IMMEDIATE;");
@@ -246,10 +262,10 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
  * @throws std::runtime_error SQLite 조회가 실패한 경우.
  */
 VehicleCategory EventDatabase::classifyVehicle(const std::string_view car_number) const {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(db_mutex_);
     Statement statement(db_,
-                        "SELECT vehicle_type FROM mock_vehicle_master "
-                        "WHERE car_number = ?;");
+                        "SELECT is_ev, is_phev FROM VEHICLE "
+                        "WHERE plate_number = ?;");
     statement.bindText(1, car_number);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) {
@@ -260,11 +276,10 @@ VehicleCategory EventDatabase::classifyVehicle(const std::string_view car_number
                                  std::string(sqlite3_errmsg(db_)));
     }
 
-    const auto type = columnText(statement.get(), 0);
-    if (type == "EV") {
+    if (sqlite3_column_int(statement.get(), 0) == 1) {
         return VehicleCategory::Ev;
     }
-    if (type == "PHEV") {
+    if (sqlite3_column_int(statement.get(), 1) == 1) {
         return VehicleCategory::Phev;
     }
     return VehicleCategory::NonEv;
@@ -274,27 +289,40 @@ VehicleCategory EventDatabase::classifyVehicle(const std::string_view car_number
  * @brief EV/PHEV 입차 세션을 `PARKED` 상태로 INSERT한다.
  *
  * @param[in] car_number 차량번호.
- * @param[in] zone_id 충전구역 ID.
+ * @param[in] slot_id 주차면 ID.
  * @param[in] parked_at 최초 주차 판정 UTC 시각.
  * @param[in] image_path_1 최초 증거 이미지 경로.
  * @return 새 `timer_log` 행의 64비트 ID.
  * @throws std::runtime_error SQL 제약조건 또는 실행 오류가 발생한 경우.
  */
 std::int64_t EventDatabase::insertParked(const std::string& car_number,
-                                         const int zone_id,
+                                         const std::string& slot_id,
                                          const std::string& parked_at,
                                          const std::string& image_path_1) {
-    std::lock_guard lock(mutex_);
-    Statement statement(
-        db_,
-        "INSERT INTO timer_log(car_number, zone_id, status, parked_at, image_path_1) "
-        "VALUES (?, ?, 'PARKED', ?, ?);");
-    statement.bindText(1, car_number);
-    statement.bindInt(2, zone_id);
-    statement.bindText(3, parked_at);
-    statement.bindText(4, image_path_1);
-    requireDone(db_, statement.get());
-    return sqlite3_last_insert_rowid(db_);
+    std::lock_guard lock(db_mutex_);
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
+        Statement statement(
+            db_,
+            "INSERT INTO PARKING_SESSION(vehicle_id, slot_id, plate_number, entry_time, status) "
+            "VALUES ((SELECT vehicle_id FROM VEHICLE WHERE plate_number = ?), ?, ?, ?, 'ACTIVE');");
+        statement.bindText(1, car_number);
+        statement.bindText(2, slot_id);
+        statement.bindText(3, car_number);
+        statement.bindText(4, parked_at);
+        requireDone(db_, statement.get());
+        const auto session_id = sqlite3_last_insert_rowid(db_);
+        Statement image(db_, "INSERT INTO IMAGE_LOG(session_id, original_image_path, "
+                             "enhancement_type) VALUES (?, ?, 'TIMER_ENTRY');");
+        image.bindInt64(1, session_id);
+        image.bindText(2, image_path_1);
+        requireDone(db_, image.get());
+        executeSqlUnlocked("COMMIT;");
+        return session_id;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
+    }
 }
 
 /**
@@ -310,19 +338,29 @@ std::int64_t EventDatabase::insertParked(const std::string& car_number,
 bool EventDatabase::markViolation(const std::int64_t log_id,
                                   const std::string& violation_at,
                                   const std::string& image_path_2) {
-    std::lock_guard lock(mutex_);
-    Statement statement(
-        db_,
-        // 출차가 먼저 처리됐다면 조건이 맞지 않아 0행이 되고 위반 이벤트도 발생하지 않는다.
-        "UPDATE timer_log "
-        "SET status = 'VIOLATION', violation_at = ?, image_path_2 = ? "
-        "WHERE id = ? AND status = 'PARKED' AND departed_at IS NULL "
-        "AND is_canceled = 0;");
-    statement.bindText(1, violation_at);
-    statement.bindText(2, image_path_2);
-    statement.bindInt64(3, log_id);
-    requireDone(db_, statement.get());
-    return sqlite3_changes(db_) == 1;
+    std::lock_guard lock(db_mutex_);
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
+        Statement statement(db_, "UPDATE PARKING_SESSION SET status = 'VIOLATION', "
+                                 "violation_at = ? WHERE session_id = ? "
+                                 "AND status = 'ACTIVE' AND exit_time IS NULL;");
+        statement.bindText(1, violation_at);
+        statement.bindInt64(2, log_id);
+        requireDone(db_, statement.get());
+        const bool changed = sqlite3_changes(db_) == 1;
+        if (changed && !image_path_2.empty()) {
+            Statement image(db_, "INSERT INTO IMAGE_LOG(session_id, original_image_path, "
+                                 "enhancement_type) VALUES (?, ?, 'TIMER_VIOLATION');");
+            image.bindInt64(1, log_id);
+            image.bindText(2, image_path_2);
+            requireDone(db_, image.get());
+        }
+        executeSqlUnlocked("COMMIT;");
+        return changed;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
+    }
 }
 
 /**
@@ -335,11 +373,11 @@ bool EventDatabase::markViolation(const std::int64_t log_id,
  */
 bool EventDatabase::cancelUnscheduled(const std::int64_t log_id,
                                       const std::string& canceled_at) {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(db_mutex_);
     Statement statement(
         db_,
-        "UPDATE timer_log SET status = 'DEPARTS', departed_at = ?, is_canceled = 1 "
-        "WHERE id = ? AND status = 'PARKED' AND departed_at IS NULL;");
+        "UPDATE PARKING_SESSION SET status = 'ENDED', exit_time = ? "
+        "WHERE session_id = ? AND status = 'ACTIVE' AND exit_time IS NULL;");
     statement.bindText(1, canceled_at);
     statement.bindInt64(2, log_id);
     requireDone(db_, statement.get());
@@ -349,27 +387,24 @@ bool EventDatabase::cancelUnscheduled(const std::int64_t log_id,
 /**
  * @brief 지정 구역의 활성 세션을 출차 완료 상태로 원자적으로 갱신한다.
  *
- * @param[in] zone_id 출차가 감지된 충전구역 ID.
+ * @param[in] slot_id 출차가 감지된 주차면 ID.
  * @param[in] departed_at 출차 UTC 시각.
  * @return 갱신된 로그. 활성 세션이 없으면 `std::nullopt`.
  * @throws std::runtime_error 조회·UPDATE·재조회 중 하나라도 실패한 경우.
  * @note 위반 후 출차도 최종 status는 `DEPARTS`가 되지만 기존 `violation_at`은 보존한다.
  */
-std::optional<LogRecord> EventDatabase::departActiveByZone(
-    const int zone_id,
+std::optional<LogRecord> EventDatabase::departActiveBySlot(
+    const std::string& slot_id,
     const std::string& departed_at) {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(db_mutex_);
     // 조회와 UPDATE 사이에 다른 DB 쓰기가 끼어들지 않도록 write lock을 먼저 확보한다.
     executeSqlUnlocked("BEGIN IMMEDIATE;");
     try {
         // partial unique index상 활성 행은 최대 하나지만, 최신 행을 명시적으로 선택한다.
-        Statement find_statement(
-            db_,
-            "SELECT id, car_number, zone_id, status, parked_at, violation_at, "
-            "departed_at, image_path_1, image_path_2, is_canceled "
-            "FROM timer_log WHERE zone_id = ? AND departed_at IS NULL "
-            "ORDER BY id DESC LIMIT 1;");
-        find_statement.bindInt(1, zone_id);
+        Statement find_statement(db_, std::string{kLogSelect} +
+            "WHERE s.slot_id = ? AND s.exit_time IS NULL "
+            "ORDER BY s.session_id DESC LIMIT 1;");
+        find_statement.bindText(1, slot_id);
         const int find_result = sqlite3_step(find_statement.get());
         if (find_result == SQLITE_DONE) {
             executeSqlUnlocked("COMMIT;");
@@ -384,21 +419,21 @@ std::optional<LogRecord> EventDatabase::departActiveByZone(
         // is_canceled는 우선순위 큐 노드를 즉시 찾지 않고 나중에 버리기 위한 표시다.
         Statement update_statement(
             db_,
-            "UPDATE timer_log SET status = 'DEPARTS', departed_at = ?, "
-            "is_canceled = 1 WHERE id = ? AND departed_at IS NULL;");
+            "UPDATE PARKING_SESSION SET status = 'ENDED', exit_time = ?, "
+            "duration_sec = MAX(0, CAST(strftime('%s', ?) AS INTEGER) - "
+            "CAST(strftime('%s', entry_time) AS INTEGER)) "
+            "WHERE session_id = ? AND exit_time IS NULL;");
         update_statement.bindText(1, departed_at);
-        update_statement.bindInt64(2, log_id);
+        update_statement.bindText(2, departed_at);
+        update_statement.bindInt64(3, log_id);
         requireDone(db_, update_statement.get());
         if (sqlite3_changes(db_) != 1) {
             throw std::runtime_error("active parking log changed concurrently");
         }
 
         // 호출자와 이벤트 발행부가 최종 상태를 그대로 사용할 수 있도록 같은 트랜잭션에서 읽는다.
-        Statement result_statement(
-            db_,
-            "SELECT id, car_number, zone_id, status, parked_at, violation_at, "
-            "departed_at, image_path_1, image_path_2, is_canceled "
-            "FROM timer_log WHERE id = ?;");
+        Statement result_statement(db_, std::string{kLogSelect} +
+            "WHERE s.session_id = ?;");
         result_statement.bindInt64(1, log_id);
         if (sqlite3_step(result_statement.get()) != SQLITE_ROW) {
             throw std::runtime_error("updated parking log disappeared");
@@ -416,19 +451,17 @@ std::optional<LogRecord> EventDatabase::departActiveByZone(
 /**
  * @brief 지정 구역에서 아직 출차하지 않은 세션을 조회한다.
  *
- * @param[in] zone_id 조회할 충전구역 ID.
+ * @param[in] slot_id 조회할 주차면 ID.
  * @return 활성 로그 또는 활성 행이 없을 때 `std::nullopt`.
  * @throws std::runtime_error SQLite 조회가 실패한 경우.
  */
-std::optional<LogRecord> EventDatabase::findActiveByZone(const int zone_id) const {
-    std::lock_guard lock(mutex_);
-    Statement statement(
-        db_,
-        "SELECT id, car_number, zone_id, status, parked_at, violation_at, "
-        "departed_at, image_path_1, image_path_2, is_canceled "
-        "FROM timer_log WHERE zone_id = ? AND departed_at IS NULL "
-        "ORDER BY id DESC LIMIT 1;");
-    statement.bindInt(1, zone_id);
+std::optional<LogRecord> EventDatabase::findActiveBySlot(
+    const std::string& slot_id) const {
+    std::lock_guard lock(db_mutex_);
+    Statement statement(db_, std::string{kLogSelect} +
+        "WHERE s.slot_id = ? AND s.exit_time IS NULL "
+        "ORDER BY s.session_id DESC LIMIT 1;");
+    statement.bindText(1, slot_id);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) {
         return std::nullopt;
@@ -448,12 +481,9 @@ std::optional<LogRecord> EventDatabase::findActiveByZone(const int zone_id) cons
  * @throws std::runtime_error SQLite 조회가 실패한 경우.
  */
 std::optional<LogRecord> EventDatabase::findLogById(const std::int64_t log_id) const {
-    std::lock_guard lock(mutex_);
-    Statement statement(
-        db_,
-        "SELECT id, car_number, zone_id, status, parked_at, violation_at, "
-        "departed_at, image_path_1, image_path_2, is_canceled "
-        "FROM timer_log WHERE id = ?;");
+    std::lock_guard lock(db_mutex_);
+    Statement statement(db_, std::string{kLogSelect} +
+        "WHERE s.session_id = ?;");
     statement.bindInt64(1, log_id);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) {
@@ -473,12 +503,9 @@ std::optional<LogRecord> EventDatabase::findLogById(const std::int64_t log_id) c
  * @throws std::runtime_error 조회 도중 SQLite 오류가 발생한 경우.
  */
 std::vector<LogRecord> EventDatabase::listLogs() const {
-    std::lock_guard lock(mutex_);
-    Statement statement(
-        db_,
-        "SELECT id, car_number, zone_id, status, parked_at, violation_at, "
-        "departed_at, image_path_1, image_path_2, is_canceled "
-        "FROM timer_log ORDER BY id;");
+    std::lock_guard lock(db_mutex_);
+    Statement statement(db_, std::string{kLogSelect} +
+        "ORDER BY s.session_id;");
     std::vector<LogRecord> records;
     while (true) {
         // sqlite3_step을 반복해 row를 모두 소비하고 SQLITE_DONE에서 정상 종료한다.
@@ -501,9 +528,11 @@ std::vector<LogRecord> EventDatabase::listLogs() const {
  * @throws std::runtime_error 조회 도중 SQLite 오류가 발생한 경우.
  */
 std::vector<std::pair<std::string, std::string>> EventDatabase::listVehicles() const {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(db_mutex_);
     Statement statement(
-        db_, "SELECT car_number, vehicle_type FROM mock_vehicle_master ORDER BY car_number;");
+        db_, "SELECT plate_number, CASE WHEN is_ev=1 THEN 'EV' "
+             "WHEN is_phev=1 THEN 'PHEV' ELSE 'NON_EV' END "
+             "FROM VEHICLE ORDER BY plate_number;");
     std::vector<std::pair<std::string, std::string>> vehicles;
     while (true) {
         const int result = sqlite3_step(statement.get());
@@ -526,9 +555,20 @@ std::vector<std::pair<std::string, std::string>> EventDatabase::listVehicles() c
  * @warning 운영 데이터에는 사용하지 말고 `--reset-logs` 데모 옵션에서만 사용한다.
  */
 void EventDatabase::clearTimerLogs() {
-    std::lock_guard lock(mutex_);
-    executeSqlUnlocked("DELETE FROM timer_log;");
-    executeSqlUnlocked("DELETE FROM sqlite_sequence WHERE name = 'timer_log';");
+    std::lock_guard lock(db_mutex_);
+    executeSqlUnlocked(
+        "BEGIN IMMEDIATE;"
+        "CREATE TEMP TABLE IF NOT EXISTS timer_session_ids(session_id INTEGER PRIMARY KEY);"
+        "DELETE FROM timer_session_ids;"
+        "INSERT INTO timer_session_ids SELECT DISTINCT session_id FROM IMAGE_LOG "
+        "WHERE enhancement_type='TIMER_ENTRY' AND session_id IS NOT NULL;"
+        "DELETE FROM EVENT_LOG WHERE session_id IN (SELECT session_id FROM timer_session_ids);"
+        "DELETE FROM IMAGE_LOG WHERE session_id IN (SELECT session_id FROM timer_session_ids);"
+        "DELETE FROM PARKING_SESSION WHERE session_id IN (SELECT session_id FROM timer_session_ids);"
+        "UPDATE PARKING_SLOT SET status='VACANT' WHERE slot_id NOT IN "
+        "(SELECT slot_id FROM PARKING_SESSION WHERE exit_time IS NULL);"
+        "DELETE FROM timer_session_ids;"
+        "COMMIT;");
 }
 
 /**
@@ -568,4 +608,4 @@ std::string EventDatabase::readTextFile(const std::filesystem::path& path) {
     return contents.str();
 }
 
-}  // namespace parking_timer
+}  // namespace database

@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+struct sqlite3;
+
 #define DB_TEXT_SMALL 64
 #define DB_TEXT_PATH 1024
 
@@ -69,6 +71,8 @@ int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
                            void *context);
 int db_visit_session_images(int session_id, DbImageVisitor visitor, void *context);
 int db_get_image_by_id(int image_id, DbImageRow *row);
+/* 통합 C++ 저장 계층에서 같은 연결로 transaction/query를 수행할 때 사용한다. */
+struct sqlite3 *db_native_handle(void);
 
 #ifdef __cplusplus
 }

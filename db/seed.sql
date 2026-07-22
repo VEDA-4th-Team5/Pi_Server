@@ -1,8 +1,21 @@
--- 사진에는 실제 데이터가 없으므로 아래 값은 프로토타입 전용 임의 테스트 데이터다.
-INSERT OR IGNORE INTO mock_vehicle_master(car_number, vehicle_type)
+INSERT OR IGNORE INTO VEHICLE(plate_number, is_ev, is_phev)
 VALUES
-    ('123가4567', 'EV'),
-    ('234나5678', 'PHEV'),
-    ('345다6789', 'GASOLINE'),
-    ('456라7890', 'DIESEL');
+    ('123가4567', 1, 0),
+    ('234나5678', 0, 1),
+    ('345다6789', 0, 0),
+    ('456라7890', 0, 0),
+    ('12가3456', 1, 0),
+    ('34나5678', 1, 0),
+    ('99다8888', 0, 0),
+    ('77라1234', 0, 0);
 
+INSERT OR IGNORE INTO PARKING_SLOT(slot_id, slot_type, status, sensor_type)
+VALUES
+    ('EV01', 'EV_CHARGING', 'VACANT', 'CAMERA'),
+    ('EV02', 'EV_CHARGING', 'VACANT', 'CAMERA'),
+    ('EV03', 'EV_CHARGING', 'VACANT', 'CAMERA'),
+    ('EV04', 'EV_CHARGING', 'VACANT', 'CAMERA'),
+    ('P01', 'NORMAL', 'VACANT', 'HALL'),
+    ('P02', 'NORMAL', 'VACANT', 'HALL'),
+    ('P03', 'NORMAL', 'VACANT', 'HALL'),
+    ('P04', 'NORMAL', 'VACANT', 'HALL');
