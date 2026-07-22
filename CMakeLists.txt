@@ -78,6 +78,18 @@ target_include_directories(fire-alarm-test PRIVATE include)
 target_compile_options(fire-alarm-test PRIVATE -Wall -Wextra)
 add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
 
+# STM32 UART 통신만 단독으로 확인하기 위한 경량 실행 파일.
+# 카메라/MQTT/DB 없이 src/sensor 코드만 빌드한다.
+add_executable(uart-fire-listener
+    src/tools/UartFireListenerMain.cpp
+    src/sensor/SensorLinkManager.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/sensor/FireSensorMessage.cpp
+    src/util/Logger.cpp)
+target_include_directories(uart-fire-listener PRIVATE include)
+target_compile_options(uart-fire-listener PRIVATE -Wall -Wextra)
+target_link_libraries(uart-fire-listener PRIVATE Threads::Threads)
+
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)

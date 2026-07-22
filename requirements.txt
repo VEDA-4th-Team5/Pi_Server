@@ -2,3 +2,10 @@
 # C++ 빌드 의존성(CMake, C++20 compiler, SQLite3 development package)은
 # README.md의 "빌드 요구사항"에 기록되어 있다.
 # API 명세 생성 도구: doxygen 1.9.8 이상 (Debian/Ubuntu 패키지: doxygen)
+sudo apt update
+sudo apt install -y libopencv-dev pkg-config
+pkg-config --modversion opencv4
+sudo apt install -y libcurl4-openssl-dev pkg-config
+pkg-config --modversion libcurl
+sudo apt install -y nlohmann-json3-dev
+sudo apt install -y libcpp-httplib-dev
