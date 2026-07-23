@@ -33,6 +33,15 @@ struct AppConfig {
     std::string qt_event_topic_prefix;
     std::string default_channel_id;
 
+    // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
+    // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
+    bool fire_alarm_enabled;
+    std::string fire_uart_device;
+    int fire_uart_baud;
+    int fire_uart_reopen_delay_ms;
+    std::string fire_topic_prefix;
+    std::string fire_sensor_slot_map;
+
     std::string snapshot_dir;
     std::string db_path;
     std::string gemini_api_key;

@@ -65,6 +65,51 @@ add_executable(sensor-parking-pipeline-test
 target_include_directories(sensor-parking-pipeline-test PRIVATE include)
 target_compile_options(sensor-parking-pipeline-test PRIVATE -Wall -Wextra)
 
+add_executable(fire-alarm-test
+    tests/unit/FireAlarmTest.cpp
+    src/event/FireAlarmManager.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/sensor/FireSensorMessage.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/util/Logger.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-alarm-test PRIVATE include)
+target_compile_options(fire-alarm-test PRIVATE -Wall -Wextra)
+add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
+
+# STM32 UART 통신만 단독으로 확인하기 위한 경량 실행 파일.
+# 카메라/MQTT/DB 없이 src/sensor 코드만 빌드한다. gemini-ocr-test, db-manager-test,
+# http-api-test 와 같은 자리 — src/ 는 프로덕션 코드만, 수동 진단 도구는
+# tests/integration/ 에 모은다.
+add_executable(uart-fire-listener
+    tests/integration/UartFireListenerTool.cpp
+    src/sensor/SensorLinkManager.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/sensor/FireSensorMessage.cpp
+    src/util/Logger.cpp)
+target_include_directories(uart-fire-listener PRIVATE include)
+target_compile_options(uart-fire-listener PRIVATE -Wall -Wextra)
+target_link_libraries(uart-fire-listener PRIVATE Threads::Threads)
+
+# STM32 UART -> FireAlarmManager -> 실제 MQTT 브로커까지 카메라/DB/OCR 없이
+# 검증하는 도구. main.cpp 는 건드리지 않고, 여기서 검증된 배선을 그대로
+# main.cpp 로 옮기는 방식으로 통합한다.
+add_executable(fire-pipeline-tool
+    tests/integration/FirePipelineTool.cpp
+    src/app/AppConfig.cpp
+    src/event/FireAlarmManager.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/sensor/SensorLinkManager.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/sensor/FireSensorMessage.cpp
+    src/util/Logger.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-pipeline-tool PRIVATE include)
+target_compile_options(fire-pipeline-tool PRIVATE -Wall -Wextra)
+target_link_libraries(fire-pipeline-tool PRIVATE mosquitto Threads::Threads)
+
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)

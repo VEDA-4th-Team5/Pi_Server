@@ -14,9 +14,11 @@ RTSP, MQTT, OpenCV, Gemini OCR, SQLite 및 Qt 조회 API를 사용합니다.
 - SQLite 주차 세션·이미지·이벤트 저장
 - Qt용 HTTP/HTTPS 상태·이미지 조회 API
 - 센서 메시지 파서와 주차 상태 단위 테스트
+- STM32 UART 화재 후보 수신 및 Qt MQTT 알림 (초안)
 
-아직 실제 STM32 UART 연결, 32면 최종 모델, 화재·LoRa 및 영상 클립 저장은
-구현되지 않았습니다.
+아직 32면 최종 모델, LoRa 및 영상 클립 저장은 구현되지 않았습니다.
+STM32 실장비는 아직 연결되어 있지 않아 화재 경로는 FIFO 시뮬레이터로만
+검증했습니다.
 
 ## 주요 흐름
 
@@ -60,6 +62,35 @@ set +a
 
 ./cmake-build/pi-server
 ```
+
+### 화재 알림 (STM32 UART)
+
+기본값은 비활성이며, 다음 환경변수로 켭니다.
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `FIRE_ALARM_ENABLED` | `false` | 화재 경로 전체 on/off |
+| `FIRE_UART_DEVICE` | `/dev/ttyAMA0` | STM32 UART 장치. 테스트 시 FIFO 경로 |
+| `FIRE_UART_BAUD` | `115200` | 9600/19200/38400/57600/115200 |
+| `FIRE_TOPIC_PREFIX` | `parking/fire` | Qt 발행 토픽 접두사 (임시 확정값) |
+| `FIRE_SENSOR_SLOT_MAP` | (없음) | `FIRE01=EV01:ch01,FIRE02=EV02` |
+
+STM32가 아직 연결되지 않은 동안에는 FIFO로 같은 수신 경로를 검증할 수 있습니다.
+
+```bash
+tools/fake_fire_sensor.sh --create-fifo /tmp/fake-uart
+
+FIRE_ALARM_ENABLED=true \
+FIRE_UART_DEVICE=/tmp/fake-uart \
+FIRE_SENSOR_SLOT_MAP='FIRE01=EV01' \
+  ./cmake-build/pi-server
+
+# 다른 터미널에서
+tools/fake_fire_sensor.sh /tmp/fake-uart FIRE01 detected
+mosquitto_sub -h localhost -t 'parking/fire/#' -v
+```
+
+토픽과 payload 규약은 `docs/MQTT_PROTOCOL_PROPOSAL.md`에 있습니다.
 
 ## 데이터 저장
 

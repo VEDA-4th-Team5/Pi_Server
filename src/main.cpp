@@ -3,11 +3,13 @@
 #include "camera/CameraChannel.hpp"
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
+#include "event/FireAlarmManager.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "ocr/GeminiOcrClient.hpp"
 #include "ocr/OcrWorker.hpp"
+#include "sensor/SensorLinkManager.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 #include "util/Logger.hpp"
 
@@ -181,6 +183,65 @@ int main() {
         return 1;
     }
 
+    // 화재 후보 경로: STM32 --UART--> SensorLinkManager --콜백--> FireAlarmManager
+    //                 --콜백--> MqttEventBridge::publish --> Qt.
+    // Service 계층이 Core 를 include 하지 않도록 배선은 여기(main)에서만 한다.
+    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
+    std::unique_ptr<sensor::SensorLinkManager> sensor_link;
+
+    if (config.fire_alarm_enabled) {
+        auto bindings =
+            event::parseFireSensorBindings(config.fire_sensor_slot_map);
+        if (bindings.empty()) {
+            util::logWarn(
+                "FIRE_ALARM_ENABLED but FIRE_SENSOR_SLOT_MAP is empty; "
+                "alarms will be published without a slot_id");
+        }
+
+        fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
+            config.camera_id,
+            config.default_channel_id,
+            config.fire_topic_prefix,
+            std::move(bindings),
+            [&mqtt_bridge](const std::string& topic,
+                           const std::string& payload) {
+                return mqtt_bridge.publish(topic, payload);
+            });
+
+        sensor::SensorLinkConfig link_config;
+        link_config.devicePath = config.fire_uart_device;
+        link_config.baudRate = config.fire_uart_baud;
+        link_config.reopenDelayMs = config.fire_uart_reopen_delay_ms;
+
+        sensor_link = std::make_unique<sensor::SensorLinkManager>(
+            link_config, g_running);
+        sensor_link->setFireHandler(
+            [&fire_alarm_manager](const sensor::FireSensorMessage& message) {
+                event::FireSignal signal;
+                signal.sensorId = message.sensorId;
+                signal.detected =
+                    message.state == sensor::FireSensorState::Detected;
+                signal.occurredAt = message.occurredAt;
+                signal.sourceSequence = message.sequence;
+                signal.sourceTransport = message.transport;
+                signal.rawPayload = message.raw;
+                fire_alarm_manager->onFireSignal(signal);
+            });
+
+        // 주차 점유 신호는 아직 카메라 IVA 경로가 담당하므로 로그만 남긴다.
+        sensor_link->setParkingHandler(
+            [](const sensor::SensorProtocolMessage& message) {
+                util::logLine("SENSOR_UART",
+                              "parking sensor not wired yet: sensor=" +
+                                  message.sensorId);
+            });
+
+        if (!sensor_link->start()) {
+            util::logWarn("fire alarm link disabled");
+            sensor_link.reset();
+        }
+    }
+
     util::logInfo("waiting for camera MQTT events...");
     util::logInfo("press Ctrl+C to stop");
 
@@ -190,6 +251,8 @@ int main() {
     }
 
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
+    // sensor_link 가 mqtt_bridge 를 콜백으로 잡고 있으므로 먼저 멈춘다.
+    if (sensor_link) sensor_link->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
     ocr_worker.stop();
