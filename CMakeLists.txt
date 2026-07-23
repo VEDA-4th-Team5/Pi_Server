@@ -5,7 +5,7 @@ enable_testing()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -20,7 +20,7 @@ file(GLOB_RECURSE SERVER_CPP CONFIGURE_DEPENDS src/*.cpp)
 # 타이머는 별도 타깃(parking-timer-core / parking-timer)으로 빌드하므로 제외.
 list(FILTER SERVER_CPP EXCLUDE REGEX "src/timer/")
 add_executable(pi-server ${SERVER_CPP} src/database/db_manager.c)
-target_include_directories(pi-server PRIVATE include)
+target_include_directories(pi-server PRIVATE include include/uapi)
 target_compile_options(pi-server PRIVATE -Wall -Wextra)
 target_link_libraries(pi-server PRIVATE
     PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
@@ -71,6 +71,20 @@ add_test(NAME parking-domain-test
 add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+
+# /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
+add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
+target_include_directories(parking-alert-ctl PRIVATE include/uapi)
+target_compile_options(parking-alert-ctl PRIVATE -Wall -Wextra -Wpedantic)
+
+add_library(parking-alert-adapter STATIC src/device/LinuxDriverAdapter.cpp)
+target_include_directories(parking-alert-adapter PUBLIC include include/uapi)
+target_compile_options(parking-alert-adapter PRIVATE -Wall -Wextra -Wpedantic)
+
+add_custom_target(parking-alert-module
+    COMMAND ${CMAKE_MAKE_PROGRAM} -C ${CMAKE_SOURCE_DIR}/driver/parking_alert
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building /dev/parking_alert Linux kernel module")
 
 # ---- parking timer (timer_ 프로젝트 통합분) ----
 add_library(parking-timer-core STATIC
