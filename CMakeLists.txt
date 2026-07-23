@@ -51,6 +51,7 @@ set(SENSOR_PARKING_SOURCES
     src/parking/ParkingSensorSequenceGuard.cpp
     src/parking/ParkingOccupancySession.cpp
     src/parking/ParkingSlotManager.cpp
+    src/parking/ParkingSessionWorker.cpp
     src/parking/ActiveParkingSessionIndex.cpp)
 
 add_executable(parking-domain-test
@@ -64,6 +65,12 @@ add_executable(sensor-parking-pipeline-test
     ${SENSOR_PARKING_SOURCES})
 target_include_directories(sensor-parking-pipeline-test PRIVATE include)
 target_compile_options(sensor-parking-pipeline-test PRIVATE -Wall -Wextra)
+
+add_executable(parking-session-worker-test
+    tests/unit/ParkingSessionWorkerTest.cpp
+    ${SENSOR_PARKING_SOURCES})
+target_include_directories(parking-session-worker-test PRIVATE include)
+target_compile_options(parking-session-worker-test PRIVATE -Wall -Wextra)
 
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
@@ -116,6 +123,8 @@ add_test(NAME parking-domain-test
 add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+add_test(NAME parking-session-worker-test
+    COMMAND parking-session-worker-test)
 
 # ---- parking timer (timer_ 프로젝트 통합분) ----
 add_library(parking-timer-core STATIC

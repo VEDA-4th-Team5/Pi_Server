@@ -42,6 +42,12 @@ struct AppConfig {
     std::string fire_topic_prefix;
     std::string fire_sensor_slot_map;
 
+    // 홀센서 주차 점유 경로 (STM32 UART -> Pi). 화재 경로와 같은 STM32 UART 링크를
+    // 공유하므로 별도 device 설정을 두지 않고 fire_uart_* 를 재사용한다.
+    // 슬롯/센서 매핑은 코드가 아니라 아래 JSON 설정 파일에서 읽는다.
+    bool parking_hall_enabled;
+    std::string parking_slots_config_path;
+
     std::string snapshot_dir;
     std::string db_path;
     std::string gemini_api_key;

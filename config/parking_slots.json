@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "_comment": "예시 시드. 실기기 배치 시 slot_id / sensor_id / camera_bindings 를 실제 값으로 교체한다. sensor_id 는 STM32 가 UART 로 보내는 홀센서 ID(SENSOR:<sensor_id>:OCCUPIED)와 일치해야 한다. camera_bindings 는 카메라 IVA/BestShot 상관에만 쓰이며 홀 세션 생성에는 불필요하므로 비워 둘 수 있다. (출처: hall_ocr_integration/Camera MQTT Capture Protocol 의 HALL01 -> EV01 -> cam01/ch01 예시)",
+  "slots": [
+    {
+      "slot_id": "EV01",
+      "enabled": true,
+      "zone_type": "ev_charging",
+      "sensor_id": "HALL01",
+      "camera_bindings": []
+    },
+    {
+      "slot_id": "EV02",
+      "enabled": true,
+      "zone_type": "ev_charging",
+      "sensor_id": "HALL02",
+      "camera_bindings": []
+    }
+  ]
+}

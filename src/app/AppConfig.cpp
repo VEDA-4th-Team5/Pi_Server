@@ -107,6 +107,12 @@ AppConfig AppConfig::loadFromEnv() {
     // "FIRE01=EV01:ch01,FIRE02=EV02" 형식.
     config.fire_sensor_slot_map = getEnvOrDefault("FIRE_SENSOR_SLOT_MAP", "");
 
+    // 홀센서 주차 점유 경로. 화재와 같은 STM32 UART 링크를 공유한다(fire_uart_* 재사용).
+    config.parking_hall_enabled =
+        getEnvBoolOrDefault("PARKING_HALL_ENABLED", false);
+    config.parking_slots_config_path =
+        getEnvOrDefault("PARKING_SLOTS_CONFIG", "config/parking_slots.json");
+
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
     config.gemini_api_key =
