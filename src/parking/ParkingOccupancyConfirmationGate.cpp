@@ -20,15 +20,19 @@ ParkingOccupancyConfirmationGate::evaluate(
         const auto found = pendingBySlot_.find(event.slotId);
         if (found == pendingBySlot_.end()) {
             // First sighting of this occupancy attempt: start the clock but
-            // do not start a session yet.
-            pendingBySlot_.emplace(event.slotId, Pending{event.occurredAt});
+            // do not start a session yet. receivedMonotonic (steady_clock),
+            // not occurredAt (system_clock) -- see the class comment.
+            pendingBySlot_.emplace(
+                event.slotId, Pending{event.receivedMonotonic});
             return Decision::Suppress;
         }
 
-        if (event.occurredAt - found->second.firstSeenAt >=
+        if (event.receivedMonotonic - found->second.firstSeenAt >=
             confirmThreshold_) {
-            // Held long enough: confirm now. T0 is this event's own
-            // timestamp — the instant Pi actually knows it is real.
+            // Held long enough: confirm now. T0 (occurredAt, wall time) is
+            // this event's own timestamp — the instant Pi actually knows it
+            // is real. Only the hold-time check above used the monotonic
+            // clock; the reported T0 is unaffected.
             pendingBySlot_.erase(found);
             return Decision::Forward;
         }

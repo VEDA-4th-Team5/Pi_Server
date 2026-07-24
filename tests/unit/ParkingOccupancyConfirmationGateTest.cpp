@@ -4,6 +4,9 @@
 // a short OCCUPIED<->VACANT flap during a re-parking maneuver must not start
 // a session, but OCCUPIED held past the threshold must be confirmed exactly
 // once. All timestamps are injected, so the whole policy is deterministic.
+// The gate measures elapsed time on receivedMonotonic (steady_clock), so
+// every event below carries a steady_clock offset in lockstep with its
+// system_clock one -- see ParkingOccupancyConfirmationGate.hpp for why.
 
 #include "parking/ParkingOccupancyConfirmationGate.hpp"
 
@@ -23,12 +26,15 @@ void require(bool condition, const std::string& message) {
 
 parking::ParkingSensorEvent makeEvent(
     parking::ParkingSensorState state,
-    std::chrono::system_clock::time_point at) {
+    std::chrono::system_clock::time_point systemBase,
+    std::chrono::steady_clock::time_point monotonicBase,
+    std::chrono::seconds offset) {
     parking::ParkingSensorEvent event;
     event.slotId = "EV01";
     event.sensorId = "HALL01";
     event.state = state;
-    event.occurredAt = at;
+    event.occurredAt = systemBase + offset;
+    event.receivedMonotonic = monotonicBase + offset;
     return event;
 }
 
@@ -41,25 +47,27 @@ using parking::ParkingSensorState;
 int main() {
     try {
         const auto t0 = std::chrono::system_clock::now();
+        const auto t0m = std::chrono::steady_clock::now();
 
         // 1) Held past the threshold -> confirmed exactly once.
         {
             ParkingOccupancyConfirmationGate gate(std::chrono::seconds(10));
 
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied, t0), false) ==
-                        Decision::Suppress,
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(0)),
+                        false) == Decision::Suppress,
                     "first sighting must not confirm immediately");
 
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied,
-                                 t0 + std::chrono::seconds(9)),
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(9)),
                         false) == Decision::Suppress,
                     "must still be suppressed just under the threshold");
 
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied,
-                                 t0 + std::chrono::seconds(10)),
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(10)),
                         false) == Decision::Forward,
                     "must confirm once the threshold is reached");
         }
@@ -71,12 +79,13 @@ int main() {
             ParkingOccupancyConfirmationGate gate(std::chrono::seconds(10));
 
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied, t0), false) ==
-                        Decision::Suppress,
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(0)),
+                        false) == Decision::Suppress,
                     "first sighting suppressed");
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Vacant,
-                                 t0 + std::chrono::seconds(3)),
+                        makeEvent(ParkingSensorState::Vacant, t0, t0m,
+                                 std::chrono::seconds(3)),
                         false) == Decision::Suppress,
                     "vacant on an unconfirmed slot must not surface a "
                     "completion (nothing was ever started)");
@@ -85,18 +94,18 @@ int main() {
             // start must not confirm even though 12s passed since the very
             // first OCCUPIED.
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied,
-                                 t0 + std::chrono::seconds(4)),
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(4)),
                         false) == Decision::Suppress,
                     "re-entry restarts the confirmation window");
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied,
-                                 t0 + std::chrono::seconds(13)),
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(13)),
                         false) == Decision::Suppress,
                     "only 9s since the restarted window; must not confirm");
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied,
-                                 t0 + std::chrono::seconds(14)),
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(14)),
                         false) == Decision::Forward,
                     "10s since the restarted window; must confirm now");
         }
@@ -107,12 +116,13 @@ int main() {
             ParkingOccupancyConfirmationGate gate(std::chrono::seconds(10));
 
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Occupied, t0), true) ==
-                        Decision::Forward,
+                        makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                 std::chrono::seconds(0)),
+                        true) == Decision::Forward,
                     "already-occupied heartbeat must pass through untouched");
             require(gate.evaluate(
-                        makeEvent(ParkingSensorState::Vacant,
-                                 t0 + std::chrono::seconds(1)),
+                        makeEvent(ParkingSensorState::Vacant, t0, t0m,
+                                 std::chrono::seconds(1)),
                         true) == Decision::Forward,
                     "departure from a confirmed slot must pass through");
         }
@@ -122,13 +132,14 @@ int main() {
         {
             ParkingOccupancyConfirmationGate gate(std::chrono::seconds(10));
             for (int i = 0; i < 5; ++i) {
-                const auto base = t0 + std::chrono::seconds(i * 3);
+                const auto base = std::chrono::seconds(i * 3);
                 require(gate.evaluate(
-                            makeEvent(ParkingSensorState::Occupied, base),
+                            makeEvent(ParkingSensorState::Occupied, t0, t0m,
+                                     base),
                             false) == Decision::Suppress,
                         "flap " + std::to_string(i) + " occupied suppressed");
                 require(gate.evaluate(
-                            makeEvent(ParkingSensorState::Vacant,
+                            makeEvent(ParkingSensorState::Vacant, t0, t0m,
                                      base + std::chrono::seconds(1)),
                             false) == Decision::Suppress,
                         "flap " + std::to_string(i) + " vacant suppressed");

@@ -20,6 +20,15 @@ namespace parking {
 // opt-in via PARKING_OCCUPANCY_CONFIRM_MS (0 = disabled, matches pre-EVDA-135
 // behavior where the first OCCUPIED immediately becomes T0).
 //
+// The hold-time check is measured on event.receivedMonotonic (steady_clock),
+// not event.occurredAt (system_clock). A Raspberry Pi commonly has no RTC, so
+// the wall clock can jump when NTP syncs while pi-server is already running;
+// a jump mid-window would either wedge the gate open forever (backward jump:
+// the duration goes negative and never reaches the threshold) or confirm a
+// flap instantly (forward jump). steady_clock cannot be adjusted like that.
+// The confirmed session's T0 still comes from occurredAt -- only the
+// duration measurement uses the monotonic clock.
+//
 // Pure and deterministic: no thread, no clock of its own — the caller
 // supplies event timestamps, so it is unit-testable without sleeping.
 // Not thread-safe by itself; ParkingSessionWorker holds its own mutex around
@@ -43,7 +52,7 @@ public:
 
 private:
     struct Pending {
-        std::chrono::system_clock::time_point firstSeenAt;
+        std::chrono::steady_clock::time_point firstSeenAt;
     };
 
     std::chrono::milliseconds confirmThreshold_;
