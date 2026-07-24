@@ -50,6 +50,16 @@ enum class DispatchOutcome {
 // timer thread and performs the actual publish through an injected callback,
 // keeping MQTT out of Core (same boundary style as FireAlarmManager).
 //
+// All deadline math (scheduledFor, due(), onDispatchResult(), nextDeadline())
+// runs on steady_clock, not system_clock: a Pi without an RTC can have its
+// wall clock jump when NTP syncs while pi-server is already running, which
+// would otherwise fire captures early/late or never. The session's T0
+// (ParkingOccupancySession::startedAt, system_clock) is still what gets
+// reported as CaptureRequest::sessionStartedAt for logs/MQTT -- only the
+// "when is this due" bookkeeping is monotonic. See
+// ParkingOccupancyConfirmationGate.hpp for the same split applied to the
+// confirm-gate hold-time check.
+//
 // Thread-safety: every public method is mutex-guarded so the session worker
 // thread (onTransition) and the runtime timer thread (due/onDispatchResult)
 // can call concurrently.
@@ -74,16 +84,16 @@ public:
     // returned request is marked awaiting-response and will not surface again
     // until onDispatchResult() reports back.
     [[nodiscard]] std::vector<CaptureRequest> due(
-        std::chrono::system_clock::time_point now);
+        std::chrono::steady_clock::time_point now);
 
     // Report the dispatch result for a request previously returned by due().
     DispatchOutcome onDispatchResult(
         const CaptureRequest& request,
         bool accepted,
-        std::chrono::system_clock::time_point now);
+        std::chrono::steady_clock::time_point now);
 
     // Earliest scheduledFor across all pending captures, for the timer wait.
-    [[nodiscard]] std::optional<std::chrono::system_clock::time_point>
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
     nextDeadline() const;
 
     [[nodiscard]] std::size_t trackedSessions() const;
@@ -99,13 +109,15 @@ private:
         CaptureReason reason;
         Phase phase{Phase::Pending};
         int attempt{1};
-        std::chrono::system_clock::time_point scheduledFor;
+        std::chrono::steady_clock::time_point scheduledFor;
     };
 
     struct SessionState {
         std::string slotId;
         std::string sensorId;
-        std::chrono::system_clock::time_point startedAt;
+        std::chrono::system_clock::time_point startedAt;  // T0, wall time
+        std::chrono::steady_clock::time_point
+            startedAtMonotonic;  // deadline anchor, steady_clock
         CaptureTarget target;
         std::vector<CaptureState> captures;
     };

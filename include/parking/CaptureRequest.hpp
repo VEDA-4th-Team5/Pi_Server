@@ -49,8 +49,11 @@ struct CaptureRequest {
     CaptureTarget target;
     CaptureReason reason{CaptureReason::HallOccupied30s};
     int attempt{1};  // 1-based: 1 = first try, then retries.
-    std::chrono::system_clock::time_point sessionStartedAt;  // T0
-    std::chrono::system_clock::time_point scheduledFor;      // due wall-clock
+    std::chrono::system_clock::time_point sessionStartedAt;  // T0, wall time
+    // Due time on steady_clock -- immune to wall-clock/NTP jumps while
+    // pi-server is running. Not meaningful as a calendar time; only ever
+    // compared against another steady_clock reading.
+    std::chrono::steady_clock::time_point scheduledFor;
     std::chrono::milliseconds responseTimeout{3000};
 };
 

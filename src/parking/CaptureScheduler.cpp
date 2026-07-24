@@ -48,6 +48,7 @@ CaptureScheduler::ScheduleReport CaptureScheduler::onTransition(
     state.slotId = slotId;
     state.sensorId = occupancy.sensorId();
     state.startedAt = occupancy.startedAt();
+    state.startedAtMonotonic = occupancy.startedAtMonotonic();
     state.target = std::move(*target);
 
     for (const auto& offset : config_.offsets) {
@@ -55,7 +56,7 @@ CaptureScheduler::ScheduleReport CaptureScheduler::onTransition(
         capture.reason = offset.reason;
         capture.phase = Phase::Pending;
         capture.attempt = 1;
-        capture.scheduledFor = state.startedAt + offset.delay;
+        capture.scheduledFor = state.startedAtMonotonic + offset.delay;
         state.captures.push_back(capture);
     }
 
@@ -65,7 +66,7 @@ CaptureScheduler::ScheduleReport CaptureScheduler::onTransition(
 }
 
 std::vector<CaptureRequest> CaptureScheduler::due(
-    std::chrono::system_clock::time_point now) {
+    std::chrono::steady_clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<CaptureRequest> ready;
 
@@ -85,7 +86,7 @@ std::vector<CaptureRequest> CaptureScheduler::due(
 DispatchOutcome CaptureScheduler::onDispatchResult(
     const CaptureRequest& request,
     bool accepted,
-    std::chrono::system_clock::time_point now) {
+    std::chrono::steady_clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto sessionIt = sessions_.find(request.sessionId);
@@ -127,10 +128,10 @@ DispatchOutcome CaptureScheduler::onDispatchResult(
     return outcome;
 }
 
-std::optional<std::chrono::system_clock::time_point>
+std::optional<std::chrono::steady_clock::time_point>
 CaptureScheduler::nextDeadline() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::optional<std::chrono::system_clock::time_point> earliest;
+    std::optional<std::chrono::steady_clock::time_point> earliest;
 
     for (const auto& [sessionId, session] : sessions_) {
         (void)sessionId;

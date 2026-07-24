@@ -91,7 +91,7 @@ void CaptureSchedulerRuntime::run() {
             if (!next.has_value()) {
                 condition_.wait(lock);
             } else {
-                const auto now = std::chrono::system_clock::now();
+                const auto now = std::chrono::steady_clock::now();
                 if (*next > now) {
                     condition_.wait_until(lock, *next);
                 }
@@ -102,7 +102,7 @@ void CaptureSchedulerRuntime::run() {
             }
         }
 
-        const auto now = std::chrono::system_clock::now();
+        const auto now = std::chrono::steady_clock::now();
         std::vector<CaptureRequest> ready = scheduler_.due(now);
 
         for (const auto& request : ready) {
@@ -122,7 +122,7 @@ void CaptureSchedulerRuntime::run() {
             }
 
             const DispatchOutcome outcome = scheduler_.onDispatchResult(
-                request, accepted, std::chrono::system_clock::now());
+                request, accepted, std::chrono::steady_clock::now());
 
             switch (outcome) {
                 case DispatchOutcome::Done:
