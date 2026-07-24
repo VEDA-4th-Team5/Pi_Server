@@ -49,6 +49,22 @@ parking::ParkingSensorEvent makeEvent(
     return event;
 }
 
+// For the confirmation-gate integration case below: the gate measures
+// elapsed time on receivedMonotonic (steady_clock), not occurredAt, so a
+// deterministic test must set both in lockstep rather than letting
+// receivedMonotonic default to the real "now" at construction time.
+parking::ParkingSensorEvent makeEventWithMonotonic(
+    std::string slotId,
+    std::string sensorId,
+    parking::ParkingSensorState state,
+    std::chrono::system_clock::time_point at,
+    std::chrono::steady_clock::time_point monotonicAt) {
+    parking::ParkingSensorEvent event =
+        makeEvent(std::move(slotId), std::move(sensorId), state, at);
+    event.receivedMonotonic = monotonicAt;
+    return event;
+}
+
 }  // namespace
 
 int main() {
@@ -158,6 +174,53 @@ int main() {
         require(changes.size() == 3,
                 "expected exactly 3 changed transitions, got " +
                     std::to_string(changes.size()));
+
+        // 7) 확정 유예시간(threshold) 통합 검증: 별도 워커(threshold=10s)로
+        //    재정렬 flap이 세션을 만들지 않고, 10초 이상 유지된 OCCUPIED만
+        //    확정되어 그 이벤트의 시각이 T0가 됨을 확인한다. 기본 worker(위)는
+        //    threshold=0(비활성)으로 이 검증과 독립적이다. 게이트는 receivedMonotonic
+        //    (steady_clock)으로 경과시간을 재므로, occurredAt 뿐 아니라
+        //    receivedMonotonic도 같은 오프셋으로 맞춰 주입한다.
+        {
+            std::vector<parking::ParkingSlotConfig> gatedConfigs;
+            gatedConfigs.push_back(makeSlot("EV01", "HALL01"));
+            parking::ParkingSessionWorker gatedWorker(
+                gatedConfigs, std::chrono::seconds(10));
+
+            const auto t0m = std::chrono::steady_clock::now();
+
+            // 재정렬: OCCUPIED -> (3s) VACANT. 세션이 생기면 안 된다.
+            const auto flapOccupied =
+                gatedWorker.onSensorEvent(makeEventWithMonotonic(
+                    "EV01", "HALL01", ParkingSensorState::Occupied, t0, t0m));
+            require(flapOccupied.has_value() && !flapOccupied->changed(),
+                    "flap occupied must not start a session before threshold");
+            const auto flapVacant =
+                gatedWorker.onSensorEvent(makeEventWithMonotonic(
+                    "EV01", "HALL01", ParkingSensorState::Vacant,
+                    t0 + std::chrono::seconds(3),
+                    t0m + std::chrono::seconds(3)));
+            require(flapVacant.has_value() && !flapVacant->changed(),
+                    "flap vacant on an unconfirmed slot must not complete "
+                    "anything");
+
+            // 진짜 주차: OCCUPIED가 10초 이상 유지 -> 그 순간이 T0로 확정.
+            const auto offset =
+                std::chrono::seconds(4) + std::chrono::seconds(10);
+            const auto confirmAt = t0 + offset;
+            const auto confirmed =
+                gatedWorker.onSensorEvent(makeEventWithMonotonic(
+                    "EV01", "HALL01", ParkingSensorState::Occupied, confirmAt,
+                    t0m + offset));
+            require(confirmed.has_value() &&
+                        confirmed->code ==
+                            ParkingTransitionCode::SessionStarted,
+                    "sustained occupied must confirm a session");
+            require(confirmed->session.has_value() &&
+                        confirmed->session->startedAt() == confirmAt,
+                    "T0 must be the confirming event's own timestamp, not "
+                    "the first (discarded) flap");
+        }
 
         std::cout << "[PASS] parking session worker"
                   << " slots=" << worker.slotCount()

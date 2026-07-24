@@ -20,6 +20,12 @@ struct SensorProtocolMessage {
         std::chrono::system_clock::now()};
     std::optional<std::uint64_t> sequence;
     std::string transport{"text-test"};
+
+    // See ParkingSensorEvent::receivedMonotonic: a steady_clock reading taken
+    // at the same receive instant, carried through purely for duration
+    // measurements immune to wall-clock jumps.
+    std::chrono::steady_clock::time_point receivedMonotonic{
+        std::chrono::steady_clock::now()};
 };
 
 }  // namespace sensor
