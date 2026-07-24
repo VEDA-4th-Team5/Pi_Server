@@ -159,6 +159,43 @@ int main() {
                 "expected exactly 3 changed transitions, got " +
                     std::to_string(changes.size()));
 
+        // 7) 확정 유예시간(threshold) 통합 검증: 별도 워커(threshold=10s)로
+        //    재정렬 flap이 세션을 만들지 않고, 10초 이상 유지된 OCCUPIED만
+        //    확정되어 그 이벤트의 시각이 T0가 됨을 확인한다. 기본 worker(위)는
+        //    threshold=0(비활성)으로 이 검증과 독립적이다.
+        {
+            std::vector<parking::ParkingSlotConfig> gatedConfigs;
+            gatedConfigs.push_back(makeSlot("EV01", "HALL01"));
+            parking::ParkingSessionWorker gatedWorker(
+                gatedConfigs, std::chrono::seconds(10));
+
+            // 재정렬: OCCUPIED -> (3s) VACANT. 세션이 생기면 안 된다.
+            const auto flapOccupied = gatedWorker.onSensorEvent(
+                makeEvent("EV01", "HALL01", ParkingSensorState::Occupied, t0));
+            require(flapOccupied.has_value() && !flapOccupied->changed(),
+                    "flap occupied must not start a session before threshold");
+            const auto flapVacant = gatedWorker.onSensorEvent(makeEvent(
+                "EV01", "HALL01", ParkingSensorState::Vacant,
+                t0 + std::chrono::seconds(3)));
+            require(flapVacant.has_value() && !flapVacant->changed(),
+                    "flap vacant on an unconfirmed slot must not complete "
+                    "anything");
+
+            // 진짜 주차: OCCUPIED가 10초 이상 유지 -> 그 순간이 T0로 확정.
+            const auto confirmAt = t0 + std::chrono::seconds(4) +
+                                    std::chrono::seconds(10);
+            const auto confirmed = gatedWorker.onSensorEvent(makeEvent(
+                "EV01", "HALL01", ParkingSensorState::Occupied, confirmAt));
+            require(confirmed.has_value() &&
+                        confirmed->code ==
+                            ParkingTransitionCode::SessionStarted,
+                    "sustained occupied must confirm a session");
+            require(confirmed->session.has_value() &&
+                        confirmed->session->startedAt() == confirmAt,
+                    "T0 must be the confirming event's own timestamp, not "
+                    "the first (discarded) flap");
+        }
+
         std::cout << "[PASS] parking session worker"
                   << " slots=" << worker.slotCount()
                   << " session=" << sessionId

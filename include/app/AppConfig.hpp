@@ -48,6 +48,20 @@ struct AppConfig {
     bool parking_hall_enabled;
     std::string parking_slots_config_path;
 
+    // OCCUPIED 확정(T0) 유예시간. 0(기본)이면 첫 OCCUPIED가 즉시 T0가 되는
+    // 기존 동작. 재정렬 중 짧은 OCCUPIED<->VACANT flapping을 거르려면 켠다
+    // (예: 10000 = 10초). STM32 하드웨어 디바운스와는 별개의 Pi측 정책이다.
+    int parking_occupancy_confirm_ms;
+
+    // 입차 후 촬영 스케줄러 (T0+30s / T0+60s). 카메라 촬영 규약(EVDA-138)이
+    // 아직 미확정이라 토픽/페이로드는 draft 이며 기본 비활성이다. 켜면 홀 세션
+    // 시작 시 두 번의 촬영 요청을 예약해 아래 prefix 로 발행한다.
+    bool capture_sched_enabled;
+    std::string capture_topic_prefix;
+    int capture_response_timeout_ms;
+    int capture_retry_interval_ms;
+    int capture_max_retries;
+
     std::string snapshot_dir;
     std::string db_path;
     std::string gemini_api_key;
