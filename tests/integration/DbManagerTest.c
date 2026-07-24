@@ -14,16 +14,19 @@ int main(int argc, char **argv)
      * 전달받은 DB를 변경하므로 운영 DB가 아닌 초기화된 테스트 DB에서 실행해야 한다. */
     int vehicle_id = -1;
     int is_ev = -1;
+    int is_phev = -1;
     int session_id = -1;
     int failed = 0;
 
     const char *db_path = argc > 1 ? argv[1] : "data/db/test_parking.db";
     if (check("db_open", db_open(db_path)) < 0) return 1;
     if (check("db_get_vehicle_by_plate",
-              db_get_vehicle_by_plate("12가3456", &vehicle_id, &is_ev)) < 0) {
+              db_get_vehicle_by_plate("12가3456", &vehicle_id, &is_ev,
+                                      &is_phev)) < 0) {
         failed = 1;
     } else {
-        printf("차량 조회: vehicle_id=%d, is_ev=%d\n", vehicle_id, is_ev);
+        printf("차량 조회: vehicle_id=%d, is_ev=%d, is_phev=%d\n",
+               vehicle_id, is_ev, is_phev);
     }
     if (check("db_update_slot_status",
               db_update_slot_status("P01", "OCCUPIED")) < 0) failed = 1;

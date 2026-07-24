@@ -1,5 +1,6 @@
 #include "app/AppConfig.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -96,6 +97,21 @@ AppConfig AppConfig::loadFromEnv() {
     config.mqtt_event_sub_topic = getEnvOrDefault("CAMERA_EVENT_SUB_TOPIC", "+/onvif-ej/#");
     config.qt_event_topic_prefix = getEnvOrDefault("QT_EVENT_TOPIC_PREFIX", "parking/camera");
     config.default_channel_id = getEnvOrDefault("DEFAULT_CHANNEL_ID", "ch01");
+    config.hall_mqtt_input_enabled =
+        getEnvBoolOrDefault("HALL_MQTT_INPUT_ENABLED", true);
+    config.hall_mqtt_topic =
+        getEnvOrDefault("HALL_MQTT_TOPIC", "parking/sensor/hall");
+    config.parking_slot_config_path =
+        getEnvOrDefault("PARKING_SLOT_CONFIG", "config/parking_slots.json");
+    config.sensor_link_mode = getEnvOrDefault("SENSOR_LINK_MODE", "off");
+    config.sensor_uart_device =
+        getEnvOrDefault("SENSOR_UART_DEVICE", "/dev/ttyAMA0");
+    config.sensor_uart_baud_rate =
+        getEnvIntOrDefault("SENSOR_UART_BAUD", 115200);
+    config.sensor_uart_read_timeout_ms =
+        std::max(1, getEnvIntOrDefault("SENSOR_UART_READ_TIMEOUT_MS", 250));
+    config.sensor_uart_reconnect_ms =
+        std::max(1, getEnvIntOrDefault("SENSOR_UART_RECONNECT_MS", 1000));
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
@@ -125,6 +141,11 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("GEMINI_CONNECT_TIMEOUT_SEC", 5);
     config.gemini_request_timeout_sec =
         getEnvIntOrDefault("GEMINI_REQUEST_TIMEOUT_SEC", 30);
+
+    config.parking_timer_enabled =
+        getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
+    config.parking_timeout_seconds =
+        std::max(1, getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600));
 
     config.http_api_enabled = getEnvBoolOrDefault("HTTP_API_ENABLED", true);
     config.http_listen_address = getEnvOrDefault("HTTP_LISTEN_ADDRESS", "0.0.0.0");
@@ -162,15 +183,16 @@ AppConfig AppConfig::loadFromEnv() {
     for (int i = 1; i <= 4; ++i) {
         std::ostringstream slot;
         slot << "EV" << std::setw(2) << std::setfill('0') << i;
-        std::ostringstream channel;
-        channel << "ch" << std::setw(2) << std::setfill('0') << i;
+        // 현재 설치에서는 ch01 한 영상의 네 ROI가 EV01~EV04를 담당한다.
+        // 향후 채널 확장 시 IVA_EVxx_CHANNEL_ID로 슬롯별 override한다.
+        const std::string channel = "ch01";
         const std::string prefix = "IVA_" + slot.str() + "_";
 
         config.iva_areas.push_back({
             slot.str(),
             getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(), slot.str(),
                                  ".env.iva.local"),
-            getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel.str(),
+            getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel,
                                  ".env.iva.local"),
             getEnvDoubleOrDefault((prefix + "ROI_X").c_str(), 0.0),
             getEnvDoubleOrDefault((prefix + "ROI_Y").c_str(), 0.0),

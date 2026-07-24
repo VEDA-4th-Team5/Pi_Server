@@ -39,10 +39,12 @@ bool TimerManager::LaterDeadline::operator()(const TimerItem& left,
 TimerManager::TimerManager(EventDatabase& database,
                            ViolationCallback callback,
                            ErrorCallback error_callback,
-                           std::mutex* transition_mutex)
+                           std::mutex* transition_mutex,
+                           EvidenceProvider evidence_provider)
     : database_(database),
       callback_(std::move(callback)),
       error_callback_(std::move(error_callback)),
+      evidence_provider_(std::move(evidence_provider)),
       transition_mutex_(transition_mutex) {
     // ctor body에 도달한 뒤 worker를 시작해야 stopping_/queue_/callback을 초기화 전에
     // 읽는 경쟁을 피할 수 있다. worker 최외곽에서도 예외가 프로세스를 끝내지 못하게 한다.
@@ -184,8 +186,22 @@ void TimerManager::processExpired(TimerItem item) {
         if (item.violation_at.empty()) {
             item.violation_at = utcNow();
         }
-        const auto image_path = "snapshots/" + item.car_number + "_" +
-                                std::to_string(item.log_id) + "_violation.jpg";
+        std::string image_path;
+        if (evidence_provider_) {
+            try {
+                image_path = evidence_provider_(
+                    item.log_id, item.slot_id, item.car_number);
+            } catch (const std::exception& error) {
+                reportError(item, "violation Snapshot failed: " +
+                                  std::string(error.what()));
+            } catch (...) {
+                reportError(item, "violation Snapshot failed: unknown error");
+            }
+        } else {
+            // 독립 CLI와 기존 테스트는 카메라가 없으므로 호환용 논리 경로를 사용한다.
+            image_path = "snapshots/" + item.car_number + "_" +
+                         std::to_string(item.log_id) + "_violation.jpg";
+        }
 
         bool marked{};
         try {

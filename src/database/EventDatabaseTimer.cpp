@@ -174,7 +174,8 @@ constexpr std::string_view kLogSelect =
     "CASE s.status WHEN 'ACTIVE' THEN 'PARKED' WHEN 'ENDED' THEN 'DEPARTS' "
     "ELSE s.status END, s.entry_time, s.violation_at, s.exit_time, "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
-    "AND i.enhancement_type='TIMER_ENTRY' ORDER BY i.image_id LIMIT 1), "
+    "AND i.enhancement_type IN ('TIMER_ENTRY','HALL_ENTRY','BESTSHOT_VEHICLE') "
+    "ORDER BY i.image_id LIMIT 1), "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
     "AND i.enhancement_type='TIMER_VIOLATION' ORDER BY i.image_id DESC LIMIT 1), "
     "CASE WHEN s.exit_time IS NULL THEN 0 ELSE 1 END FROM PARKING_SESSION s ";
@@ -430,6 +431,13 @@ std::optional<LogRecord> EventDatabase::departActiveBySlot(
         if (sqlite3_changes(db_) != 1) {
             throw std::runtime_error("active parking log changed concurrently");
         }
+
+        Statement slot_statement(
+            db_, "UPDATE PARKING_SLOT SET status='VACANT', updated_at=? "
+                 "WHERE slot_id=?;");
+        slot_statement.bindText(1, departed_at);
+        slot_statement.bindText(2, slot_id);
+        requireDone(db_, slot_statement.get());
 
         // 호출자와 이벤트 발행부가 최종 상태를 그대로 사용할 수 있도록 같은 트랜잭션에서 읽는다.
         Statement result_statement(db_, std::string{kLogSelect} +

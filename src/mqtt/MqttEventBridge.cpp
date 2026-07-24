@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <utility>
 
 namespace mqtt {
 
@@ -53,7 +54,8 @@ MqttEventBridge::MqttEventBridge(
     database::EventDatabase& database,
     snapshot::SnapshotStorage& snapshot_storage,
     parking::ParkingTriggerCoordinator& trigger_coordinator,
-    ocr::OcrWorker& ocr_worker
+    ocr::OcrWorker& ocr_worker,
+    SensorMessageHandler sensor_message_handler
 )
     : config_(config),
       channels_(channels),
@@ -61,6 +63,7 @@ MqttEventBridge::MqttEventBridge(
       snapshot_storage_(snapshot_storage),
       trigger_coordinator_(trigger_coordinator),
       ocr_worker_(ocr_worker),
+      sensor_message_handler_(std::move(sensor_message_handler)),
       mosq_(nullptr) {
 }
 
@@ -89,6 +92,16 @@ bool MqttEventBridge::start() {
     if (rc != MOSQ_ERR_SUCCESS) {
         util::logError(std::string("MQTT connect failed: ") + mosquitto_strerror(rc));
         return false;
+    }
+
+    if (config_.hall_mqtt_input_enabled) {
+        rc = mosquitto_subscribe(
+            mosq_, nullptr, config_.hall_mqtt_topic.c_str(), 1);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            util::logError(std::string("Hall MQTT subscribe failed: ") +
+                           mosquitto_strerror(rc));
+            return false;
+        }
     }
 
     rc = mosquitto_subscribe(
@@ -121,6 +134,8 @@ bool MqttEventBridge::start() {
     }
 
     util::logInfo("MQTT subscribed: " + config_.mqtt_event_sub_topic);
+    if (config_.hall_mqtt_input_enabled)
+        util::logInfo("Hall MQTT subscribed: " + config_.hall_mqtt_topic);
 
     return true;
 }
@@ -163,6 +178,13 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
             static_cast<const char*>(message->payload),
             message->payloadlen
         );
+    }
+
+
+    if (config_.hall_mqtt_input_enabled &&
+        raw_topic == config_.hall_mqtt_topic) {
+        if (sensor_message_handler_) sensor_message_handler_(raw_payload);
+        return;
     }
 
     // 카메라마다 다른 raw topic을 서버 내부의 공통 이벤트 형식으로 정규화한다.
@@ -233,7 +255,7 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
 
         std::string qt_topic = config_.qt_event_topic_prefix + "/" +
             config_.camera_id + "/" + channel->channel_id + "/event";
-        publish(qt_topic, payload_json);
+        publish(qt_topic, payload_json, 0, false);
         util::logLine("IVA_SNAPSHOT", "slot=" + area->slot_id +
                       " area=" + area->area_name +
                       " channel=" + area->channel_id +
@@ -251,7 +273,9 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
 
 bool MqttEventBridge::publish(
     const std::string& topic,
-    const std::string& payload
+    const std::string& payload,
+    const int qos,
+    const bool retain
 ) {
     if (!mosq_) {
         return false;
@@ -263,8 +287,8 @@ bool MqttEventBridge::publish(
         topic.c_str(),
         static_cast<int>(payload.size()),
         payload.c_str(),
-        0,
-        false
+        qos,
+        retain
     );
 
     if (rc != MOSQ_ERR_SUCCESS) {
@@ -273,6 +297,13 @@ bool MqttEventBridge::publish(
     }
 
     return true;
+}
+
+bool MqttEventBridge::publishQtEvent(const std::string& topic,
+                                     const std::string& payload,
+                                     const int qos,
+                                     const bool retain) {
+    return publish(topic, payload, qos, retain);
 }
 
 }

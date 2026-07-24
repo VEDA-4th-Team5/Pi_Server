@@ -32,6 +32,14 @@ struct AppConfig {
     std::string mqtt_event_sub_topic;
     std::string qt_event_topic_prefix;
     std::string default_channel_id;
+    bool hall_mqtt_input_enabled;
+    std::string hall_mqtt_topic;
+    std::string parking_slot_config_path;
+    std::string sensor_link_mode;
+    std::string sensor_uart_device;
+    int sensor_uart_baud_rate;
+    int sensor_uart_read_timeout_ms;
+    int sensor_uart_reconnect_ms;
 
     std::string snapshot_dir;
     std::string db_path;
@@ -52,6 +60,9 @@ struct AppConfig {
     int iva_duplicate_suppression_ms;
     int gemini_connect_timeout_sec;
     int gemini_request_timeout_sec;
+
+    bool parking_timer_enabled;
+    int parking_timeout_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

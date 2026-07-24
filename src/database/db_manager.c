@@ -116,13 +116,15 @@ void db_close(void)
     g_db = NULL;
 }
 
-int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev)
+int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id,
+                            int *is_ev, int *is_phev)
 {
     static const char *sql =
-        "SELECT vehicle_id, is_ev FROM VEHICLE WHERE plate_number = ?;";
+        "SELECT vehicle_id, is_ev, is_phev FROM VEHICLE WHERE plate_number = ?;";
     sqlite3_stmt *stmt = NULL;
     int rc;
-    if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL) return -1;
+    if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL ||
+        is_phev == NULL) return -1;
     if (prepare(&stmt, sql, "차량 조회") < 0) return -2;
     if (sqlite3_bind_text(stmt, 1, plate_number, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
         fprintf(stderr, "[DB] 차량 조회 bind 실패: %s\n", sqlite3_errmsg(g_db));
@@ -142,6 +144,7 @@ int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_e
     }
     *vehicle_id = sqlite3_column_int(stmt, 0);
     *is_ev = sqlite3_column_int(stmt, 1);
+    *is_phev = sqlite3_column_int(stmt, 2);
     sqlite3_finalize(stmt);
     return 0;
 }
@@ -334,7 +337,8 @@ int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
         "COALESCE(p.updated_at,''),s.session_id,COALESCE(s.plate_number,''),"
         "COALESCE(s.entry_time,''),v.is_ev FROM PARKING_SLOT p "
         "LEFT JOIN PARKING_SESSION s ON s.session_id=(SELECT session_id FROM "
-        "PARKING_SESSION WHERE slot_id=p.slot_id AND status='ACTIVE' "
+        "PARKING_SESSION WHERE slot_id=p.slot_id "
+        "AND status IN ('ACTIVE','VIOLATION') "
         "ORDER BY entry_time DESC,session_id DESC LIMIT 1) "
         "LEFT JOIN VEHICLE v ON v.vehicle_id=s.vehicle_id ORDER BY p.slot_id;";
     static const char *sql_one =
@@ -342,7 +346,8 @@ int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
         "COALESCE(p.updated_at,''),s.session_id,COALESCE(s.plate_number,''),"
         "COALESCE(s.entry_time,''),v.is_ev FROM PARKING_SLOT p "
         "LEFT JOIN PARKING_SESSION s ON s.session_id=(SELECT session_id FROM "
-        "PARKING_SESSION WHERE slot_id=p.slot_id AND status='ACTIVE' "
+        "PARKING_SESSION WHERE slot_id=p.slot_id "
+        "AND status IN ('ACTIVE','VIOLATION') "
         "ORDER BY entry_time DESC,session_id DESC LIMIT 1) "
         "LEFT JOIN VEHICLE v ON v.vehicle_id=s.vehicle_id WHERE p.slot_id=?;";
     sqlite3_stmt *stmt = NULL;
@@ -423,6 +428,19 @@ int db_visit_session_images(int session_id, DbImageVisitor visitor, void *contex
     }
     sqlite3_finalize(stmt);
     return count;
+}
+
+int db_delete_session_images(int session_id)
+{
+    static const char *sql = "DELETE FROM IMAGE_LOG WHERE session_id=?;";
+    sqlite3_stmt *stmt = NULL;
+    if (session_id < 0) return -1;
+    if (prepare(&stmt, sql, "세션 이미지 로그 삭제") < 0) return -2;
+    if (sqlite3_bind_int(stmt, 1, session_id) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return -3;
+    }
+    return finish_update(stmt, "세션 이미지 로그 삭제", 0);
 }
 
 int db_get_image_by_id(int image_id, DbImageRow *row)

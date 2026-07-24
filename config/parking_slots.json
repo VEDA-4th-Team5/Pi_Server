@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "slots": [
+    {"slot_id":"EV01","enabled":true,"zone_type":"ev_charging","sensor_id":"HALL01","camera_bindings":[{"camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","enabled":true,"priority":100}]},
+    {"slot_id":"EV02","enabled":true,"zone_type":"ev_charging","sensor_id":"HALL02","camera_bindings":[{"camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV02","enabled":true,"priority":100}]},
+    {"slot_id":"EV03","enabled":true,"zone_type":"ev_charging","sensor_id":"HALL03","camera_bindings":[{"camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV03","enabled":true,"priority":100}]},
+    {"slot_id":"EV04","enabled":true,"zone_type":"ev_charging","sensor_id":"HALL04","camera_bindings":[{"camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV04","enabled":true,"priority":100}]}
+  ]
+}

@@ -42,7 +42,8 @@ int db_open(const char *path);
 /* 열려 있는 전역 DB 연결을 안전하게 닫는다. */
 void db_close(void);
 /* 번호판으로 등록 차량 ID와 전기차 여부를 조회한다. */
-int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev);
+int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id,
+                            int *is_ev, int *is_phev);
 /* 지정 주차면의 VACANT/OCCUPIED/ERROR 상태를 변경한다. */
 int db_update_slot_status(const char *slot_id, const char *status);
 /* 입차 세션을 만들고 생성된 session_id를 호출자에게 돌려준다. */
@@ -70,6 +71,7 @@ int db_assign_vehicle_to_session(int session_id, int vehicle_id,
 int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
                            void *context);
 int db_visit_session_images(int session_id, DbImageVisitor visitor, void *context);
+int db_delete_session_images(int session_id);
 int db_get_image_by_id(int image_id, DbImageRow *row);
 /* 통합 C++ 저장 계층에서 같은 연결로 transaction/query를 수행할 때 사용한다. */
 struct sqlite3 *db_native_handle(void);

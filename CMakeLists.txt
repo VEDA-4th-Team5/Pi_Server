@@ -72,6 +72,36 @@ add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
 
+add_executable(uart-lora-driver-test
+    tests/unit/UartLoRaDriverTest.cpp
+    src/device/UartDriver.cpp
+    src/device/LoRaDriver.cpp
+    src/device/SensorLinkManager.cpp
+    src/event/SystemEventReporter.cpp
+    src/util/StringUtil.cpp
+    src/util/Logger.cpp)
+target_include_directories(uart-lora-driver-test PRIVATE include)
+target_compile_options(uart-lora-driver-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(uart-lora-driver-test PRIVATE Threads::Threads util)
+add_test(NAME uart-lora-driver-test COMMAND uart-lora-driver-test)
+
+add_executable(system-event-reporter-test
+    tests/unit/SystemEventReporterTest.cpp
+    src/event/SystemEventReporter.cpp
+    src/util/Logger.cpp
+    src/util/StringUtil.cpp)
+target_include_directories(system-event-reporter-test PRIVATE include)
+target_compile_options(system-event-reporter-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(system-event-reporter-test PRIVATE Threads::Threads)
+add_test(NAME system-event-reporter-test COMMAND system-event-reporter-test)
+
+add_executable(parking-link-tool
+    tools/parking_link_tool.cpp
+    src/device/UartDriver.cpp
+    src/device/LoRaDriver.cpp)
+target_include_directories(parking-link-tool PRIVATE include)
+target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
+
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
@@ -100,14 +130,15 @@ add_library(parking-timer-core STATIC
 target_include_directories(parking-timer-core PUBLIC include)
 target_compile_options(parking-timer-core PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-set_target_properties(parking-timer-core PROPERTIES CXX_STANDARD 20)
 target_link_libraries(parking-timer-core PUBLIC sqlite3 Threads::Threads)
+
+# 메인 서버에서도 동일한 타이머 코어를 사용한다. parking-timer 독립 실행 파일도 유지한다.
+target_link_libraries(pi-server PRIVATE parking-timer-core)
 
 add_executable(parking-timer src/timer/main.cpp)
 target_link_libraries(parking-timer PRIVATE parking-timer-core)
 target_compile_options(parking-timer PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-set_target_properties(parking-timer PROPERTIES CXX_STANDARD 20)
 target_compile_definitions(parking-timer PRIVATE
     PARKING_TIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
@@ -120,10 +151,28 @@ add_executable(parking-timer-tests tests/timer/timer_tests.cpp)
 target_link_libraries(parking-timer-tests PRIVATE parking-timer-core)
 target_compile_options(parking-timer-tests PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-set_target_properties(parking-timer-tests PROPERTIES CXX_STANDARD 20)
 target_compile_definitions(parking-timer-tests PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
+
+# 카메라/UART 없이 홀센서 입력부터 OCR 대역과 장기점유 타이머까지 잇는 통합 테스트.
+add_executable(hall-timer-integration-test
+    tests/integration/HallTimerIntegrationTest.cpp
+    src/sensor/HallParkingService.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/event/SystemEventReporter.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp
+    ${SENSOR_PARKING_SOURCES})
+target_include_directories(hall-timer-integration-test PRIVATE include)
+target_compile_options(hall-timer-integration-test PRIVATE -Wall -Wextra)
+target_link_libraries(hall-timer-integration-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV)
+target_compile_definitions(hall-timer-integration-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME hall-timer-integration-test
+    COMMAND hall-timer-integration-test
+            ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
 
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
@@ -136,3 +185,9 @@ target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE
     PkgConfig::HTTPLIB sqlite3 Threads::Threads)
 add_test(NAME http-api-test COMMAND http-api-test)
+
+# 사람이 관리하는 코드 가이드를 PDF로 생성한다.
+add_custom_target(docs
+    COMMAND ${CMAKE_SOURCE_DIR}/tools/build_docs.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Generating Pi Server code guide PDF")
