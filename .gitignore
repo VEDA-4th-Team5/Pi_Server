@@ -14,3 +14,12 @@ build/
 cmake-build/
 *.o
 *.d
+# Linux out-of-tree kernel module build products
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
