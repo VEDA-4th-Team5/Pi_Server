@@ -125,6 +125,37 @@ AppConfig AppConfig::loadFromEnv() {
     config.capture_max_retries =
         std::max(0, getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2));
 
+    config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
+    config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");
+    config.fire_uart_baud = getEnvIntOrDefault("FIRE_UART_BAUD", 115200);
+    config.fire_uart_reopen_delay_ms =
+        getEnvIntOrDefault("FIRE_UART_REOPEN_DELAY_MS", 2000);
+    config.fire_topic_prefix =
+        getEnvOrDefault("FIRE_TOPIC_PREFIX", "parking/fire");
+    // "FIRE01=EV01:ch01,FIRE02=EV02" 형식.
+    config.fire_sensor_slot_map = getEnvOrDefault("FIRE_SENSOR_SLOT_MAP", "");
+
+    // 홀센서 주차 점유 경로. 화재와 같은 STM32 UART 링크를 공유한다(fire_uart_* 재사용).
+    config.parking_hall_enabled =
+        getEnvBoolOrDefault("PARKING_HALL_ENABLED", false);
+    config.parking_slots_config_path =
+        getEnvOrDefault("PARKING_SLOTS_CONFIG", "config/parking_slots.json");
+
+    // 기본 0(비활성): 첫 OCCUPIED 즉시 T0. 켜려면 예: 10000(10초)으로 설정.
+    config.parking_occupancy_confirm_ms =
+        getEnvIntOrDefault("PARKING_OCCUPANCY_CONFIRM_MS", 0);
+
+    // 입차 후 촬영 스케줄러. 규약(EVDA-138) 확정 전까지 draft 이므로 기본 off.
+    config.capture_sched_enabled =
+        getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);
+    config.capture_topic_prefix =
+        getEnvOrDefault("CAPTURE_TOPIC_PREFIX", "parking/capture");
+    config.capture_response_timeout_ms =
+        getEnvIntOrDefault("CAPTURE_RESPONSE_TIMEOUT_MS", 3000);
+    config.capture_retry_interval_ms =
+        getEnvIntOrDefault("CAPTURE_RETRY_INTERVAL_MS", 2000);
+    config.capture_max_retries = getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2);
+
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
     config.gemini_api_key =

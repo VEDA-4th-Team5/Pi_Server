@@ -2,6 +2,7 @@
 .env.camera.local
 .env.gemini.local
 .env.iva.local
+.env.fire.local
 data/db/parking.db
 data/db/test_*.db
 db_backup_*.db

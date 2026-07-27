@@ -15,6 +15,10 @@ enum class ParkingSessionState {
 /** @brief 한 차량의 입차부터 출차까지 시간과 슬롯/센서 식별자를 보존한다. */
 class ParkingOccupancySession {
 public:
+    // startedAtMonotonic is a steady_clock reading taken at the same instant
+    // as startedAt (see ParkingSensorEvent::receivedMonotonic). startedAt
+    // (system_clock) remains T0 for logs/DB/MQTT; startedAtMonotonic is only
+    // for computing capture deadlines immune to wall-clock jumps.
     ParkingOccupancySession(
         std::string sessionId,
         std::string slotId,

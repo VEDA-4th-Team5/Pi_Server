@@ -29,6 +29,11 @@ sudo apt install -y \
     libsqlite3-dev \
     nlohmann-json3-dev
 
+# MQTT 브로커 (로컬에서 fire-pipeline-tool 등 실행/테스트용)
+sudo apt install -y \
+    mosquitto \
+    mosquitto-clients
+
 echo
 echo "== 설치 완료. 다음 명령으로 빌드하세요:"
 echo "   cmake -B build && make -C build -j4"

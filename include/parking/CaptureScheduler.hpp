@@ -13,15 +13,22 @@
 
 namespace parking {
 
+// One (reason, delay) pair to schedule after T0. Defaults are the T0+30s /
+// T0+60s captures agreed for the hall-occupancy path (EVDA-135).
 struct CaptureOffset {
     CaptureReason reason;
-    std::chrono::milliseconds delay;
+    std::chrono::seconds delay;
 };
 
 struct CaptureSchedulerConfig {
     std::vector<CaptureOffset> offsets{
         {CaptureReason::HallOccupied30s, std::chrono::seconds(30)},
         {CaptureReason::HallOccupied60s, std::chrono::seconds(60)}};
+
+    // Isolation policy (AC): a capture that gets no response within
+    // responseTimeout is retried at retryInterval, at most maxRetries times.
+    // A failing capture never blocks the session or the 1-hour timer; it only
+    // reschedules itself here.
     std::chrono::milliseconds responseTimeout{3000};
     std::chrono::milliseconds retryInterval{2000};
     int maxRetries{2};
@@ -42,24 +49,41 @@ public:
                      CaptureTargetResolver resolver);
 
     struct ScheduleReport {
-        int scheduled{0};
-        bool unmappedSlot{false};
-        bool duplicate{false};
+        int scheduled{0};        // captures newly queued for this transition
+        bool unmappedSlot{false};// SessionStarted but the slot has no target
+        bool duplicate{false};   // session already scheduled (no double-book)
     };
 
+    // Feed one slot-state-machine transition. On SessionStarted it queues the
+    // configured offsets once per session; on SessionCompleted it cancels any
+    // not-yet-sent captures for that session (an emptied slot has no plate to
+    // shoot). Fast and non-blocking so it is safe as a worker sink.
     ScheduleReport onTransition(const ParkingTransitionResult& transition);
+
+    // Every capture whose scheduledFor <= now and that is ready to send. Each
+    // returned request is marked awaiting-response and will not surface again
+    // until onDispatchResult() reports back.
     [[nodiscard]] std::vector<CaptureRequest> due(
         std::chrono::steady_clock::time_point now);
+
+    // Report the dispatch result for a request previously returned by due().
     DispatchOutcome onDispatchResult(
         const CaptureRequest& request,
-        bool published,
+        bool accepted,
         std::chrono::steady_clock::time_point now);
+
+    // Earliest scheduledFor across all pending captures, for the timer wait.
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
     nextDeadline() const;
+
     [[nodiscard]] std::size_t trackedSessions() const;
 
 private:
-    enum class Phase { Pending, Dispatching, Done };
+    enum class Phase {
+        Pending,
+        AwaitingResponse,
+        Done
+    };
 
     struct CaptureState {
         CaptureReason reason;
@@ -71,8 +95,9 @@ private:
     struct SessionState {
         std::string slotId;
         std::string sensorId;
-        std::chrono::system_clock::time_point startedAt;
-        std::chrono::steady_clock::time_point startedAtMonotonic;
+        std::chrono::system_clock::time_point startedAt;  // T0, wall time
+        std::chrono::steady_clock::time_point
+            startedAtMonotonic;  // deadline anchor, steady_clock
         CaptureTarget target;
         std::vector<CaptureState> captures;
     };

@@ -1,6 +1,8 @@
 #pragma once
 
+#include "parking/CaptureRequest.hpp"
 #include "parking/CaptureScheduler.hpp"
+#include "parking/ParkingSlotManager.hpp"
 
 #include <condition_variable>
 #include <functional>
