@@ -1,3 +1,4 @@
+/** @file OcrWorker.cpp @brief 이미지 전처리·Gemini OCR·DB 반영 비동기 worker 구현. */
 #include "ocr/OcrWorker.hpp"
 
 #include "ocr/PlateImageEnhancer.hpp"
@@ -6,14 +7,17 @@
 
 #include <curl/curl.h>
 #include <chrono>
+#include <filesystem>
 
 namespace ocr {
 
 OcrWorker::OcrWorker(GeminiOcrClient client,
                      database::EventDatabase& database,
-                     bool preprocess_enabled)
+                     bool preprocess_enabled,
+                     ResultCallback result_callback)
     : client_(std::move(client)), database_(database),
-      preprocess_enabled_(preprocess_enabled) {
+      preprocess_enabled_(preprocess_enabled),
+      result_callback_(std::move(result_callback)) {
 }
 
 OcrWorker::~OcrWorker() { stop(); }
@@ -54,6 +58,7 @@ void OcrWorker::enqueue(int session_id, const std::string& slot_id,
                         const std::string& image_path) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!started_ || session_id < 0 || image_path.empty()) return;
+    if (canceled_session_ids_.contains(session_id)) return;
     if (queue_.size() >= 32) {
         util::logWarn("Gemini OCR queue full; image skipped: " + image_path);
         return;
@@ -64,6 +69,12 @@ void OcrWorker::enqueue(int session_id, const std::string& slot_id,
     }
     queue_.push({session_id, slot_id, image_path, false, ""});
     condition_.notify_one();
+}
+
+void OcrWorker::cancelSession(const int session_id) {
+    if (session_id < 0) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    canceled_session_ids_.insert(session_id);
 }
 
 void OcrWorker::enqueueScene(const std::string& slot_id,
@@ -87,6 +98,10 @@ void OcrWorker::run() {
             if (stopping_ && queue_.empty()) break;
             task = std::move(queue_.front());
             queue_.pop();
+            if (task.session_id >= 0 &&
+                canceled_session_ids_.contains(task.session_id)) {
+                continue;
+            }
         }
 
         PlatePreprocessResult processed;
@@ -113,6 +128,18 @@ void OcrWorker::run() {
             }
         }
 
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (task.session_id >= 0 &&
+                canceled_session_ids_.contains(task.session_id)) {
+                if (!processed.enhanced_path.empty()) {
+                    std::error_code ignored;
+                    std::filesystem::remove(processed.enhanced_path, ignored);
+                }
+                continue;
+            }
+        }
+
         OcrResult result;
         for (int attempt = 1; attempt <= 3; ++attempt) {
             result = client_.recognizePlate(
@@ -134,6 +161,17 @@ void OcrWorker::run() {
                            " error=" + result.error);
             continue;
         }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (task.session_id >= 0 &&
+                canceled_session_ids_.contains(task.session_id)) {
+                if (!processed.enhanced_path.empty()) {
+                    std::error_code ignored;
+                    std::filesystem::remove(processed.enhanced_path, ignored);
+                }
+                continue;
+            }
+        }
         std::string plate = normalizePlateNumber(result.plate_number);
         if (!result.readable || !isPlausibleKoreanPlate(plate)) {
             util::logWarn("Gemini OCR unreadable: path=" + task.image_path);
@@ -147,6 +185,17 @@ void OcrWorker::run() {
         util::logLine("PLATE_OCR", "slot=" + task.slot_id +
                       " plate=" + plate + " class=" + classification +
                       " confidence=" + std::to_string(result.confidence));
+        if (result_callback_ && task.session_id >= 0) {
+            try {
+                result_callback_({task.session_id, task.slot_id, plate,
+                                  classification, result.confidence});
+            } catch (const std::exception& error) {
+                util::logError("OCR result callback failed: " +
+                               std::string(error.what()));
+            } catch (...) {
+                util::logError("OCR result callback failed: unknown error");
+            }
+        }
     }
 }
 

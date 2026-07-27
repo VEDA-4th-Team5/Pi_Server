@@ -48,6 +48,11 @@ std::string jsonEscape(const std::string_view input) {
 
 }  // namespace
 
+void EventManager::setPublisher(Publisher publisher) {
+    std::lock_guard lock(output_mutex_);
+    publisher_ = std::move(publisher);
+}
+
 /**
  * @brief 관제 시스템으로 보낼 이벤트를 한 줄 JSON 형태로 표준 출력에 발행한다.
  *
@@ -62,18 +67,26 @@ void EventManager::publish(const std::string_view event_type,
                            const std::string_view slot_id,
                            const std::string_view car_number,
                            const std::string_view occurred_at,
-                           const std::string_view detail) {
+                           const std::string_view detail,
+                           const std::int64_t session_id) {
     // 타이머 worker와 CLI 스레드가 동시에 이벤트를 출력할 수 있으므로 한 줄 전체를 잠근다.
-    std::lock_guard lock(output_mutex_);
-    std::cout << "{\"event_type\":\"" << jsonEscape(event_type)
-              << "\",\"slot_id\":\"" << jsonEscape(slot_id)
-              << "\",\"car_number\":\""
-              << jsonEscape(car_number) << "\",\"occurred_at\":\""
-              << jsonEscape(occurred_at) << '"';
-    if (!detail.empty()) {
-        std::cout << ",\"detail\":\"" << jsonEscape(detail) << '"';
+    Publisher publisher;
+    {
+        std::lock_guard lock(output_mutex_);
+        std::cout << "{\"event_type\":\"" << jsonEscape(event_type)
+                  << "\",\"slot_id\":\"" << jsonEscape(slot_id)
+                  << "\",\"car_number\":\""
+                  << jsonEscape(car_number) << "\",\"occurred_at\":\""
+                  << jsonEscape(occurred_at) << '"';
+        if (!detail.empty()) {
+            std::cout << ",\"detail\":\"" << jsonEscape(detail) << '"';
+        }
+        std::cout << "}" << std::endl;
+        publisher = publisher_;
     }
-    std::cout << "}" << std::endl;
+    if (publisher) {
+        publisher(event_type, session_id, slot_id, car_number, occurred_at, detail);
+    }
 }
 
 }  // namespace parking_timer

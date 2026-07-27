@@ -11,19 +11,9 @@
 
 namespace parking {
 
-// Sends one capture request. Returns true when the request was accepted
-// (published/acknowledged) within request.responseTimeout, false otherwise.
-// The implementation lives in the composition root (main.cpp) and is the only
-// place that knows about MQTT, so the scheduler stays I/O-free.
-using CapturePublisher = std::function<bool(const CaptureRequest&)>;
+// true는 카메라 촬영 완료가 아니라 MQTT Broker에 요청 발행이 접수됐음을 뜻한다.
+using CapturePublisher = std::function<bool(const CaptureRequest& request)>;
 
-// Timer thread that turns CaptureScheduler decisions into publisher calls.
-//
-// Registered as a ParkingSessionWorker::TransitionSink: onTransition() only
-// records the schedule and wakes the timer thread, so it never blocks the
-// UART/worker thread. The blocking publish runs here, on this class's own
-// thread, and every publisher call is exception-isolated — a camera/MQTT fault
-// can never stop the session state machine or the 1-hour timer.
 class CaptureSchedulerRuntime {
 public:
     CaptureSchedulerRuntime(CaptureScheduler& scheduler,
@@ -35,8 +25,6 @@ public:
 
     void start();
     void stop();
-
-    // Worker sink entry point. Fast: schedule + notify only.
     void onTransition(const ParkingTransitionResult& transition);
 
 private:
@@ -44,7 +32,6 @@ private:
 
     CaptureScheduler& scheduler_;
     CapturePublisher publisher_;
-
     std::mutex mutex_;
     std::condition_variable condition_;
     std::thread worker_;

@@ -3,50 +3,65 @@
 namespace parking {
 
 ParkingOccupancyConfirmationGate::ParkingOccupancyConfirmationGate(
-    std::chrono::milliseconds confirmThreshold)
-    : confirmThreshold_(confirmThreshold) {
-}
+    const std::chrono::milliseconds confirmThreshold)
+    : confirmThreshold_(confirmThreshold) {}
 
 ParkingOccupancyConfirmationGate::Decision
 ParkingOccupancyConfirmationGate::evaluate(
-    const ParkingSensorEvent& event, bool slotAlreadyOccupied) {
+    const ParkingSensorEvent& event, const bool slotAlreadyOccupied) {
     if (event.state == ParkingSensorState::Occupied) {
-        if (slotAlreadyOccupied) {
-            // Already confirmed; this is just a repeated poll heartbeat.
-            // ParkingSlotManager collapses it to DuplicateOccupiedIgnored.
-            return Decision::Forward;
-        }
+        if (slotAlreadyOccupied) return Decision::Forward;
 
         const auto found = pendingBySlot_.find(event.slotId);
         if (found == pendingBySlot_.end()) {
-            // First sighting of this occupancy attempt: start the clock but
-            // do not start a session yet. receivedMonotonic (steady_clock),
-            // not occurredAt (system_clock) -- see the class comment.
             pendingBySlot_.emplace(
-                event.slotId, Pending{event.receivedMonotonic});
+                event.slotId,
+                Pending{event, event.receivedMonotonic + confirmThreshold_});
             return Decision::Suppress;
         }
 
-        if (event.receivedMonotonic - found->second.firstSeenAt >=
-            confirmThreshold_) {
-            // Held long enough: confirm now. T0 (occurredAt, wall time) is
-            // this event's own timestamp — the instant Pi actually knows it
-            // is real. Only the hold-time check above used the monotonic
-            // clock; the reported T0 is unaffected.
+        if (event.receivedMonotonic >= found->second.deadline) {
             pendingBySlot_.erase(found);
             return Decision::Forward;
         }
-        return Decision::Suppress;  // still within the confirmation window
+        return Decision::Suppress;
     }
 
-    // Vacant: an already-confirmed slot has a real departure to complete.
-    // An unconfirmed one was only ever a candidate — discard it, nothing
-    // was ever started so there is nothing to complete.
     if (!slotAlreadyOccupied) {
         pendingBySlot_.erase(event.slotId);
         return Decision::Suppress;
     }
     return Decision::Forward;
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+ParkingOccupancyConfirmationGate::nextDeadline() const {
+    std::optional<std::chrono::steady_clock::time_point> earliest;
+    for (const auto& [slotId, pending] : pendingBySlot_) {
+        (void)slotId;
+        if (!earliest || pending.deadline < *earliest)
+            earliest = pending.deadline;
+    }
+    return earliest;
+}
+
+std::vector<ParkingSensorEvent>
+ParkingOccupancyConfirmationGate::takeDue(
+    const std::chrono::steady_clock::time_point monotonicNow,
+    const std::chrono::system_clock::time_point wallNow) {
+    std::vector<ParkingSensorEvent> due;
+    for (auto it = pendingBySlot_.begin(); it != pendingBySlot_.end();) {
+        if (it->second.deadline > monotonicNow) {
+            ++it;
+            continue;
+        }
+        ParkingSensorEvent event = it->second.firstEvent;
+        event.occurredAt = wallNow;
+        event.receivedMonotonic = monotonicNow;
+        due.push_back(std::move(event));
+        it = pendingBySlot_.erase(it);
+    }
+    return due;
 }
 
 }  // namespace parking

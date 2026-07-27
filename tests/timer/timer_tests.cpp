@@ -173,6 +173,49 @@ void testEntryViolationAndExit() {
     removeDatabaseFiles(path);
 }
 
+void testExistingCameraSessionScheduling() {
+    const auto path = temporaryDatabase("existing_session");
+    {
+        EventDatabase database(path);
+        initialize(database);
+        int session_id = -1;
+        require(database.createEntryWithBestShot(
+                    "EV01", "camera_vehicle.jpg", "object-1", &session_id),
+                "camera session setup failed");
+        database.applyPlateOcr(session_id, "EV01", "camera_vehicle.jpg",
+                               "123가4567", 0.95);
+
+        parking_timer::EventManager events;
+        parking_timer::ParkingSlotManager slots(database, events, 5s);
+        const auto scheduled = slots.handleRecognizedSession(
+            session_id, "EV01", "123가4567");
+        require(scheduled.accepted && scheduled.log_id == session_id,
+                "existing camera session was not scheduled");
+        require(slots.pendingTimerCount() == 1,
+                "existing session did not create exactly one timer");
+        const auto duplicate = slots.handleRecognizedSession(
+            session_id, "EV01", "123가4567");
+        require(!duplicate.accepted && slots.pendingTimerCount() == 1,
+                "duplicate OCR result scheduled a second timer");
+        int phev_session_id = -1;
+        require(database.createEntryWithBestShot(
+                    "EV02", "camera_phev.jpg", "object-2", &phev_session_id),
+                "PHEV camera session setup failed");
+        const auto phev_classification = database.applyPlateOcr(
+            phev_session_id, "EV02", "camera_phev.jpg", "234나5678", 0.93);
+        require(phev_classification == "PHEV",
+                "OCR DB result did not preserve PHEV classification");
+        require(slots.handleRecognizedSession(
+                    phev_session_id, "EV02", "234나5678").accepted,
+                "existing PHEV camera session was not scheduled");
+        require(slots.pendingTimerCount() == 2,
+                "EV and PHEV timers were not both retained");
+        require(database.listLogs().size() == 2,
+                "timer integration inserted a duplicate parking session");
+    }
+    removeDatabaseFiles(path);
+}
+
 /**
  * @brief 기존 대기보다 빠른 새 deadline이 worker를 깨우고 먼저 처리되는지 검증한다.
  *
@@ -255,6 +298,39 @@ void testWorkerContainsCallbackExceptions() {
     removeDatabaseFiles(path);
 }
 
+void testSnapshotFailureStillMarksViolation() {
+    const auto path = temporaryDatabase("snapshot_error");
+    {
+        EventDatabase database(path);
+        initialize(database);
+        const auto log_id = database.insertParked(
+            "123가4567", "EV01", parking_timer::utcNow(), "entry.jpg");
+        std::mutex mutex;
+        bool snapshot_error_reported{};
+        parking_timer::TimerManager timers(
+            database,
+            [](const parking_timer::ViolationEvent&) {},
+            [&](const parking_timer::TimerError& error) {
+                std::lock_guard lock(mutex);
+                snapshot_error_reported =
+                    error.message.find("violation Snapshot failed") != std::string::npos;
+            },
+            nullptr,
+            [](std::int64_t, const std::string&, const std::string&) -> std::string {
+                throw std::runtime_error("simulated camera failure");
+            });
+        timers.schedule(log_id, "EV01", "123가4567", 20ms);
+        require(waitUntil([&] {
+                    const auto record = database.findLogById(log_id);
+                    return record && record->status == "VIOLATION";
+                }, 500ms),
+                "Snapshot failure prevented the DB violation transition");
+        std::lock_guard lock(mutex);
+        require(snapshot_error_reported, "Snapshot failure was not reported");
+    }
+    removeDatabaseFiles(path);
+}
+
 }  // namespace
 
 /**
@@ -265,8 +341,10 @@ void testWorkerContainsCallbackExceptions() {
 int main() {
     try {
         testEntryViolationAndExit();
+        testExistingCameraSessionScheduling();
         testEarlierDeadlineWakesWorker();
         testWorkerContainsCallbackExceptions();
+        testSnapshotFailureStillMarksViolation();
         std::cout << "All parking timer tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

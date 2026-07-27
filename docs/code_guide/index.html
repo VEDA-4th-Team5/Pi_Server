@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>VEDA Pi Server 코드 이해 가이드</title>
+<style>
+  @page { size: A4; margin: 14mm 13mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans CJK KR", "Noto Sans KR", sans-serif; color: #172033; line-height: 1.55; font-size: 10.5pt; margin: 0; }
+  h1 { font-size: 25pt; color: #102a43; margin: 0 0 8px; }
+  h2 { font-size: 17pt; color: #0b7285; border-bottom: 2px solid #99e9f2; padding-bottom: 5px; margin-top: 28px; break-after: avoid; }
+  h3 { font-size: 13pt; color: #1864ab; margin: 18px 0 6px; break-after: avoid; }
+  h4 { font-size: 11pt; margin: 12px 0 4px; break-after: avoid; }
+  p { margin: 5px 0 9px; }
+  code { font-family: "DejaVu Sans Mono", monospace; font-size: 9pt; background: #f1f3f5; padding: 1px 4px; border-radius: 3px; }
+  pre { font-family: "DejaVu Sans Mono", monospace; font-size: 8.7pt; background: #102a43; color: #f8f9fa; padding: 11px; border-radius: 6px; white-space: pre-wrap; break-inside: avoid; }
+  table { width: 100%; border-collapse: collapse; margin: 7px 0 15px; font-size: 9pt; }
+  th { background: #1864ab; color: white; text-align: left; padding: 6px; }
+  td { border: 1px solid #ced4da; padding: 5px 6px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8f9fa; }
+  .cover { min-height: 250mm; display: flex; flex-direction: column; justify-content: center; padding: 18mm; background: linear-gradient(145deg,#e7f5ff,#e3fafc); page-break-after: always; }
+  .cover .tag { color: #0b7285; font-weight: 700; letter-spacing: .08em; }
+  .cover .meta { margin-top: 25px; color: #486581; }
+  .toc { columns: 2; column-gap: 30px; }
+  .toc li { margin: 5px 0; }
+  .page { page-break-before: always; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 10px 0 16px; break-inside: avoid; }
+  .box { border: 1.5px solid #339af0; background: #e7f5ff; border-radius: 7px; padding: 7px 9px; text-align: center; font-size: 9pt; flex: 1 1 105px; }
+  .arrow { color: #0b7285; font-weight: bold; font-size: 14pt; }
+  .note { background: #fff9db; border-left: 4px solid #f59f00; padding: 8px 10px; margin: 10px 0; break-inside: avoid; }
+  .ok { background: #ebfbee; border-left-color: #2f9e44; }
+  .warn { background: #fff5f5; border-left-color: #e03131; }
+  .file { font-family: "DejaVu Sans Mono", monospace; color: #0b7285; font-weight: 600; }
+  .small { font-size: 8.5pt; color: #52606d; }
+  .keep { break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <div class="tag">VEDA SMART PARKING · RASPBERRY PI SERVER</div>
+  <h1>Pi Server 코드 이해 가이드</h1>
+  <p>폴더 · 파일 · 핵심 함수 · 런타임 흐름 종합 문서</p>
+  <div class="meta">
+    <p><b>대상:</b> Hanwha Vision PNO-A9081R 기반 C++ 스마트 주차 서버</p>
+    <p><b>기술:</b> C/C++ · MQTT · RTSP · OpenCV · Gemini HTTPS · SQLite · HTTP/HTTPS</p>
+    <p><b>기준일:</b> 2026-07-22 · C++20 통합 서버 기준</p>
+    <p><b>생성:</b> <code>cmake --build build --target docs</code></p>
+  </div>
+</section>
+
+<h2>문서 읽는 방법</h2>
+<div class="toc">
+<ol>
+  <li>프로그램 전체 구조</li>
+  <li>서버 시작과 종료 흐름</li>
+  <li>카메라 이벤트·Snapshot 흐름</li>
+  <li>BestShot·OCR·EV 판별 흐름</li>
+  <li>센서·주차 상태 흐름</li>
+  <li>장기 점유 타이머 흐름</li>
+  <li>DB·HTTP/Qt 흐름</li>
+  <li>폴더별 역할</li>
+  <li>파일별 역할</li>
+  <li>핵심 함수 참조</li>
+  <li>테스트와 디버깅</li>
+</ol>
+</div>
+<div class="note ok">
+  이 PDF는 구조와 책임을 학습하기 위한 안내서다. 세부 매개변수와 private 구현은 각 헤더의
+  Doxygen 형식 주석과 실제 소스 파일에서 확인한다.
+</div>
+
+<h2>1. 프로그램 전체 구조</h2>
+<div class="flow">
+  <div class="box">Hanwha Camera<br>RTSP · MQTT · BestShot</div><div class="arrow">→</div>
+  <div class="box">Pi C++ Server<br>수신 · 판단 · 저장</div><div class="arrow">→</div>
+  <div class="box">SQLite / Files<br>세션 · 이미지 · 이벤트</div><div class="arrow">→</div>
+  <div class="box">Qt Client<br>MQTT 알림 · HTTP 조회</div>
+</div>
+<div class="flow">
+  <div class="box">Hall MQTT / UART / LoRa<br>공통 센서 입력</div><div class="arrow">→</div>
+  <div class="box">Parking Domain<br>슬롯 상태 전이</div><div class="arrow">→</div>
+  <div class="box">Parking Timer<br>장기 점유 판정</div>
+</div>
+
+<table>
+<tr><th>계층</th><th>책임</th><th>대표 코드</th></tr>
+<tr><td>입력</td><td>RTSP 프레임, 카메라 MQTT, BestShot metadata, 홀센서 MQTT test 메시지</td><td><code>camera</code>, <code>mqtt</code>, <code>bestshot</code>, <code>sensor</code></td></tr>
+<tr><td>처리</td><td>이벤트 해석, ROI 저장, 이미지 전처리, OCR, 주차 상태 및 타이머</td><td><code>event</code>, <code>snapshot</code>, <code>ocr</code>, <code>parking</code>, <code>timer</code></td></tr>
+<tr><td>저장</td><td>차량, 주차면, 세션, 이미지, 이벤트 메타데이터</td><td><code>database</code>, <code>db/schema.sql</code></td></tr>
+<tr><td>출력</td><td>Qt MQTT 상태·위반 알림과 HTTP/HTTPS 상태·이미지 조회 API</td><td><code>EventManager</code>, <code>MqttEventBridge</code>, <code>ParkingHttpServer</code></td></tr>
+</table>
+
+<h2>2. 서버 시작과 종료 흐름</h2>
+<pre>src/main.cpp
+  ├─ AppConfig::loadFromEnv()
+  ├─ CameraChannel 생성
+  ├─ EventDatabase::open()
+  ├─ ParkingHttpServer::start()             [설정 시]
+  ├─ RtspStreamReceiver::start()
+  ├─ waitForInitialFrames()
+  ├─ OcrWorker::start()
+  ├─ BestShotReceiver::start()
+  ├─ MqttEventBridge::start()
+  ├─ EventManager publisher를 Qt MQTT에 연결
+  ├─ 활성 EV/PHEV 세션 타이머 복구
+  ├─ SIGINT/SIGTERM까지 대기
+  └─ MQTT → BestShot → OCR → RTSP → HTTP → DB 순서로 종료</pre>
+<div class="note">
+  RTSP 최초 프레임을 확보한 뒤 MQTT를 받는다. 이벤트가 먼저 들어오면 저장할 영상이 없기 때문에
+  <code>main.cpp</code>의 초기화 순서가 중요하다.
+</div>
+
+<h2>3. 카메라 MQTT·IVA Snapshot 흐름</h2>
+<div class="flow">
+  <div class="box">Mosquitto callback</div><div class="arrow">→</div>
+  <div class="box">MqttEventBridge::onMessage</div><div class="arrow">→</div>
+  <div class="box">CameraEventParser</div><div class="arrow">→</div>
+  <div class="box">slot/channel/ROI 매핑</div><div class="arrow">→</div>
+  <div class="box">SnapshotStorage</div><div class="arrow">→</div>
+  <div class="box">OCR + DB 기록</div>
+</div>
+<pre>카메라 MQTT topic/payload
+→ 이벤트 종류와 source ID 파싱
+→ IVA area 설정에서 slot_id와 channel_id 확인
+→ 해당 채널의 최신 full frame 복사
+→ ROI crop 원본 저장
+→ OpenCV enhanced 저장
+→ OcrWorker 큐 등록
+→ IMAGE_LOG / EVENT_LOG 기록</pre>
+
+<h2>4. BestShot·번호판 OCR·EV 판별 흐름</h2>
+<div class="flow">
+  <div class="box">ONVIF Metadata</div><div class="arrow">→</div>
+  <div class="box">BestShotReceiver</div><div class="arrow">→</div>
+  <div class="box">차량/번호판 이미지 다운로드</div><div class="arrow">→</div>
+  <div class="box">PlateImageEnhancer</div><div class="arrow">→</div>
+  <div class="box">GeminiOcrClient</div><div class="arrow">→</div>
+  <div class="box">VEHICLE 조회</div>
+</div>
+<pre>Vehicle BestShot
+→ ParkingTriggerCoordinator로 slot_id 결정
+→ PARKING_SESSION ACTIVE 생성
+→ IMAGE_LOG에 차량 이미지 연결
+
+Plate BestShot
+→ 같은 object/session과 연결
+→ Resize / CLAHE / Denoise / Sharpen 전처리
+→ Gemini HTTPS OCR
+→ normalizePlateNumber()
+→ VEHICLE.is_ev / is_phev 조회
+→ OCR 결과와 판별 이벤트 저장</pre>
+<div class="note warn">
+  Gemini는 번호판 문자열만 추출한다. EV/PHEV 여부는 반드시 로컬 <code>VEHICLE</code> 테이블에서 판별한다.
+  OCR 실패를 NON_EV로 간주하지 않는다.
+</div>
+
+<h2>5. 센서·주차 상태 흐름</h2>
+<pre>STM32/UART 메시지 (향후 실제 장치 연결)
+현재 parking/sensor/hall MQTT 또는 실제 UART/LoRa 입력
+→ MqttEventBridge 또는 SensorLinkManager
+→ HallParkingService::handleLine()
+→ SensorProtocolParser::parse()
+→ SensorProtocolMessage
+→ ParkingSensorEventAdapter::adapt()
+→ SensorSlotIndex에서 sensor_id → slot_id 매핑
+→ ParkingSensorSequenceGuard 중복/역순 검사
+→ parking::ParkingSlotManager::apply()
+→ OCCUPIED: 최신 RTSP ROI 저장 → ACTIVE 세션 → OCR
+→ VACANT: 세션 종료 → 위반 전이면 이미지/IMAGE_LOG 삭제</pre>
+<div class="note">
+  MQTT test, UART line, LoRa CRC frame은 전송 계층만 다르다. 세 입력 모두 검증된 센서 문자열을
+  같은 <code>HallParkingService::handleLine()</code>에 전달한다.
+</div>
+<p><code>parking/</code>은 센서 기반 상태 전이 도메인이고, <code>parking_timer/</code>는 EV/PHEV 장기 점유 시간 관리다. 이름이 비슷하지만 책임이 다르다.</p>
+
+<h2>6. 장기 점유 타이머 흐름</h2>
+<pre>OCR callback → ParkingSlotManager::handleRecognizedSession(session_id, "EV01", plate)
+→ EventDatabase::classifyVehicle()
+→ EventDatabase::findActiveBySlot("EV01")
+→ 기존 ACTIVE session_id를 그대로 사용
+→ TimerManager::schedule()
+→ deadline 도달
+→ EvidenceProvider가 최신 RTSP ROI 저장
+→ EventDatabase::markViolation()
+→ VIOLATION_TRIGGERED 이벤트 → Qt MQTT
+
+handleExit("EV01")
+→ EventDatabase::departActiveBySlot()
+→ 상태 ENDED, exit_time/duration_sec 저장
+→ 큐의 과거 노드는 DB 조건부 UPDATE로 무효화</pre>
+<div class="note ok">
+  타이머와 DB는 <code>int zone_id</code>가 아니라 <code>std::string slot_id</code>를 사용한다.
+  따라서 <code>EV01</code>이 숫자 변환 없이 그대로 저장·조회된다.
+</div>
+
+<h2>7. DB와 Qt HTTP/HTTPS 흐름</h2>
+<table>
+<tr><th>테이블</th><th>역할</th></tr>
+<tr><td><code>VEHICLE</code></td><td>번호판, EV 여부, PHEV 여부를 보관하는 차량 마스터</td></tr>
+<tr><td><code>PARKING_SLOT</code></td><td><code>EV01</code> 같은 주차면과 점유 상태</td></tr>
+<tr><td><code>PARKING_SESSION</code></td><td>입차, 위반, 출차, 점유시간 기록</td></tr>
+<tr><td><code>IMAGE_LOG</code></td><td>원본·전처리·BestShot·타이머 이미지 경로와 OCR 결과</td></tr>
+<tr><td><code>EVENT_LOG</code></td><td>카메라·OCR·주차 상태 이벤트와 처리 여부</td></tr>
+</table>
+<pre>Qt GET /api/v1/parking-slots
+→ ParkingHttpServer route
+→ EventDatabase::listParkingSlots()
+→ db_visit_parking_slots()
+→ JSON 응답
+
+Qt GET /api/v1/images/{id}/enhanced
+→ IMAGE_LOG 경로 조회
+→ data root 내부 경로인지 검증
+→ 이미지 파일 응답</pre>
+<pre>Pi MQTT → parking/v1/events/{slot_id}  (QoS 1, retain false)
+        → parking/v1/state/{slot_id}   (QoS 1, retain true)
+
+Qt → payload의 session_images_url을 HTTP GET
+   → original_url / enhanced_url을 다시 GET</pre>
+<div class="note ok">이미지 binary는 MQTT로 전송하지 않는다. MQTT는 상태와 URL을 전달하고 실제 파일은 HTTP로 pull한다.</div>
+
+<section class="page">
+<h2>8. 최상위 폴더별 역할</h2>
+<table>
+<tr><th>폴더</th><th>역할</th><th>학습 포인트</th></tr>
+<tr><td class="file">include/</td><td>공개 타입, 클래스 인터페이스, 함수 선언</td><td>구현 전에 책임과 의존관계를 파악할 때 먼저 읽는다.</td></tr>
+<tr><td class="file">src/</td><td>서버와 타이머의 C/C++ 구현</td><td><code>main.cpp</code>에서 시작해 호출되는 모듈을 따라간다.</td></tr>
+<tr><td class="file">tests/</td><td>단위·통합·타이머 테스트 및 fixture</td><td>클래스의 기대 동작을 가장 빠르게 확인한다.</td></tr>
+<tr><td class="file">db/</td><td>단일 SQLite 스키마와 seed 데이터</td><td>테이블 관계와 실제 <code>EV01</code> ID를 확인한다.</td></tr>
+<tr><td class="file">config/</td><td>타이머 및 센서-슬롯 실행 설정</td><td>DB·제한시간과 HALL01~04 → EV01~04 매핑을 확인한다.</td></tr>
+<tr><td class="file">driver/</td><td>프로젝트 전용 Linux 커널 모듈</td><td><code>parking_alert.ko</code>가 <code>/dev/parking_alert</code>를 생성한다.</td></tr>
+<tr><td class="file">tools/</td><td>DB 백업·초기화·조회, 문서 생성 자동화</td><td>운영 보조 도구이며 서버 런타임 코드는 아니다.</td></tr>
+<tr><td class="file">docs/</td><td>아키텍처, DB, MQTT, HTTP, 테스트 및 자동 API 문서</td><td>설계 의도와 현재/목표 구현 차이를 확인한다.</td></tr>
+<tr><td class="file">data/</td><td>실행 중 생성되는 DB·Snapshot·BestShot·전처리 파일</td><td>소스가 아니라 런타임 데이터이며 환경에 따라 없을 수 있다.</td></tr>
+<tr><td class="file">CMakeLists.txt</td><td>서버·테스트·타이머·문서 타깃 정의</td><td>어떤 소스가 어떤 실행 파일에 링크되는지 확인한다.</td></tr>
+</table>
+
+<h2>9. 모듈 및 파일별 역할</h2>
+
+<h3>app — 실행 설정</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/app/AppConfig.hpp</td><td>환경변수에서 읽을 모든 서버 설정 구조</td><td><code>AppConfig</code>, <code>RtspChannelConfig</code>, <code>IvaAreaConfig</code></td></tr>
+<tr><td class="file">src/app/AppConfig.cpp</td><td>RTSP, MQTT, DB, OCR, HTTP, IVA ROI 환경변수 파싱과 기본값</td><td><code>AppConfig::loadFromEnv()</code></td></tr>
+</table>
+
+<h3>camera — 연속 RTSP 프레임</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/camera/CameraChannel.hpp</td><td>채널 ID, RTSP URL, 최신 프레임과 mutex를 공유하는 상태 객체</td><td><code>CameraChannel</code></td></tr>
+<tr><td class="file">include/camera/RtspStreamReceiver.hpp</td><td>채널별 RTSP 수신 스레드 인터페이스</td><td><code>start()</code>, <code>stop()</code>, <code>waitForInitialFrames()</code></td></tr>
+<tr><td class="file">src/camera/RtspStreamReceiver.cpp</td><td>OpenCV VideoCapture 연결·재접속·최신 프레임 갱신</td><td><code>captureLoop()</code></td></tr>
+</table>
+
+<h3>mqtt + event — 카메라 이벤트</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/mqtt/MqttEventBridge.hpp</td><td>Mosquitto 연결, 카메라/홀 구독, Qt용 이벤트 발행 인터페이스</td><td><code>start()</code>, <code>stop()</code>, <code>onMessage()</code>, <code>publishQtEvent()</code></td></tr>
+<tr><td class="file">src/mqtt/MqttEventBridge.cpp</td><td>카메라 이벤트는 IVA 흐름, 홀 topic은 HallParkingService로 라우팅</td><td>연결/메시지 callback, <code>onMessage()</code>, <code>publishQtEvent()</code></td></tr>
+<tr><td class="file">include/event/CameraEvent.hpp</td><td>정규화된 카메라 이벤트 값 객체</td><td><code>CameraEvent</code></td></tr>
+<tr><td class="file">include/event/CameraEventParser.hpp</td><td>topic/payload 파서 인터페이스</td><td><code>parse()</code>, <code>parseSourceId()</code>, <code>parseEventType()</code></td></tr>
+<tr><td class="file">src/event/CameraEventParser.cpp</td><td>Hanwha/ONVIF topic에서 채널·source·이벤트 종류 추출</td><td>문자열 파싱 구현</td></tr>
+<tr><td class="file">include/event/EventPayloadBuilder.hpp</td><td>정규 이벤트 JSON 생성 인터페이스</td><td><code>build()</code></td></tr>
+<tr><td class="file">src/event/EventPayloadBuilder.cpp</td><td>Qt/MQTT 전달용 JSON 직렬화</td><td><code>EventPayloadBuilder::build()</code></td></tr>
+</table>
+
+<h3>snapshot — IVA ROI 이미지 저장</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/snapshot/SnapshotStorage.hpp</td><td>최신 프레임 대기, ROI 정규화, 원본·전처리 저장 인터페이스</td><td><code>saveIvaAreaSnapshot()</code>, <code>waitForFullFrame()</code></td></tr>
+<tr><td class="file">src/snapshot/SnapshotStorage.cpp</td><td><code>data/snapshots/ch*/EV*/scene|enhanced</code> 경로 생성과 OpenCV 저장</td><td>ROI crop 및 파일명 생성</td></tr>
+</table>
+
+<h3>bestshot — 차량·번호판 BestShot</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/bestshot/BestShotReceiver.hpp</td><td>채널별 metadata 수신, object/session 상관관계 인터페이스</td><td><code>start()</code>, <code>stop()</code>, <code>receiveLoop()</code></td></tr>
+<tr><td class="file">src/bestshot/BestShotReceiver.cpp</td><td>metadata XML 파싱, 이미지 URL 다운로드, vehicle/plate 연결, OCR 요청</td><td>BestShot 분기와 pending plate 처리</td></tr>
+</table>
+
+<h3>ocr — 전처리와 Gemini 번호판 인식</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/ocr/GeminiOcrClient.hpp</td><td>Gemini HTTPS OCR 요청/응답 타입</td><td><code>recognizePlate()</code>, <code>configured()</code></td></tr>
+<tr><td class="file">src/ocr/GeminiOcrClient.cpp</td><td>libcurl HTTPS 호출, timeout, JSON 응답 파싱과 fallback 모델</td><td>요청 body와 OCR 결과 파싱</td></tr>
+<tr><td class="file">include/ocr/OcrWorker.hpp</td><td>OCR 비동기 작업 큐, 세션별 취소와 worker 인터페이스</td><td><code>start()</code>, <code>stop()</code>, <code>enqueue()</code>, <code>cancelSession()</code></td></tr>
+<tr><td class="file">src/ocr/OcrWorker.cpp</td><td>전처리→Gemini→정규화→DB 반영 파이프라인</td><td><code>run()</code></td></tr>
+<tr><td class="file">include/ocr/PlateImageEnhancer.hpp</td><td>번호판/IVA 이미지 전처리 결과와 공개 함수</td><td><code>preprocessPlateImage()</code>, <code>enhancePlateImage()</code>, <code>enhanceIvaSceneImage()</code></td></tr>
+<tr><td class="file">src/ocr/PlateImageEnhancer.cpp</td><td>Resize, CLAHE, denoise, sharpen 등 OpenCV C++ 전처리</td><td>전처리 단계별 구현</td></tr>
+<tr><td class="file">include/ocr/PlateNormalizer.hpp</td><td>OCR 문자열 정규화·형식 검사 인터페이스</td><td><code>normalizePlateNumber()</code>, <code>isPlausibleKoreanPlate()</code></td></tr>
+<tr><td class="file">src/ocr/PlateNormalizer.cpp</td><td>공백·기호 제거와 한국 번호판 후보 검증</td><td>정규식/문자열 처리</td></tr>
+</table>
+
+<h3>database — SQLite 저장 계층</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/database/EventDatabase.hpp</td><td>카메라·OCR·HTTP·타이머가 공유하는 단일 C++ DB 인터페이스</td><td><code>EventDatabase</code>, View/Record 구조체</td></tr>
+<tr><td class="file">src/database/EventDatabase.cpp</td><td>카메라 이벤트, 센서 Snapshot, BestShot, OCR, HTTP 조회용 DB orchestration</td><td><code>createEntryWithSnapshot()</code>, <code>createEntryWithBestShot()</code>, <code>deleteSessionImageRecords()</code></td></tr>
+<tr><td class="file">src/database/EventDatabaseTimer.cpp</td><td>EV/PHEV 분류와 장기 점유 세션·위반·출차 트랜잭션</td><td><code>insertParked()</code>, <code>markViolation()</code>, <code>departActiveBySlot()</code></td></tr>
+<tr><td class="file">include/database/db_manager.h</td><td>SQLite C API 공개 함수와 조회 row 구조체</td><td><code>db_open()</code>, CRUD/visitor 함수</td></tr>
+<tr><td class="file">src/database/db_manager.c</td><td>prepared statement 기반 실제 SQLite CRUD</td><td>VEHICLE/SESSION/IMAGE/EVENT 쿼리</td></tr>
+<tr><td class="file">db/schema.sql</td><td>프로젝트 단일 DB 스키마</td><td>5개 테이블, FK, 인덱스, 활성 세션 UNIQUE</td></tr>
+<tr><td class="file">db/seed.sql</td><td>EV/PHEV/일반차 및 EV01~EV04/P01~P04 초기 데이터</td><td><code>INSERT OR IGNORE</code></td></tr>
+</table>
+
+<h3>http — Qt 조회 API</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">include/http/ParkingHttpServer.hpp</td><td>HTTP/HTTPS 서버 설정과 생명주기</td><td><code>start()</code>, <code>stop()</code>, <code>usesTls()</code></td></tr>
+<tr><td class="file">src/http/ParkingHttpServer.cpp</td><td>health, 슬롯, 세션 이미지, 원본/전처리 파일 route 구현</td><td><code>registerRoutes()</code></td></tr>
+</table>
+
+<h3>parking — 센서 기반 주차 도메인</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">ParkingSlot.hpp</td><td>슬롯 ID·종류·상태 값 객체</td><td><code>ParkingSlot</code></td></tr>
+<tr><td class="file">ParkingSensorEvent.hpp</td><td>슬롯에 매핑된 OCCUPIED/VACANT 이벤트</td><td><code>ParkingSensorEvent</code></td></tr>
+<tr><td class="file">ParkingSlotConfig.hpp/.cpp</td><td>JSON 슬롯·센서·카메라·ROI 설정 로더</td><td><code>ParkingSlotConfigLoader::load()</code></td></tr>
+<tr><td class="file">SensorSlotIndex.hpp/.cpp</td><td>sensor_id에서 slot_id와 설정을 찾는 인덱스</td><td><code>find()</code></td></tr>
+<tr><td class="file">ParkingSensorSequenceGuard.hpp/.cpp</td><td>센서 sequence 중복·역순 메시지 차단</td><td><code>accept()</code>, <code>reset()</code></td></tr>
+<tr><td class="file">ParkingOccupancySession.hpp/.cpp</td><td>한 주차 세션의 Active/Completed 상태와 시간</td><td><code>complete()</code>, <code>duration()</code></td></tr>
+<tr><td class="file">ParkingSlotManager.hpp/.cpp</td><td>센서 이벤트로 주차면 상태 전이 결정</td><td><code>apply()</code>, <code>findSlot()</code></td></tr>
+<tr><td class="file">ActiveParkingSessionIndex.hpp/.cpp</td><td>활성 세션을 slot_id 기준으로 관리</td><td><code>apply()</code>, <code>find()</code>, <code>clear()</code></td></tr>
+<tr><td class="file">ParkingTriggerCoordinator.hpp/.cpp</td><td>IVA와 홀센서/BestShot 시간 상관관계 및 중복 억제</td><td><code>recordCameraIva()</code>, <code>recordHallState()</code>, <code>claimSlotForVehicle()</code></td></tr>
+</table>
+
+<h3>sensor — STM32 메시지 경계</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">SensorProtocolMessage.hpp</td><td>UART 한 줄 메시지의 파싱 결과</td><td><code>SensorProtocolMessage</code></td></tr>
+<tr><td class="file">SensorProtocolParser.hpp/.cpp</td><td>partial/multi-line byte stream buffering과 필드 검증</td><td><code>push()</code>, <code>parseLine()</code></td></tr>
+<tr><td class="file">ParkingSensorEventAdapter.hpp/.cpp</td><td>프로토콜 메시지를 주차 도메인 이벤트로 변환</td><td><code>adapt()</code></td></tr>
+<tr><td class="file">HallParkingService.hpp/.cpp</td><td>홀 입력을 실제 Snapshot·세션·OCR·타이머 및 조기 정리 흐름으로 연결</td><td><code>handleLine()</code>, <code>handleOccupied()</code>, <code>handleVacant()</code></td></tr>
+</table>
+
+<h3>device — UART·LoRa·Character Device 경계</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">UartDriver.hpp/.cpp</td><td>POSIX termios raw 8N1, poll, partial read/write로 <code>/dev/tty*</code> 제어</td><td><code>connect()</code>, <code>readSome()</code>, <code>writeAll()</code></td></tr>
+<tr><td class="file">LoRaDriver.hpp/.cpp</td><td>투명 UART LoRa byte stream의 SOF·길이·sequence·CRC16 frame 처리</td><td><code>encode()</code>, <code>consume()</code>, <code>send()</code></td></tr>
+<tr><td class="file">SensorLinkManager.hpp/.cpp</td><td>UART 재연결 thread, line/frame 수신 및 Hall handler 전달</td><td><code>start()</code>, <code>stop()</code>, <code>sendAlertCommand()</code></td></tr>
+<tr><td class="file">LinuxDriverAdapter.hpp/.cpp</td><td>C++ 서버에서 <code>/dev/parking_alert</code> open/ioctl/close 캡슐화</td><td><code>setSlot()</code>, <code>clearSlot()</code>, <code>state()</code></td></tr>
+</table>
+
+<h3>driver — /dev/parking_alert 커널 모듈</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 인터페이스</th></tr>
+<tr><td class="file">driver/parking_alert/parking_alert.c</td><td>32개 슬롯 bit 상태, 중복 억제, blocking read와 poll 통지</td><td><code>open/read/write/poll/ioctl</code></td></tr>
+<tr><td class="file">include/uapi/parking_alert.h</td><td>커널과 사용자 공간이 공유하는 versioned ABI</td><td><code>parking_alert_command</code>, <code>parking_alert_state</code></td></tr>
+<tr><td class="file">driver/parking_alert/Kbuild</td><td>현재 Raspberry Pi 커널 헤더에 맞는 module 빌드</td><td><code>parking_alert.ko</code></td></tr>
+</table>
+
+<h3>parking_timer — EV/PHEV 장기 점유</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
+<tr><td class="file">EventDatabase.hpp</td><td>통합 <code>database::EventDatabase</code> 호환 별칭</td><td><code>using EventDatabase</code></td></tr>
+<tr><td class="file">Types.hpp/.cpp</td><td>차량 분류, 타이머 로그·입차 결과, UTC 시각</td><td><code>VehicleCategory</code>, <code>LogRecord</code>, <code>utcNow()</code></td></tr>
+<tr><td class="file">RuntimeConfig.hpp/.cpp</td><td>타이머 DB 경로와 timeout 설정</td><td><code>load()</code>, <code>applyEnvironment()</code></td></tr>
+<tr><td class="file">EventManager.hpp/.cpp</td><td>타이머 결과를 JSON 로그와 외부 Qt MQTT publisher로 전달</td><td><code>setPublisher()</code>, <code>publish()</code></td></tr>
+<tr><td class="file">TimerManager.hpp/.cpp</td><td>우선순위 큐, 재시작 복구, 만료 증거 provider, DB 오류 재시도</td><td><code>schedule()</code>, <code>restoreActiveSessions()</code>, <code>processExpired()</code></td></tr>
+<tr><td class="file">ParkingSlotManager.hpp/.cpp</td><td>EV/PHEV 입차·출차와 타이머 orchestration</td><td><code>handleEntry()</code>, <code>handleExit()</code></td></tr>
+<tr><td class="file">src/timer/main.cpp</td><td>별도 타이머 CLI, demo, interactive 명령</td><td><code>main()</code>, <code>runDemo()</code>, <code>runInteractive()</code></td></tr>
+</table>
+
+<h3>util — 공통 보조 함수</h3>
+<table><tr><th>파일</th><th>역할</th><th>주요 함수</th></tr>
+<tr><td class="file">Logger.hpp/.cpp</td><td>레벨이 포함된 headless 로그 출력</td><td><code>logInfo()</code>, <code>logWarn()</code>, <code>logError()</code></td></tr>
+<tr><td class="file">StringUtil.hpp/.cpp</td><td>JSON 문자열 escape</td><td><code>jsonEscape()</code></td></tr>
+<tr><td class="file">TimeUtil.hpp/.cpp</td><td>로그·파일명용 현재 시각</td><td><code>nowIsoString()</code>, <code>nowStringForFilename()</code></td></tr>
+<tr><td class="file">UrlMasker.hpp/.cpp</td><td>로그에 RTSP/HTTP 인증정보가 노출되지 않도록 마스킹</td><td><code>hideUrlForLog()</code></td></tr>
+</table>
+
+<h3>테스트·설정·도구</h3>
+<table><tr><th>파일</th><th>검증/역할</th></tr>
+<tr><td class="file">tests/unit/ParkingDomainTest.cpp</td><td>슬롯 설정, 센서 매핑, 상태 전이, 세션 인덱스 단위 테스트</td></tr>
+<tr><td class="file">tests/unit/SensorParkingPipelineTest.cpp</td><td>partial/multi-line UART 파싱부터 주차 상태까지 파이프라인 테스트</td></tr>
+<tr><td class="file">tests/timer/timer_tests.cpp</td><td>EV01 입차, 중복, EV/PHEV 분류, 위반, 출차, worker 예외 테스트</td></tr>
+<tr><td class="file">tests/integration/DbManagerTest.c</td><td>SQLite C CRUD 통합 확인</td></tr>
+<tr><td class="file">tests/integration/HttpApiTest.cpp</td><td>슬롯/이미지 HTTP API 응답과 경로 보안 확인</td></tr>
+<tr><td class="file">tests/integration/GeminiOcrTest.cpp</td><td>실제 환경변수 기반 Gemini OCR 수동 통합 검증</td></tr>
+<tr><td class="file">tests/integration/HallTimerIntegrationTest.cpp</td><td>가짜 frame과 SQLite로 입차·중복·조기삭제·위반 Snapshot·증거보존 통합 검증</td></tr>
+<tr><td class="file">tests/unit/UartLoRaDriverTest.cpp</td><td>PTY 기반 UART 양방향, partial line, LoRa CRC·재동기화 및 alert 송신 검증</td></tr>
+<tr><td class="file">tests/fixtures/parking_slots.json</td><td>EV01~EV04 슬롯·센서·ROI 테스트 설정</td></tr>
+<tr><td class="file">config/timer.conf</td><td>타이머 DB 경로와 제한시간 예시</td></tr>
+<tr><td class="file">config/parking_slots.json</td><td><code>HALL01~04</code>와 <code>EV01~04</code> 센서-슬롯 매핑</td></tr>
+<tr><td class="file">tools/reset_db.sh</td><td><code>db/schema.sql</code>과 <code>db/seed.sql</code>로 DB 재생성</td></tr>
+<tr><td class="file">tools/backup_db.sh</td><td>SQLite DB 안전 백업</td></tr>
+<tr><td class="file">tools/inspect_db.sh</td><td>주요 테이블 내용을 CLI로 조회</td></tr>
+<tr><td class="file">tools/build_docs.sh</td><td>코드 가이드 HTML을 PDF로 자동 변환</td></tr>
+<tr><td class="file">tools/parking_link_tool.cpp</td><td>LoRa frame encode/send/listen용 C++ 실기기 진단 도구</td></tr>
+<tr><td class="file">tools/parking_alert_ctl.c</td><td>Character device status/set/clear/watch 및 ioctl/write/poll 검증 도구</td></tr>
+<tr><td class="file">docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md</td><td>카메라 요청형 촬영 목표 규약, ROI, 응답·재시도·조기삭제 명세</td></tr>
+<tr><td class="file">docs/GEMINI_OCR_GUIDE.md</td><td>OpenCV 전처리부터 Gemini HTTPS·정규화·DB·수동시험까지의 운영 가이드</td></tr>
+<tr><td class="file">docs/PARKING_ALERT_DRIVER.md</td><td><code>/dev/parking_alert</code> ABI·빌드·권한·실기기 테스트 가이드</td></tr>
+</table>
+
+<section class="page">
+<h2>10. 핵심 함수 참조</h2>
+<table>
+<tr><th>함수</th><th>입력 → 처리 → 출력</th></tr>
+<tr><td><code>AppConfig::loadFromEnv()</code></td><td>환경변수 → URL/timeout/ROI/default 검증 → 전체 런타임 설정</td></tr>
+<tr><td><code>RtspStreamReceiver::captureLoop()</code></td><td>채널 URL → RTSP 연결·재시도·frame clone → CameraChannel 최신 프레임</td></tr>
+<tr><td><code>MqttEventBridge::onMessage()</code></td><td>topic/payload → 카메라 이벤트 또는 홀 test 입력 분기 → 각 업무 흐름</td></tr>
+<tr><td><code>MqttEventBridge::publishQtEvent()</code></td><td>topic/JSON/QoS/retain → Mosquitto publish → Qt 상태·이벤트</td></tr>
+<tr><td><code>HallParkingService::handleLine()</code></td><td>홀 한 줄 → parse·mapping·중복검사 → 입차 Snapshot/OCR 또는 출차 정리</td></tr>
+<tr><td><code>UartDriver::readSome()</code></td><td><code>/dev/tty*</code> → poll·partial read → 수신 byte 0..N개</td></tr>
+<tr><td><code>LoRaDriver::consume()</code></td><td>임의 byte chunk → SOF·길이·CRC 검증과 재동기화 → frame 0..N개</td></tr>
+<tr><td><code>SensorLinkManager::run()</code></td><td>UART 재연결 → line/LoRa 분기 → 센서 handler callback</td></tr>
+<tr><td><code>parking_alert_apply_command()</code></td><td>slot 명령 검증 → 32-bit 상태 변경 → generation 증가와 wait queue 통지</td></tr>
+<tr><td><code>LinuxDriverAdapter::setSlot()</code></td><td>C++ 주차면 bit → versioned ioctl → <code>/dev/parking_alert</code> 상태 갱신</td></tr>
+<tr><td><code>SnapshotStorage::saveIvaAreaSnapshot()</code></td><td>채널+slot+ROI → 최신 frame crop·전처리 → scene/enhanced 경로</td></tr>
+<tr><td><code>BestShotReceiver::receiveLoop()</code></td><td>metadata stream → object 종류/URL/ID 파싱 → 이미지 저장·세션 연결·OCR</td></tr>
+<tr><td><code>OcrWorker::enqueue()</code></td><td>session/slot/image → thread-safe queue → worker 깨움</td></tr>
+<tr><td><code>OcrWorker::run()</code></td><td>이미지 작업 → 전처리·Gemini·정규화 → DB OCR/EV 판별 이벤트</td></tr>
+<tr><td><code>OcrWorker::cancelSession()</code></td><td>조기 출차 session_id → 대기/처리 작업 취소 표시 → 뒤늦은 DB·타이머 반영 차단</td></tr>
+<tr><td><code>GeminiOcrClient::recognizePlate()</code></td><td>이미지 → base64 HTTPS 요청 → OCR 문자열/상태</td></tr>
+<tr><td><code>normalizePlateNumber()</code></td><td>Gemini 응답 → 불필요 문자 제거 → 정규화 번호판</td></tr>
+<tr><td><code>EventDatabase::createEntryWithBestShot()</code></td><td>slot/vehicle image → OCCUPIED+ACTIVE session+IMAGE_LOG → session_id</td></tr>
+<tr><td><code>EventDatabase::createEntryWithSnapshot()</code></td><td>홀 입차 Snapshot → ACTIVE session+IMAGE_LOG+EVENT_LOG → 같은 session_id</td></tr>
+<tr><td><code>EventDatabase::applyPlateOcr()</code></td><td>plate/confidence → VEHICLE 조회·세션 연결 → EV/PHEV/NON_EV/UNKNOWN</td></tr>
+<tr><td><code>EventDatabase::insertParked()</code></td><td>plate/EV01/time/image → transaction → ACTIVE session 및 TIMER_ENTRY 이미지</td></tr>
+<tr><td><code>EventDatabase::markViolation()</code></td><td>session/deadline/image → 조건부 transaction → VIOLATION 및 증거 이미지</td></tr>
+<tr><td><code>EventDatabase::departActiveBySlot()</code></td><td>EV01/출차시각 → 활성 세션 검색·duration 계산 → ENDED LogRecord</td></tr>
+<tr><td><code>ParkingHttpServer::registerRoutes()</code></td><td>DB/파일 저장소 → httplib route 등록 → Qt JSON/이미지 응답</td></tr>
+<tr><td><code>SensorProtocolParser::push()</code></td><td>임의 길이 byte chunk → newline buffering·필드 검증 → 메시지 0..N개</td></tr>
+<tr><td><code>parking::ParkingSlotManager::apply()</code></td><td>센서 이벤트 → 상태 전이·중복 판단 → ParkingTransitionResult</td></tr>
+<tr><td><code>ParkingTriggerCoordinator::claimSlotForVehicle()</code></td><td>채널/최근 IVA·홀 이벤트 → 상관시간 검사 → BestShot 대상 slot_id</td></tr>
+<tr><td><code>parking_timer::ParkingSlotManager::handleEntry()</code></td><td>EV01/번호판 → 분류·중복 검사·세션 생성 → 타이머 예약</td></tr>
+<tr><td><code>TimerManager::schedule()</code></td><td>session/slot/delay → 최소 우선순위 큐 → worker 알림</td></tr>
+<tr><td><code>TimerManager::processExpired()</code></td><td>만료 노드 → 최신 RTSP 증거 요청 → 조건부 DB 위반 처리 → Qt publisher 또는 재시도</td></tr>
+</table>
+
+<h2>11. 테스트와 디버깅</h2>
+<h3>빌드와 전체 테스트</h3>
+<pre>cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j2
+ctest --test-dir build --output-on-failure</pre>
+
+<h3>문서 재생성</h3>
+<pre>cmake --build build --target docs
+
+# 결과
+Pi_Server_Code_Guide.pdf</pre>
+
+<h3>문제별 확인 위치</h3>
+<table><tr><th>증상</th><th>우선 확인</th></tr>
+<tr><td>RTSP 프레임 없음</td><td>환경변수 URL, <code>RtspStreamReceiver</code> 재접속 로그, URL 마스킹 결과</td></tr>
+<tr><td>MQTT 이벤트 없음</td><td>Mosquitto broker, subscribe topic, 카메라 publication, <code>MqttEventBridge</code> 로그</td></tr>
+<tr><td>IVA 사진 없음</td><td><code>IvaAreaConfig</code>의 channel/slot/ROI, 최신 frame 존재 여부, 저장 권한</td></tr>
+<tr><td>BestShot 없음</td><td>metadata profile, image URL, object type, <code>BestShotReceiver</code> download 로그</td></tr>
+<tr><td>OCR 실패</td><td>Gemini key/model/timeout, enhanced 이미지, 정규화 전 raw 결과</td></tr>
+<tr><td>EV 판별 오류</td><td><code>VEHICLE</code>의 plate_number/is_ev/is_phev, 정규화된 번호판</td></tr>
+<tr><td>EV01 세션 조회 실패</td><td>모든 계층이 문자열 <code>slot_id</code>를 사용하는지, seed와 fixture ID 일치 여부</td></tr>
+<tr><td>Qt 이미지 오류</td><td>IMAGE_LOG 경로, HTTP data root, 파일 존재 여부와 크기 제한</td></tr>
+</table>
+
+<h2>12. 학습 권장 순서</h2>
+<ol>
+  <li><code>src/main.cpp</code>에서 객체 생성과 시작/종료 순서를 읽는다.</li>
+  <li><code>include/</code> 헤더로 각 클래스의 공개 책임만 먼저 익힌다.</li>
+  <li>MQTT 이벤트 한 건을 기준으로 <code>MqttEventBridge → SnapshotStorage → OcrWorker → EventDatabase</code>를 추적한다.</li>
+  <li>BestShot 한 건을 기준으로 <code>BestShotReceiver → OcrWorker → DB</code>를 추적한다.</li>
+  <li><code>tests/</code>에서 기대 상태 전이를 확인한 뒤 구현 cpp를 읽는다.</li>
+  <li>헤더의 Doxygen 주석과 구현 파일에서 private helper와 실제 호출 위치를 확인한다.</li>
+</ol>
+
+<div class="note ok">
+  문서와 코드가 다르면 코드와 테스트가 기준이다. 구조가 변경되면 이 HTML의 설계 설명을 갱신하고
+  <code>cmake --build build --target docs</code>로 PDF와 API 문서를 다시 생성한다.
+</div>
+
+</body>
+</html>

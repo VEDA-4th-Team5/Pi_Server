@@ -17,7 +17,7 @@ namespace parking {
 // T0+60s captures agreed for the hall-occupancy path (EVDA-135).
 struct CaptureOffset {
     CaptureReason reason;
-    std::chrono::seconds delay;
+    std::chrono::milliseconds delay;
 };
 
 struct CaptureSchedulerConfig {
@@ -34,35 +34,15 @@ struct CaptureSchedulerConfig {
     int maxRetries{2};
 };
 
-// What happened to a dispatched request once its result came back.
 enum class DispatchOutcome {
-    Done,      // accepted, no further work
-    WillRetry, // failed but rescheduled
-    GaveUp,    // failed and retries exhausted
-    Unknown    // request no longer tracked (session ended / stale)
+    Done,
+    WillRetry,
+    GaveUp,
+    Unknown
 };
 
-// L1 Core scheduling policy for the T0+30s / T0+60s captures.
-//
-// Pure and deterministic: it owns no thread, no clock, and no I/O. The caller
-// supplies "now" to due()/onDispatchResult(), so the whole retry/dedup policy
-// is unit-testable without sleeping. CaptureSchedulerRuntime drives it from a
-// timer thread and performs the actual publish through an injected callback,
-// keeping MQTT out of Core (same boundary style as FireAlarmManager).
-//
-// All deadline math (scheduledFor, due(), onDispatchResult(), nextDeadline())
-// runs on steady_clock, not system_clock: a Pi without an RTC can have its
-// wall clock jump when NTP syncs while pi-server is already running, which
-// would otherwise fire captures early/late or never. The session's T0
-// (ParkingOccupancySession::startedAt, system_clock) is still what gets
-// reported as CaptureRequest::sessionStartedAt for logs/MQTT -- only the
-// "when is this due" bookkeeping is monotonic. See
-// ParkingOccupancyConfirmationGate.hpp for the same split applied to the
-// confirm-gate hold-time check.
-//
-// Thread-safety: every public method is mutex-guarded so the session worker
-// thread (onTransition) and the runtime timer thread (due/onDispatchResult)
-// can call concurrently.
+// 세션 전이에서 T0+30초/60초 요청을 계산하는 순수 정책이다. 모든 deadline은
+// steady_clock이고 실제 MQTT 발행은 CaptureSchedulerRuntime에 위임한다.
 class CaptureScheduler {
 public:
     CaptureScheduler(CaptureSchedulerConfig config,
@@ -101,7 +81,7 @@ public:
 private:
     enum class Phase {
         Pending,
-        AwaitingResponse,
+        Dispatching,
         Done
     };
 

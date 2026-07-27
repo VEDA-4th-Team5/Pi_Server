@@ -3,56 +3,40 @@
 #include "parking/ParkingSensorEvent.hpp"
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace parking {
 
-// Filters short OCCUPIED<->VACANT flaps (e.g. a driver nosing in and pulling
-// back out while aligning) before they ever become a session, by requiring
-// OCCUPIED to hold for at least `confirmThreshold` before it is "confirmed".
-//
-// This is NOT the STM32 hardware debounce described in
-// ParkingSessionWorker's header comment. That debounce operates at the
-// electrical/firmware level (ms-scale signal bounce) and stays on the STM32
-// per the interface contract. This gate operates at the business-logic level
-// (seconds-scale re-parking maneuvers) and is a deliberate Pi-side policy,
-// opt-in via PARKING_OCCUPANCY_CONFIRM_MS (0 = disabled, matches pre-EVDA-135
-// behavior where the first OCCUPIED immediately becomes T0).
-//
-// The hold-time check is measured on event.receivedMonotonic (steady_clock),
-// not event.occurredAt (system_clock). A Raspberry Pi commonly has no RTC, so
-// the wall clock can jump when NTP syncs while pi-server is already running;
-// a jump mid-window would either wedge the gate open forever (backward jump:
-// the duration goes negative and never reaches the threshold) or confirm a
-// flap instantly (forward jump). steady_clock cannot be adjusted like that.
-// The confirmed session's T0 still comes from occurredAt -- only the
-// duration measurement uses the monotonic clock.
-//
-// Pure and deterministic: no thread, no clock of its own — the caller
-// supplies event timestamps, so it is unit-testable without sleeping.
-// Not thread-safe by itself; ParkingSessionWorker holds its own mutex around
-// every call.
+// 짧은 OCCUPIED/VACANT 재정렬 신호가 DB 세션이 되는 것을 막는 Pi 정책이다.
+// 상태 변경형 STM32도 지원하기 위해 첫 OCCUPIED를 보관하고, 추가 신호가 없어도
+// 단조시계 deadline이 지나면 takeDue()가 확정 이벤트를 반환한다.
 class ParkingOccupancyConfirmationGate {
 public:
     explicit ParkingOccupancyConfirmationGate(
         std::chrono::milliseconds confirmThreshold);
 
     enum class Decision {
-        Forward,  // let the event reach the state machine
-        Suppress  // not confirmed yet (or a discarded flap) — drop it here
+        Forward,
+        Suppress
     };
 
-    // slotAlreadyOccupied reflects ParkingSlotManager's current state for
-    // this slot (an already-confirmed, still-active session). The gate has
-    // no dependency on ParkingSlotManager itself; the caller passes this in
-    // so the gate stays a pure, independently testable policy.
     [[nodiscard]] Decision evaluate(
         const ParkingSensorEvent& event, bool slotAlreadyOccupied);
 
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+    nextDeadline() const;
+
+    [[nodiscard]] std::vector<ParkingSensorEvent> takeDue(
+        std::chrono::steady_clock::time_point monotonicNow,
+        std::chrono::system_clock::time_point wallNow);
+
 private:
     struct Pending {
-        std::chrono::steady_clock::time_point firstSeenAt;
+        ParkingSensorEvent firstEvent;
+        std::chrono::steady_clock::time_point deadline;
     };
 
     std::chrono::milliseconds confirmThreshold_;

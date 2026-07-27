@@ -59,9 +59,9 @@ public:
     void addSink(TransitionSink sink);
 
     // Feed one adapted sensor event.
-    // Returns std::nullopt when the sequence guard rejects the packet (no state
-    // change, no sink invoked); otherwise returns the slot state machine
-    // transition and invokes every registered sink with it.
+    // Returns std::nullopt when the sequence guard rejects the packet or the
+    // optional confirmation gate suppresses an unconfirmed flap. Otherwise it
+    // returns the slot state-machine transition and invokes every sink.
     std::optional<ParkingTransitionResult> onSensorEvent(
         const ParkingSensorEvent& event);
 

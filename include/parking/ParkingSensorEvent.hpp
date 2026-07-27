@@ -25,13 +25,8 @@ struct ParkingSensorEvent {
     std::optional<std::uint64_t> sourceSequence;
     std::string sourceTransport{"unknown"};
 
-    // Monotonic receive time, captured alongside occurredAt at the same
-    // transport boundary (SensorLinkManager::dispatchLine). Used only for
-    // measuring elapsed durations (e.g. ParkingOccupancyConfirmationGate's
-    // hold-time check) so a system_clock/NTP jump while the process is
-    // running can never corrupt a duration measurement. occurredAt
-    // (system_clock, wall time) remains the source of T0 for sessions,
-    // logs, DB rows and MQTT payloads -- this field is never used for that.
+    // 수신 순간의 단조시계 값이다. NTP로 벽시계가 바뀌어도 점유 확정과
+    // 촬영 마감시간 계산이 흔들리지 않도록 경과시간 계산에만 사용한다.
     std::chrono::steady_clock::time_point receivedMonotonic{
         std::chrono::steady_clock::now()};
 };

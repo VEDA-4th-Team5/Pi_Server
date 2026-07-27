@@ -32,6 +32,25 @@ struct AppConfig {
     std::string mqtt_event_sub_topic;
     std::string qt_event_topic_prefix;
     std::string default_channel_id;
+    bool hall_mqtt_input_enabled;
+    std::string hall_mqtt_topic;
+    std::string parking_slot_config_path;
+    std::string sensor_link_mode;
+    std::string sensor_uart_device;
+    int sensor_uart_baud_rate;
+    int sensor_uart_read_timeout_ms;
+    int sensor_uart_reconnect_ms;
+
+    // 홀센서 OCCUPIED가 이 시간 이상 유지되어야 DB 세션을 생성한다.
+    // 0이면 기존처럼 첫 OCCUPIED를 즉시 확정한다.
+    int parking_occupancy_confirm_ms;
+
+    // 확정된 입차 T0를 기준으로 30초/60초 MQTT 촬영 요청을 예약한다.
+    bool capture_sched_enabled;
+    std::string capture_topic_prefix;
+    int capture_response_timeout_ms;
+    int capture_retry_interval_ms;
+    int capture_max_retries;
 
     // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
     // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
@@ -47,20 +66,6 @@ struct AppConfig {
     // 슬롯/센서 매핑은 코드가 아니라 아래 JSON 설정 파일에서 읽는다.
     bool parking_hall_enabled;
     std::string parking_slots_config_path;
-
-    // OCCUPIED 확정(T0) 유예시간. 0(기본)이면 첫 OCCUPIED가 즉시 T0가 되는
-    // 기존 동작. 재정렬 중 짧은 OCCUPIED<->VACANT flapping을 거르려면 켠다
-    // (예: 10000 = 10초). STM32 하드웨어 디바운스와는 별개의 Pi측 정책이다.
-    int parking_occupancy_confirm_ms;
-
-    // 입차 후 촬영 스케줄러 (T0+30s / T0+60s). 카메라 촬영 규약(EVDA-138)이
-    // 아직 미확정이라 토픽/페이로드는 draft 이며 기본 비활성이다. 켜면 홀 세션
-    // 시작 시 두 번의 촬영 요청을 예약해 아래 prefix 로 발행한다.
-    bool capture_sched_enabled;
-    std::string capture_topic_prefix;
-    int capture_response_timeout_ms;
-    int capture_retry_interval_ms;
-    int capture_max_retries;
 
     std::string snapshot_dir;
     std::string db_path;
@@ -81,6 +86,9 @@ struct AppConfig {
     int iva_duplicate_suppression_ms;
     int gemini_connect_timeout_sec;
     int gemini_request_timeout_sec;
+
+    bool parking_timer_enabled;
+    int parking_timeout_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

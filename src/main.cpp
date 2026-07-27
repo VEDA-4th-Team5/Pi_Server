@@ -3,23 +3,25 @@
 #include "camera/CameraChannel.hpp"
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
-#include "event/FireAlarmManager.hpp"
+#include "device/SensorLinkManager.hpp"
+#include "event/SystemEventReporter.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
-#include "parking/ActiveParkingSessionIndex.hpp"
 #include "parking/CaptureRequest.hpp"
 #include "parking/CaptureScheduler.hpp"
 #include "parking/CaptureSchedulerRuntime.hpp"
-#include "parking/ParkingSessionWorker.hpp"
-#include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
-#include "parking/SensorSlotIndex.hpp"
+#include "parking/ParkingSlotConfig.hpp"
+#include "parking_timer/EventManager.hpp"
+#include "parking_timer/ParkingSlotManager.hpp"
 #include "ocr/GeminiOcrClient.hpp"
 #include "ocr/OcrWorker.hpp"
 #include "sensor/ParkingSensorEventAdapter.hpp"
 #include "sensor/SensorLinkManager.hpp"
 #include "snapshot/SnapshotStorage.hpp"
+#include "sensor/HallParkingService.hpp"
 #include "util/Logger.hpp"
+#include "util/StringUtil.hpp"
 #include "util/TimeUtil.hpp"
 
 #include <algorithm>
@@ -63,32 +65,113 @@ std::vector<std::shared_ptr<camera::CameraChannel>> createCameraChannels(
     return channels;
 }
 
-// 촬영 요청 draft 페이로드. 카메라 촬영 규약(EVDA-138)이 확정되면 이 한 곳과
-// 토픽 prefix 만 교체한다. id/ROI 값은 설정에서 온 단순 값이라 별도 이스케이프는
-// 하지 않는다.
-std::string buildCapturePayload(const parking::CaptureRequest& request) {
-    std::ostringstream oss;
-    oss << "{"
-        << "\"schema\":\"capture_request_draft_v0\","
-        << "\"session_id\":\"" << request.sessionId << "\","
-        << "\"slot_id\":\"" << request.slotId << "\","
-        << "\"sensor_id\":\"" << request.sensorId << "\","
-        << "\"camera_id\":\"" << request.target.cameraId << "\","
-        << "\"channel_id\":\"" << request.target.channelId << "\","
-        << "\"area_name\":\"" << request.target.areaName << "\","
-        << "\"reason\":\"" << parking::toReasonString(request.reason) << "\","
-        << "\"attempt\":" << request.attempt << ","
-        << "\"roi\":{"
-        << "\"x\":" << request.target.roiX << ","
-        << "\"y\":" << request.target.roiY << ","
-        << "\"w\":" << request.target.roiWidth << ","
-        << "\"h\":" << request.target.roiHeight << "},"
-        << "\"response_timeout_ms\":" << request.responseTimeout.count() << ","
-        << "\"occupied_at\":\"" << util::isoString(request.sessionStartedAt)
-        << "\","
-        << "\"requested_at\":\"" << util::nowIsoString() << "\""
-        << "}";
-    return oss.str();
+const app::IvaAreaConfig* findArea(const app::AppConfig& config,
+                                   const std::string& slot_id) {
+    for (const auto& area : config.iva_areas)
+        if (area.slot_id == slot_id) return &area;
+    return nullptr;
+}
+
+std::shared_ptr<camera::CameraChannel> findChannel(
+    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
+    const std::string& channel_id) {
+    for (const auto& channel : channels)
+        if (channel && channel->channel_id == channel_id) return channel;
+    return nullptr;
+}
+
+std::string captureSlotSnapshot(
+    const app::AppConfig& config,
+    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
+    snapshot::SnapshotStorage& storage,
+    const std::string& slot_id) {
+    const auto* area = findArea(config, slot_id);
+    if (!area) return {};
+    auto channel = findChannel(channels, area->channel_id);
+    if (!channel) return {};
+    return storage.saveIvaAreaSnapshot(
+        channel, slot_id,
+        {area->roi_x, area->roi_y, area->roi_width, area->roi_height});
+}
+
+// EVDA-138에서 카메라 응답 규약이 확정되기 전 사용하는 MQTT 요청 초안이다.
+// publish 성공은 Broker 접수만 의미하며 실제 카메라 촬영 성공을 뜻하지 않는다.
+std::string buildCaptureRequestPayload(
+    const parking::CaptureRequest& request) {
+    std::ostringstream output;
+    output << "{\"schema\":\"capture_request_draft_v0\","
+           << "\"session_id\":\"" << util::jsonEscape(request.sessionId)
+           << "\",\"slot_id\":\"" << util::jsonEscape(request.slotId)
+           << "\",\"sensor_id\":\"" << util::jsonEscape(request.sensorId)
+           << "\",\"camera_id\":\""
+           << util::jsonEscape(request.target.cameraId)
+           << "\",\"channel_id\":\""
+           << util::jsonEscape(request.target.channelId)
+           << "\",\"area_name\":\""
+           << util::jsonEscape(request.target.areaName)
+           << "\",\"reason\":\"" << parking::toReasonString(request.reason)
+           << "\",\"attempt\":" << request.attempt
+           << ",\"roi\":{\"x\":" << request.target.roiX
+           << ",\"y\":" << request.target.roiY
+           << ",\"w\":" << request.target.roiWidth
+           << ",\"h\":" << request.target.roiHeight << "},"
+           << "\"response_timeout_ms\":" << request.responseTimeout.count()
+           << ",\"occupied_at\":\""
+           << util::jsonEscape(util::isoString(request.sessionStartedAt))
+           << "\",\"requested_at\":\""
+           << util::jsonEscape(util::nowIsoString()) << "\"}";
+    return output.str();
+}
+
+std::string buildQtParkingEvent(
+    const app::AppConfig& config,
+    database::EventDatabase& database,
+    const std::string_view event_type,
+    const std::int64_t session_id,
+    const std::string_view slot_id,
+    const std::string_view plate_number,
+    const std::string_view timestamp,
+    const std::string_view detail) {
+    const auto* area = findArea(config, std::string(slot_id));
+    std::string external_type(event_type);
+    if (event_type == "VIOLATION_TRIGGERED") external_type = "OVERTIME_VIOLATION";
+    else if (event_type == "DEPARTURE") external_type = "SLOT_VACATED";
+    else if (event_type == "TIMER_STARTED") external_type = "PLATE_RECOGNIZED";
+    const bool alarm = external_type == "OVERTIME_VIOLATION";
+    const bool vacant = external_type == "SLOT_VACATED" ||
+                        external_type == "EARLY_DEPARTURE_IMAGES_DELETED";
+    std::string vehicle_type = "UNKNOWN";
+    if (!plate_number.empty()) {
+        vehicle_type = parking_timer::toString(
+            database.classifyVehicle(plate_number));
+    }
+    std::ostringstream output;
+    output << "{\"event_id\":\"session-" << session_id << '-'
+           << util::jsonEscape(std::string(timestamp)) << "\","
+           << "\"event_type\":\"" << util::jsonEscape(external_type) << "\","
+           << "\"session_id\":" << session_id << ','
+           << "\"slot_id\":\"" << util::jsonEscape(std::string(slot_id)) << "\","
+           << "\"channel_id\":\""
+           << util::jsonEscape(area ? area->channel_id : "") << "\","
+           << "\"plate_number\":\""
+           << util::jsonEscape(std::string(plate_number)) << "\","
+           << "\"vehicle_type\":\"" << util::jsonEscape(vehicle_type) << "\","
+           << "\"ocr_status\":\""
+           << (plate_number.empty() ? "PENDING" : "RECOGNIZED") << "\","
+           << "\"parking_state\":\"" << (vacant ? "VACANT" : "OCCUPIED") << "\","
+           << "\"occupied_seconds\":"
+           << (alarm ? config.parking_timeout_seconds : 0) << ','
+           << "\"alarm_state\":\"" << (alarm ? "OPEN" : "NONE") << "\","
+           << "\"roi\":{"
+           << "\"x\":" << (area ? area->roi_x : 0.0) << ','
+           << "\"y\":" << (area ? area->roi_y : 0.0) << ','
+           << "\"width\":" << (area ? area->roi_width : 0.0) << ','
+           << "\"height\":" << (area ? area->roi_height : 0.0) << "},"
+           << "\"session_images_url\":\"/api/v1/parking-sessions/"
+           << session_id << "/images\","
+           << "\"evidence_path\":\"" << util::jsonEscape(std::string(detail)) << "\","
+           << "\"timestamp\":\"" << util::jsonEscape(std::string(timestamp)) << "\"}";
+    return output.str();
 }
 
 }
@@ -138,6 +221,18 @@ int main() {
         return 1;
     }
 
+    // 센서/통신 스레드는 DB I/O를 직접 기다리지 않고 bounded reporter queue에 기록한다.
+    event::SystemEventReporter system_event_reporter(
+        [&database](const event::SystemEvent& system_event,
+                    const std::string& message) {
+            return database.insertSystemEvent(
+                event::toString(system_event.code), system_event.slot_id, message);
+        });
+    event::SystemEventReporter* system_event_sink =
+        system_event_reporter.start() ? &system_event_reporter : nullptr;
+    if (system_event_sink == nullptr)
+        util::logError("System event reporter disabled after start failure");
+
     std::unique_ptr<http::ParkingHttpServer> http_server;
     if (config.http_api_enabled) {
         http::ServerConfig http_config;
@@ -151,6 +246,7 @@ int main() {
         http_server = std::make_unique<http::ParkingHttpServer>(database,
                                                                 http_config);
         if (!http_server->start()) {
+            system_event_reporter.stop();
             database.close();
             return 1;
         }
@@ -177,6 +273,57 @@ int main() {
         config.iva_duplicate_suppression_ms
     );
 
+    mqtt::MqttEventBridge* capture_mqtt_bridge = nullptr;
+    std::unique_ptr<parking::CaptureScheduler> capture_scheduler;
+    std::unique_ptr<parking::CaptureSchedulerRuntime> capture_runtime;
+    if (config.capture_sched_enabled) {
+        parking::CaptureSchedulerConfig scheduler_config;
+        scheduler_config.responseTimeout = std::chrono::milliseconds(
+            config.capture_response_timeout_ms);
+        scheduler_config.retryInterval = std::chrono::milliseconds(
+            config.capture_retry_interval_ms);
+        scheduler_config.maxRetries = config.capture_max_retries;
+
+        parking::CaptureTargetResolver resolver =
+            [&config](const std::string& slot_id)
+            -> std::optional<parking::CaptureTarget> {
+            const auto* area = findArea(config, slot_id);
+            if (area == nullptr) return std::nullopt;
+            return parking::CaptureTarget{
+                config.camera_id, area->channel_id, area->area_name,
+                area->roi_x, area->roi_y, area->roi_width, area->roi_height};
+        };
+        capture_scheduler = std::make_unique<parking::CaptureScheduler>(
+            std::move(scheduler_config), std::move(resolver));
+
+        const std::string topic_prefix = config.capture_topic_prefix;
+        capture_runtime = std::make_unique<parking::CaptureSchedulerRuntime>(
+            *capture_scheduler,
+            [&capture_mqtt_bridge, topic_prefix](
+                const parking::CaptureRequest& request) {
+                if (capture_mqtt_bridge == nullptr) return false;
+                return capture_mqtt_bridge->publishApplicationEvent(
+                    topic_prefix + "/" + request.slotId,
+                    buildCaptureRequestPayload(request), 1, false);
+            });
+    }
+
+    std::unique_ptr<parking_timer::EventManager> timer_events;
+    std::unique_ptr<parking_timer::ParkingSlotManager> parking_timer;
+    if (config.parking_timer_enabled) {
+        timer_events = std::make_unique<parking_timer::EventManager>();
+        parking_timer = std::make_unique<parking_timer::ParkingSlotManager>(
+            database, *timer_events,
+            std::chrono::seconds(config.parking_timeout_seconds),
+            [&config, &channels, &snapshot_storage](
+                std::int64_t, const std::string& slot_id, const std::string&) {
+                return captureSlotSnapshot(
+                    config, channels, snapshot_storage, slot_id);
+            });
+        util::logInfo("parking timer enabled: timeout=" +
+                      std::to_string(config.parking_timeout_seconds) + "s");
+    }
+
     ocr::GeminiOcrClient gemini_client(
         config.gemini_api_key,
         config.gemini_model,
@@ -186,10 +333,40 @@ int main() {
     );
     ocr::OcrWorker ocr_worker(
         std::move(gemini_client), database,
-        config.plate_preprocess_mode != "off");
+        config.plate_preprocess_mode != "off",
+        [&parking_timer](const ocr::OcrWorker::RecognitionResult& result) {
+            if (parking_timer) {
+                parking_timer->handleRecognizedSession(
+                    result.session_id, result.slot_id, result.plate_number);
+            }
+        });
 
     bestshot::BestShotReceiver bestshot_receiver(
         channels, database, trigger_coordinator, ocr_worker, g_running);
+
+    const auto sensor_link_mode =
+        device::SensorLinkManager::parseMode(config.sensor_link_mode);
+    std::unique_ptr<sensor::HallParkingService> hall_service;
+    if (parking_timer && (config.hall_mqtt_input_enabled ||
+                          sensor_link_mode != device::SensorLinkMode::Disabled)) {
+        auto slot_configs = parking::ParkingSlotConfigLoader::loadFromFile(
+            config.parking_slot_config_path);
+        hall_service = std::make_unique<sensor::HallParkingService>(
+            std::move(slot_configs), config, channels, snapshot_storage,
+            database,
+            [&ocr_worker](int session_id, const std::string& slot_id,
+                          const std::string& path) {
+                ocr_worker.enqueue(session_id, slot_id, path);
+            },
+            [&ocr_worker](int session_id) {
+                ocr_worker.cancelSession(session_id);
+            },
+            *parking_timer, *timer_events, system_event_sink,
+            [&capture_runtime](
+                const parking::ParkingTransitionResult& transition) {
+                if (capture_runtime) capture_runtime->onTransition(transition);
+            });
+    }
 
     rtsp_receiver.start();
 
@@ -197,6 +374,10 @@ int main() {
         g_running.store(false);
         rtsp_receiver.stop();
         if (http_server) http_server->stop();
+        hall_service.reset();
+        parking_timer.reset();
+        timer_events.reset();
+        system_event_reporter.stop();
         database.close();
         return 1;
     }
@@ -210,246 +391,80 @@ int main() {
         database,
         snapshot_storage,
         trigger_coordinator,
-        ocr_worker
+        ocr_worker,
+        [&hall_service](const std::string& line) {
+            if (hall_service) hall_service->handleLine(line);
+        }
     );
+    capture_mqtt_bridge = &mqtt_bridge;
 
     if (!mqtt_bridge.start()) {
         g_running.store(false);
         bestshot_receiver.stop();
         ocr_worker.stop();
+        hall_service.reset();
+        parking_timer.reset();
+        timer_events.reset();
         rtsp_receiver.stop();
         if (http_server) http_server->stop();
+        system_event_reporter.stop();
         database.close();
         return 1;
     }
 
-    // 홀센서 주차 점유 경로: STM32 --UART--> SensorLinkManager --콜백-->
-    //   ParkingSensorEventAdapter(sensor_id->slot) --> ParkingSessionWorker
-    //   (VACANT/OCCUPIED 상태머신) --> sink(활성세션 index, 로깅, 이후 촬영 스케줄러).
-    // 화재 경로와 같은 STM32 UART 링크(sensor_link)를 공유한다. Service 가 Core 를
-    // include 하지 않도록 모든 배선은 여기(main)에서만 한다.
-    std::vector<parking::ParkingSlotConfig> parking_slot_configs;
-    std::unique_ptr<parking::SensorSlotIndex> sensor_slot_index;
-    std::unique_ptr<sensor::ParkingSensorEventAdapter> parking_adapter;
-    std::unique_ptr<parking::ActiveParkingSessionIndex> active_session_index;
-    std::unique_ptr<parking::ParkingSessionWorker> parking_worker;
-    std::unique_ptr<parking::CaptureScheduler> capture_scheduler;
-    std::unique_ptr<parking::CaptureSchedulerRuntime> capture_runtime;
+    if (capture_runtime) {
+        capture_runtime->start();
+        util::logInfo(
+            "capture scheduler enabled (DRAFT protocol pending EVDA-138): "
+            "topic_prefix=" + config.capture_topic_prefix +
+            " offsets=30s,60s retries=" +
+            std::to_string(config.capture_max_retries));
+    }
 
-    if (config.parking_hall_enabled) {
-        try {
-            parking_slot_configs =
-                parking::ParkingSlotConfigLoader::loadFromFile(
-                    config.parking_slots_config_path);
-        } catch (const std::exception& error) {
-            util::logWarn(
-                std::string("parking hall disabled: cannot load ") +
-                config.parking_slots_config_path + ": " + error.what());
-        }
-
-        if (parking_slot_configs.empty()) {
-            util::logWarn(
-                "parking hall enabled but no slots loaded; hall path off");
-        } else {
-            sensor_slot_index = std::make_unique<parking::SensorSlotIndex>(
-                parking_slot_configs);
-            parking_adapter =
-                std::make_unique<sensor::ParkingSensorEventAdapter>(
-                    *sensor_slot_index);
-            active_session_index =
-                std::make_unique<parking::ActiveParkingSessionIndex>();
-            parking_worker =
-                std::make_unique<parking::ParkingSessionWorker>(
-                    parking_slot_configs,
-                    std::chrono::milliseconds(
-                        config.parking_occupancy_confirm_ms));
-
-            if (config.parking_occupancy_confirm_ms > 0) {
-                util::logInfo(
-                    "parking occupancy confirm gate enabled: threshold_ms=" +
-                    std::to_string(config.parking_occupancy_confirm_ms));
-            }
-
-            // sink 1: 활성 세션 read model 갱신 (IVA/BestShot 워커가 조회).
-            parking::ActiveParkingSessionIndex* active_index_ptr =
-                active_session_index.get();
-            parking_worker->addSink(
-                [active_index_ptr](
-                    const parking::ParkingTransitionResult& transition) {
-                    active_index_ptr->apply(transition);
-                });
-
-            // sink 2: 실제 상태 변화만 로깅 (1~2초 폴링 중복은 남기지 않는다).
-            parking_worker->addSink(
-                [](const parking::ParkingTransitionResult& transition) {
-                    if (transition.changed()) {
-                        util::logLine(
-                            "PARKING_SESSION",
-                            std::string(parking::toString(transition.code)) +
-                                " slot=" + transition.slotId +
-                                " session=" + transition.sessionId);
-                    }
-                });
-
-            // sink 3: 입차 후 촬영 스케줄러 (T0+30s / T0+60s). 카메라 촬영 규약
-            // (EVDA-138) 미확정이라 발행 토픽/페이로드는 draft 이며 기본 비활성.
-            // Core(CaptureScheduler)는 MQTT 를 모르고, 슬롯->채널->ROI 매핑과
-            // 발행 경계는 여기(main)에서 주입한다 (FireAlarmManager 와 같은 방식).
-            if (config.capture_sched_enabled) {
-                parking::CaptureSchedulerConfig sched_config;
-                sched_config.responseTimeout = std::chrono::milliseconds(
-                    config.capture_response_timeout_ms);
-                sched_config.retryInterval = std::chrono::milliseconds(
-                    config.capture_retry_interval_ms);
-                sched_config.maxRetries = config.capture_max_retries;
-
-                // 슬롯 -> 카메라 채널 -> ROI: AppConfig::iva_areas 에서 해석.
-                parking::CaptureTargetResolver resolver =
-                    [&config](const std::string& slotId)
-                    -> std::optional<parking::CaptureTarget> {
-                    for (const auto& area : config.iva_areas) {
-                        if (area.slot_id != slotId) {
-                            continue;
-                        }
-                        parking::CaptureTarget target;
-                        target.cameraId = config.camera_id;
-                        target.channelId = area.channel_id;
-                        target.areaName = area.area_name;
-                        target.roiX = area.roi_x;
-                        target.roiY = area.roi_y;
-                        target.roiWidth = area.roi_width;
-                        target.roiHeight = area.roi_height;
-                        return target;
-                    }
-                    return std::nullopt;
-                };
-
-                capture_scheduler =
-                    std::make_unique<parking::CaptureScheduler>(
-                        std::move(sched_config), std::move(resolver));
-
-                const std::string capture_prefix = config.capture_topic_prefix;
-                capture_runtime =
-                    std::make_unique<parking::CaptureSchedulerRuntime>(
-                        *capture_scheduler,
-                        [&mqtt_bridge, capture_prefix](
-                            const parking::CaptureRequest& request) {
-                            const std::string topic =
-                                capture_prefix + "/" + request.slotId;
-                            return mqtt_bridge.publish(
-                                topic, buildCapturePayload(request));
-                        });
-
-                parking::CaptureSchedulerRuntime* capture_runtime_ptr =
-                    capture_runtime.get();
-                parking_worker->addSink(
-                    [capture_runtime_ptr](
-                        const parking::ParkingTransitionResult& transition) {
-                        capture_runtime_ptr->onTransition(transition);
-                    });
-                capture_runtime->start();
-
-                util::logInfo(
-                    "capture scheduler enabled (DRAFT protocol pending "
-                    "EVDA-138): topic_prefix=" +
-                    capture_prefix + " offsets=30s,60s retries=" +
-                    std::to_string(config.capture_max_retries));
-            }
-
-            util::logInfo(
-                "parking hall path enabled: slots=" +
-                std::to_string(parking_worker->slotCount()) +
-                " config=" + config.parking_slots_config_path);
+    // 촬영 runtime과 MQTT publisher가 준비된 뒤 실제 UART/LoRa 입력을 연다.
+    std::unique_ptr<device::SensorLinkManager> sensor_link;
+    if (hall_service && sensor_link_mode != device::SensorLinkMode::Disabled) {
+        device::SensorLinkManager::Config sensor_config;
+        sensor_config.mode = sensor_link_mode;
+        sensor_config.uart.device_path = config.sensor_uart_device;
+        sensor_config.uart.baud_rate = config.sensor_uart_baud_rate;
+        sensor_config.uart.read_timeout_ms = config.sensor_uart_read_timeout_ms;
+        sensor_config.reconnect_delay_ms = config.sensor_uart_reconnect_ms;
+        sensor_link = std::make_unique<device::SensorLinkManager>(
+            std::move(sensor_config),
+            [&hall_service](const std::string& line,
+                            const std::string& transport) {
+                if (hall_service) hall_service->handleLine(line, transport);
+            }, system_event_sink);
+        if (!sensor_link->start()) {
+            util::logError("Sensor UART/LoRa link could not be started");
+            sensor_link.reset();
         }
     }
 
-    // 화재 후보 경로: STM32 --UART--> SensorLinkManager --콜백--> FireAlarmManager
-    //                 --콜백--> MqttEventBridge::publish --> Qt.
-    // 화재와 홀센서는 같은 STM32 UART 링크를 공유하므로 둘 중 하나라도 켜지면
-    // sensor_link 를 만든다. Service 계층이 Core 를 include 하지 않도록 배선은
-    // 여기(main)에서만 한다.
-    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
-    std::unique_ptr<sensor::SensorLinkManager> sensor_link;
-
-    if (config.fire_alarm_enabled || parking_worker) {
-        if (config.fire_alarm_enabled) {
-            auto bindings =
-                event::parseFireSensorBindings(config.fire_sensor_slot_map);
-            if (bindings.empty()) {
-                util::logWarn(
-                    "FIRE_ALARM_ENABLED but FIRE_SENSOR_SLOT_MAP is empty; "
-                    "alarms will be published without a slot_id");
-            }
-
-            fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
-                config.camera_id,
-                config.default_channel_id,
-                config.fire_topic_prefix,
-                std::move(bindings),
-                [&mqtt_bridge](const std::string& topic,
-                               const std::string& payload) {
-                    return mqtt_bridge.publish(topic, payload);
-                });
-        }
-
-        sensor::SensorLinkConfig link_config;
-        link_config.devicePath = config.fire_uart_device;
-        link_config.baudRate = config.fire_uart_baud;
-        link_config.reopenDelayMs = config.fire_uart_reopen_delay_ms;
-
-        sensor_link = std::make_unique<sensor::SensorLinkManager>(
-            link_config, g_running);
-
-        if (fire_alarm_manager) {
-            sensor_link->setFireHandler(
-                [&fire_alarm_manager](
-                    const sensor::FireSensorMessage& message) {
-                    event::FireSignal signal;
-                    signal.sensorId = message.sensorId;
-                    signal.detected =
-                        message.state == sensor::FireSensorState::Detected;
-                    signal.occurredAt = message.occurredAt;
-                    signal.sourceSequence = message.sequence;
-                    signal.sourceTransport = message.transport;
-                    signal.rawPayload = message.raw;
-                    fire_alarm_manager->onFireSignal(signal);
-                });
-        }
-
-        if (parking_worker) {
-            // 주차 점유 신호를 상태머신 워커로 흘려보낸다.
-            sensor::ParkingSensorEventAdapter* adapter_ptr =
-                parking_adapter.get();
-            parking::ParkingSessionWorker* worker_ptr = parking_worker.get();
-            sensor_link->setParkingHandler(
-                [adapter_ptr, worker_ptr](
-                    const sensor::SensorProtocolMessage& message) {
-                    std::string error;
-                    const auto event = adapter_ptr->adapt(message, &error);
-                    if (!event) {
-                        util::logLine(
-                            "SENSOR_UART",
-                            "parking sensor ignored: " + error +
-                                " sensor=" + message.sensorId);
-                        return;
-                    }
-                    worker_ptr->onSensorEvent(*event);
-                });
-        } else {
-            sensor_link->setParkingHandler(
-                [](const sensor::SensorProtocolMessage& message) {
-                    util::logLine(
-                        "SENSOR_UART",
-                        "parking sensor not wired (PARKING_HALL_ENABLED off): "
-                        "sensor=" +
-                            message.sensorId);
-                });
-        }
-
-        if (!sensor_link->start()) {
-            util::logWarn("sensor link disabled");
-            sensor_link.reset();
-        }
+    if (timer_events) {
+        timer_events->setPublisher(
+            [&mqtt_bridge, &config, &database](
+                const std::string_view event_type, const std::int64_t session_id,
+                const std::string_view slot_id, const std::string_view plate,
+                const std::string_view timestamp, const std::string_view detail) {
+                if (slot_id.empty() || session_id < 0) return;
+                const std::string payload = buildQtParkingEvent(
+                    config, database, event_type, session_id, slot_id, plate,
+                    timestamp, detail);
+                const std::string event_topic =
+                    "parking/v1/events/" + std::string(slot_id);
+                const std::string state_topic =
+                    "parking/v1/state/" + std::string(slot_id);
+                mqtt_bridge.publishQtEvent(event_topic, payload, 1, false);
+                if (event_type != "EARLY_DEPARTURE_IMAGES_DELETED")
+                    mqtt_bridge.publishQtEvent(state_topic, payload, 1, true);
+            });
+    }
+    if (parking_timer) {
+        const auto restored = parking_timer->restoreActiveSessions();
+        util::logInfo("parking timer restored active sessions=" +
+                      std::to_string(restored));
     }
 
     util::logInfo("waiting for camera MQTT events...");
@@ -461,16 +476,17 @@ int main() {
     }
 
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
-    // sensor_link 가 mqtt_bridge 를 콜백으로 잡고 있으므로 먼저 멈춘다.
     if (sensor_link) sensor_link->stop();
-    // 촬영 스케줄러는 sensor_link 정지 후(더 이상 전이 없음) 멈추고,
-    // publisher 가 잡은 mqtt_bridge 보다 먼저 멈춘다.
     if (capture_runtime) capture_runtime->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
     ocr_worker.stop();
+    hall_service.reset();
+    parking_timer.reset();
+    timer_events.reset();
     rtsp_receiver.stop();
     if (http_server) http_server->stop();
+    system_event_reporter.stop();
     database.close();
 
     util::logInfo("pi-server stopped");

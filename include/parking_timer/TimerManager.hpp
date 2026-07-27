@@ -14,6 +14,7 @@
 
 namespace parking_timer {
 
+/** @brief deadline을 정상 반영한 뒤 외부 publisher에 전달하는 이벤트다. */
 struct ViolationEvent {
     std::int64_t log_id{};
     std::string slot_id;
@@ -22,6 +23,7 @@ struct ViolationEvent {
     std::string image_path_2;
 };
 
+/** @brief worker에서 격리한 DB/callback 오류와 관련 세션 문맥이다. */
 struct TimerError {
     std::int64_t log_id{};
     std::string slot_id;
@@ -29,25 +31,31 @@ struct TimerError {
     std::string message;
 };
 
+/** @brief 최소 우선순위 큐와 worker thread로 장기 점유 deadline을 관리한다. */
 class TimerManager {
 public:
     using ViolationCallback = std::function<void(const ViolationEvent&)>;
     using ErrorCallback = std::function<void(const TimerError&)>;
+    using EvidenceProvider = std::function<std::string(
+        std::int64_t, const std::string&, const std::string&)>;
 
     TimerManager(EventDatabase& database,
                  ViolationCallback callback,
                  ErrorCallback error_callback = {},
-                 std::mutex* transition_mutex = nullptr);
+                 std::mutex* transition_mutex = nullptr,
+                 EvidenceProvider evidence_provider = {});
     ~TimerManager();
 
     TimerManager(const TimerManager&) = delete;
     TimerManager& operator=(const TimerManager&) = delete;
 
+    /** @brief 불변 session ID의 위반 deadline을 큐에 등록하고 worker를 깨운다. */
     void schedule(std::int64_t log_id,
                   std::string slot_id,
                   std::string car_number,
                   std::chrono::milliseconds delay);
 
+    /** @brief 아직 worker가 소비하지 않은 큐 항목 수를 반환한다. */
     std::size_t pendingCount() const;
 
 private:
@@ -76,6 +84,7 @@ private:
     EventDatabase& database_;
     ViolationCallback callback_;
     ErrorCallback error_callback_;
+    EvidenceProvider evidence_provider_;
     std::mutex* transition_mutex_{};
     mutable std::mutex mutex_;
     std::condition_variable cv_;

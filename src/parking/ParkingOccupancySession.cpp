@@ -1,3 +1,4 @@
+/** @file ParkingOccupancySession.cpp @brief 센서 기반 주차 세션의 시간·완료 상태 불변식 구현. */
 #include "parking/ParkingOccupancySession.hpp"
 
 #include <stdexcept>
