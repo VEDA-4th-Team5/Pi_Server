@@ -96,6 +96,7 @@ int main(int argc, char* argv[]) {
         database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
 
         app::AppConfig app_config{};
+        app_config.parking_occupancy_confirm_ms = 40;
         app_config.iva_areas.push_back(
             {"EV01", "EV01", "ch01", 0.0, 0.0, 1.0, 1.0});
         auto channel = std::make_shared<camera::CameraChannel>();
@@ -136,15 +137,21 @@ int main(int argc, char* argv[]) {
             }, reporter_config);
         require(system_events.start(), "system event reporter did not start");
 
-        int enqueued_session = -1;
-        int canceled_session = -1;
+        std::atomic<int> enqueued_session{-1};
+        std::atomic<int> canceled_session{-1};
+        std::mutex transition_mutex;
+        std::vector<parking::ParkingTransitionResult> capture_transitions;
         sensor::HallParkingService service(
             std::move(configs), app_config, channels, snapshots, database,
             [&](int session_id, const std::string&, const std::string&) {
-                enqueued_session = session_id;
+                enqueued_session.store(session_id);
             },
-            [&](int session_id) { canceled_session = session_id; },
-            timer_manager, events, &system_events);
+            [&](int session_id) { canceled_session.store(session_id); },
+            timer_manager, events, &system_events,
+            [&](const parking::ParkingTransitionResult& transition) {
+                std::lock_guard lock(transition_mutex);
+                capture_transitions.push_back(transition);
+            });
 
         require(!service.handleLine("BROKEN:SENSOR:MESSAGE", "uart"),
                 "malformed sensor message was accepted");
@@ -162,9 +169,22 @@ int main(int argc, char* argv[]) {
 
         require(service.handleLine("SENSOR:HALL01:OCCUPIED:1"),
                 "fake OCCUPIED was rejected");
+        require(!database.findActiveBySlot("EV01").has_value(),
+                "confirmation gate created a DB session immediately");
+        require(waitUntil([&] {
+                    return database.findActiveBySlot("EV01").has_value();
+                }, 1s),
+                "single OCCUPIED was not auto-confirmed after threshold");
         auto first = database.findActiveBySlot("EV01");
-        require(first.has_value() && first->id == enqueued_session,
+        require(first.has_value() && first->id == enqueued_session.load(),
                 "OCCUPIED did not create/enqueue one database session");
+        {
+            std::lock_guard lock(transition_mutex);
+            require(capture_transitions.size() == 1 &&
+                        capture_transitions.front().sessionId ==
+                            std::to_string(first->id),
+                    "capture scheduler did not receive SQLite session_id");
+        }
         std::vector<database::ImageView> first_images;
         require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
                     first_images.size() == 1,
@@ -180,8 +200,17 @@ int main(int argc, char* argv[]) {
 
         require(service.handleLine("SENSOR:HALL01:VACANT:3"),
                 "early VACANT was rejected");
-        require(canceled_session == first->id,
+        require(canceled_session.load() == first->id,
                 "early departure did not cancel pending OCR");
+        {
+            std::lock_guard lock(transition_mutex);
+            require(capture_transitions.size() == 2 &&
+                        capture_transitions.back().code ==
+                            parking::ParkingTransitionCode::SessionCompleted &&
+                        capture_transitions.back().sessionId ==
+                            std::to_string(first->id),
+                    "departure did not cancel the SQLite capture schedule");
+        }
         require(!std::filesystem::exists(first_path),
                 "early departure did not remove Snapshot file");
         first_images.clear();
@@ -195,6 +224,10 @@ int main(int argc, char* argv[]) {
 
         require(service.handleLine("SENSOR:HALL01:OCCUPIED:4"),
                 "second OCCUPIED was rejected");
+        require(waitUntil([&] {
+                    return database.findActiveBySlot("EV01").has_value();
+                }, 1s),
+                "second OCCUPIED was not auto-confirmed");
         auto second = database.findActiveBySlot("EV01");
         require(second.has_value() && second->id != first->id,
                 "second parking session was not created");

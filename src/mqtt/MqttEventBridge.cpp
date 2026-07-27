@@ -306,4 +306,11 @@ bool MqttEventBridge::publishQtEvent(const std::string& topic,
     return publish(topic, payload, qos, retain);
 }
 
+bool MqttEventBridge::publishApplicationEvent(const std::string& topic,
+                                              const std::string& payload,
+                                              const int qos,
+                                              const bool retain) {
+    return publish(topic, payload, qos, retain);
+}
+
 }

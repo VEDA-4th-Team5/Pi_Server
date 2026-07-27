@@ -35,7 +35,8 @@ HallParkingService::HallParkingService(
     OcrCancel ocr_cancel,
     parking_timer::ParkingSlotManager& timer_manager,
     parking_timer::EventManager& event_manager,
-    ::event::SystemEventReporter* system_event_reporter)
+    ::event::SystemEventReporter* system_event_reporter,
+    TransitionSink transition_sink)
     : slot_configs_(std::move(slot_configs)),
       slot_index_(slot_configs_),
       adapter_(slot_index_),
@@ -48,7 +49,27 @@ HallParkingService::HallParkingService(
       ocr_cancel_(std::move(ocr_cancel)),
       timer_manager_(timer_manager),
       event_manager_(event_manager),
-      system_event_reporter_(system_event_reporter) {}
+      system_event_reporter_(system_event_reporter),
+      transition_sink_(std::move(transition_sink)) {
+    if (app_config_.parking_occupancy_confirm_ms > 0) {
+        confirmation_gate_.emplace(std::chrono::milliseconds(
+            app_config_.parking_occupancy_confirm_ms));
+        confirmation_worker_ =
+            std::thread(&HallParkingService::confirmationLoop, this);
+        util::logInfo(
+            "parking occupancy confirm gate enabled: threshold_ms=" +
+            std::to_string(app_config_.parking_occupancy_confirm_ms));
+    }
+}
+
+HallParkingService::~HallParkingService() {
+    {
+        std::lock_guard lock(mutex_);
+        stopping_ = true;
+    }
+    confirmation_condition_.notify_all();
+    if (confirmation_worker_.joinable()) confirmation_worker_.join();
+}
 
 bool HallParkingService::handleLine(const std::string& line,
                                     const std::string& transport) {
@@ -78,18 +99,41 @@ bool HallParkingService::handleLine(const std::string& line,
         return false;
     }
 
-    const auto transition = occupancy_manager_.handle(*event);
+    return processEventLocked(*event, true);
+}
+
+bool HallParkingService::processEventLocked(
+    const parking::ParkingSensorEvent& event,
+    const bool apply_confirmation_gate) {
+    if (apply_confirmation_gate && confirmation_gate_) {
+        const auto* slot = occupancy_manager_.findSlot(event.slotId);
+        const bool already_occupied = slot != nullptr && slot->occupied();
+        if (confirmation_gate_->evaluate(event, already_occupied) ==
+            parking::ParkingOccupancyConfirmationGate::Decision::Suppress) {
+            confirmation_condition_.notify_all();
+            util::logInfo("Hall sensor event awaiting confirmation: slot=" +
+                          event.slotId + " state=" +
+                          (event.state == parking::ParkingSensorState::Occupied
+                               ? "OCCUPIED"
+                               : "VACANT"));
+            return true;
+        }
+    }
+
+    const auto transition = occupancy_manager_.handle(event);
     if (!transition.changed()) {
-        util::logInfo("Hall sensor event ignored: slot=" + event->slotId +
+        util::logInfo("Hall sensor event ignored: slot=" + event.slotId +
                       " reason=" + transition.message);
         return true;
     }
-    return event->state == parking::ParkingSensorState::Occupied
-               ? handleOccupied(*event)
-               : handleVacant(*event);
+    return event.state == parking::ParkingSensorState::Occupied
+               ? handleOccupied(event, transition)
+               : handleVacant(event, transition);
 }
 
-bool HallParkingService::handleOccupied(const parking::ParkingSensorEvent& event) {
+bool HallParkingService::handleOccupied(
+    const parking::ParkingSensorEvent& event,
+    const parking::ParkingTransitionResult& transition) {
     const auto* area = findArea(app_config_, event.slotId);
     if (!area) {
         util::logError("No ROI mapping for hall slot=" + event.slotId);
@@ -135,15 +179,28 @@ bool HallParkingService::handleOccupied(const parking::ParkingSensorEvent& event
     event_manager_.publish("SLOT_OCCUPIED", event.slotId, "",
                            parking_timer::utcNow(), snapshot_path, session_id);
     if (ocr_enqueue_) ocr_enqueue_(session_id, event.slotId, snapshot_path);
+    if (transition_sink_) {
+        auto database_transition = transition;
+        database_transition.sessionId = std::to_string(session_id);
+        transition_sink_(database_transition);
+    }
     util::logLine("HALL_OCCUPIED", "slot=" + event.slotId +
                   " session=" + std::to_string(session_id) +
                   " snapshot=" + snapshot_path);
     return true;
 }
 
-bool HallParkingService::handleVacant(const parking::ParkingSensorEvent& event) {
+bool HallParkingService::handleVacant(
+    const parking::ParkingSensorEvent& event,
+    const parking::ParkingTransitionResult& transition) {
     auto departed = timer_manager_.handleExit(event.slotId);
     if (!departed) return true;
+
+    if (transition_sink_) {
+        auto database_transition = transition;
+        database_transition.sessionId = std::to_string(departed->id);
+        transition_sink_(database_transition);
+    }
 
     if (ocr_cancel_) ocr_cancel_(static_cast<int>(departed->id));
     if (!departed->violation_at.has_value()) {
@@ -153,6 +210,31 @@ bool HallParkingService::handleVacant(const parking::ParkingSensorEvent& event) 
                                "temporary entry images removed", departed->id);
     }
     return true;
+}
+
+void HallParkingService::confirmationLoop() {
+    std::unique_lock lock(mutex_);
+    while (!stopping_) {
+        const auto next = confirmation_gate_->nextDeadline();
+        if (!next) {
+            confirmation_condition_.wait(lock);
+        } else {
+            confirmation_condition_.wait_until(lock, *next);
+        }
+        if (stopping_) break;
+
+        const auto monotonic_now = std::chrono::steady_clock::now();
+        const auto wall_now = std::chrono::system_clock::now();
+        auto due = confirmation_gate_->takeDue(monotonic_now, wall_now);
+        for (const auto& event : due) {
+            util::logLine("HALL_CONFIRM",
+                          "occupied confirmed slot=" + event.slotId);
+            if (!processEventLocked(event, false)) {
+                util::logError("confirmed OCCUPIED processing failed: slot=" +
+                               event.slotId);
+            }
+        }
+    }
 }
 
 bool HallParkingService::removeEarlyDepartureImages(const std::int64_t session_id) {

@@ -20,6 +20,8 @@ struct SensorProtocolMessage {
         std::chrono::system_clock::now()};
     std::optional<std::uint64_t> sequence;
     std::string transport{"text-test"};
+    std::chrono::steady_clock::time_point receivedMonotonic{
+        std::chrono::steady_clock::now()};
 };
 
 }  // namespace sensor

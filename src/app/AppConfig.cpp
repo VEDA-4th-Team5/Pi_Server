@@ -112,6 +112,18 @@ AppConfig AppConfig::loadFromEnv() {
         std::max(1, getEnvIntOrDefault("SENSOR_UART_READ_TIMEOUT_MS", 250));
     config.sensor_uart_reconnect_ms =
         std::max(1, getEnvIntOrDefault("SENSOR_UART_RECONNECT_MS", 1000));
+    config.parking_occupancy_confirm_ms =
+        std::max(0, getEnvIntOrDefault("PARKING_OCCUPANCY_CONFIRM_MS", 0));
+    config.capture_sched_enabled =
+        getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);
+    config.capture_topic_prefix =
+        getEnvOrDefault("CAPTURE_TOPIC_PREFIX", "parking/capture");
+    config.capture_response_timeout_ms =
+        std::max(1, getEnvIntOrDefault("CAPTURE_RESPONSE_TIMEOUT_MS", 3000));
+    config.capture_retry_interval_ms =
+        std::max(1, getEnvIntOrDefault("CAPTURE_RETRY_INTERVAL_MS", 2000));
+    config.capture_max_retries =
+        std::max(0, getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2));
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");

@@ -1,3 +1,4 @@
+/** @file ParkingOccupancySession.cpp @brief 센서 기반 주차 세션의 시간·완료 상태 불변식 구현. */
 #include "parking/ParkingOccupancySession.hpp"
 
 #include <stdexcept>
@@ -9,11 +10,13 @@ ParkingOccupancySession::ParkingOccupancySession(
     std::string sessionId,
     std::string slotId,
     std::string sensorId,
-    std::chrono::system_clock::time_point startedAt)
+    std::chrono::system_clock::time_point startedAt,
+    std::chrono::steady_clock::time_point startedAtMonotonic)
     : sessionId_(std::move(sessionId)),
       slotId_(std::move(slotId)),
       sensorId_(std::move(sensorId)),
-      startedAt_(startedAt) {
+      startedAt_(startedAt),
+      startedAtMonotonic_(startedAtMonotonic) {
     if (sessionId_.empty()) {
         throw std::invalid_argument("parking session id is empty");
     }
@@ -52,6 +55,11 @@ bool ParkingOccupancySession::active() const noexcept {
 std::chrono::system_clock::time_point
 ParkingOccupancySession::startedAt() const noexcept {
     return startedAt_;
+}
+
+std::chrono::steady_clock::time_point
+ParkingOccupancySession::startedAtMonotonic() const noexcept {
+    return startedAtMonotonic_;
 }
 
 const std::optional<std::chrono::system_clock::time_point>&

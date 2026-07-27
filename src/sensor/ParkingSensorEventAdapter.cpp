@@ -1,3 +1,4 @@
+/** @file ParkingSensorEventAdapter.cpp @brief transport 메시지를 주차 도메인 이벤트로 변환한다. */
 #include "sensor/ParkingSensorEventAdapter.hpp"
 
 namespace sensor {
@@ -27,6 +28,7 @@ ParkingSensorEventAdapter::adapt(
     event.occurredAt = message.occurredAt;
     event.sourceSequence = message.sequence;
     event.sourceTransport = message.transport;
+    event.receivedMonotonic = message.receivedMonotonic;
     return event;
 }
 

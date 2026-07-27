@@ -41,6 +41,17 @@ struct AppConfig {
     int sensor_uart_read_timeout_ms;
     int sensor_uart_reconnect_ms;
 
+    // 홀센서 OCCUPIED가 이 시간 이상 유지되어야 DB 세션을 생성한다.
+    // 0이면 기존처럼 첫 OCCUPIED를 즉시 확정한다.
+    int parking_occupancy_confirm_ms;
+
+    // 확정된 입차 T0를 기준으로 30초/60초 MQTT 촬영 요청을 예약한다.
+    bool capture_sched_enabled;
+    std::string capture_topic_prefix;
+    int capture_response_timeout_ms;
+    int capture_retry_interval_ms;
+    int capture_max_retries;
+
     std::string snapshot_dir;
     std::string db_path;
     std::string gemini_api_key;

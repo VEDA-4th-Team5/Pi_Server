@@ -49,6 +49,7 @@ set(SENSOR_PARKING_SOURCES
     src/parking/ParkingSlotConfig.cpp
     src/parking/SensorSlotIndex.cpp
     src/parking/ParkingSensorSequenceGuard.cpp
+    src/parking/ParkingOccupancyConfirmationGate.cpp
     src/parking/ParkingOccupancySession.cpp
     src/parking/ParkingSlotManager.cpp
     src/parking/ActiveParkingSessionIndex.cpp)
@@ -71,6 +72,23 @@ add_test(NAME parking-domain-test
 add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+
+add_executable(capture-scheduler-test
+    tests/unit/CaptureSchedulerTest.cpp
+    src/parking/CaptureScheduler.cpp
+    src/parking/ParkingOccupancySession.cpp)
+target_include_directories(capture-scheduler-test PRIVATE include)
+target_compile_options(capture-scheduler-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME capture-scheduler-test COMMAND capture-scheduler-test)
+
+add_executable(parking-occupancy-confirmation-gate-test
+    tests/unit/ParkingOccupancyConfirmationGateTest.cpp
+    src/parking/ParkingOccupancyConfirmationGate.cpp)
+target_include_directories(parking-occupancy-confirmation-gate-test PRIVATE include)
+target_compile_options(parking-occupancy-confirmation-gate-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME parking-occupancy-confirmation-gate-test
+    COMMAND parking-occupancy-confirmation-gate-test)
 
 add_executable(uart-lora-driver-test
     tests/unit/UartLoRaDriverTest.cpp

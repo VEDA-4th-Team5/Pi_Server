@@ -47,6 +47,12 @@ public:
                         int qos = 1,
                         bool retain = false);
 
+    /** @brief 카메라 촬영 요청 등 서버 application 메시지를 발행한다. */
+    bool publishApplicationEvent(const std::string& topic,
+                                 const std::string& payload,
+                                 int qos = 1,
+                                 bool retain = false);
+
 private:
     /** @brief C callback의 userdata를 MqttEventBridge로 복원하는 진입점이다. */
     static void onMessageStatic(
