@@ -5,6 +5,7 @@
 #include "database/EventDatabase.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "parking/ParkingOccupancyConfirmationGate.hpp"
+#include "parking/EvidenceCaptureWorker.hpp"
 #include "parking/ParkingSensorSequenceGuard.hpp"
 #include "parking/ParkingSlotManager.hpp"
 #include "parking/SensorSlotIndex.hpp"
@@ -12,9 +13,9 @@
 #include "parking_timer/ParkingSlotManager.hpp"
 #include "sensor/ParkingSensorEventAdapter.hpp"
 #include "sensor/SensorProtocolParser.hpp"
-#include "snapshot/SnapshotStorage.hpp"
 
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -28,8 +29,6 @@ namespace sensor {
 /** @brief MQTT test/UART 공통 홀센서 메시지를 Snapshot·OCR·타이머 흐름으로 연결한다. */
 class HallParkingService {
 public:
-    using OcrEnqueue = std::function<void(
-        int, const std::string&, const std::string&)>;
     using OcrCancel = std::function<void(int)>;
     using TransitionSink =
         std::function<void(const parking::ParkingTransitionResult&)>;
@@ -38,12 +37,11 @@ public:
         std::vector<parking::ParkingSlotConfig> slot_configs,
         const app::AppConfig& app_config,
         std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
-        snapshot::SnapshotStorage& snapshot_storage,
         database::EventDatabase& database,
-        OcrEnqueue ocr_enqueue,
         OcrCancel ocr_cancel,
         parking_timer::ParkingSlotManager& timer_manager,
         parking_timer::EventManager& event_manager,
+        parking::EvidenceCaptureWorker& evidence_worker,
         event::SystemEventReporter* system_event_reporter = nullptr,
         TransitionSink transition_sink = {});
 
@@ -64,6 +62,7 @@ private:
     bool handleVacant(const parking::ParkingSensorEvent& event,
                       const parking::ParkingTransitionResult& transition);
     void confirmationLoop();
+    void workLoop();
     bool removeEarlyDepartureImages(std::int64_t session_id);
     void report(event::SystemEventCode code,
                 event::SystemEventSeverity severity,
@@ -79,12 +78,11 @@ private:
     parking::ParkingSlotManager occupancy_manager_;
     const app::AppConfig& app_config_;
     std::vector<std::shared_ptr<camera::CameraChannel>>& channels_;
-    snapshot::SnapshotStorage& snapshot_storage_;
     database::EventDatabase& database_;
-    OcrEnqueue ocr_enqueue_;
     OcrCancel ocr_cancel_;
     parking_timer::ParkingSlotManager& timer_manager_;
     parking_timer::EventManager& event_manager_;
+    parking::EvidenceCaptureWorker& evidence_worker_;
     event::SystemEventReporter* system_event_reporter_{};
     TransitionSink transition_sink_;
     std::optional<parking::ParkingOccupancyConfirmationGate>
@@ -92,6 +90,13 @@ private:
     std::mutex mutex_;
     std::condition_variable confirmation_condition_;
     std::thread confirmation_worker_;
+    struct WorkItem {
+        parking::ParkingSensorEvent event;
+        parking::ParkingTransitionResult transition;
+    };
+    std::condition_variable work_condition_;
+    std::deque<WorkItem> work_queue_;
+    std::thread work_worker_;
     bool stopping_{false};
 };
 

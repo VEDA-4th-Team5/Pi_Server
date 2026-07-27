@@ -174,6 +174,9 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
     config.parking_timeout_seconds =
         std::max(1, getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600));
+    config.parking_overstay_evidence_delay_seconds = std::max(
+        1, getEnvIntOrDefault(
+               "PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS", 3600));
 
     config.http_api_enabled = getEnvBoolOrDefault("HTTP_API_ENABLED", true);
     config.http_listen_address = getEnvOrDefault("HTTP_LISTEN_ADDRESS", "0.0.0.0");

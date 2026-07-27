@@ -238,7 +238,8 @@ int collectImage(const DbImageRow* source, void* context) {
     auto* rows = static_cast<std::vector<ImageView>*>(context);
     rows->push_back({source->image_id, source->session_id, source->original_path,
                      source->enhanced_path, source->enhancement_type,
-                     source->ocr_result, source->captured_at});
+                     source->evidence_reason, source->ocr_result,
+                     source->captured_at});
     return 0;
 }
 }
@@ -269,8 +270,8 @@ bool EventDatabase::getImage(int image_id, ImageView& row) {
     DbImageRow source;
     if (!opened_ || db_get_image_by_id(image_id, &source) < 0) return false;
     row = {source.image_id, source.session_id, source.original_path,
-           source.enhanced_path, source.enhancement_type, source.ocr_result,
-           source.captured_at};
+           source.enhanced_path, source.enhancement_type,
+           source.evidence_reason, source.ocr_result, source.captured_at};
     return true;
 }
 

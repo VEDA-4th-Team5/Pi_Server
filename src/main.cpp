@@ -10,6 +10,7 @@
 #include "parking/CaptureRequest.hpp"
 #include "parking/CaptureScheduler.hpp"
 #include "parking/CaptureSchedulerRuntime.hpp"
+#include "parking/EvidenceCaptureWorker.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking_timer/EventManager.hpp"
@@ -70,28 +71,6 @@ const app::IvaAreaConfig* findArea(const app::AppConfig& config,
     for (const auto& area : config.iva_areas)
         if (area.slot_id == slot_id) return &area;
     return nullptr;
-}
-
-std::shared_ptr<camera::CameraChannel> findChannel(
-    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
-    const std::string& channel_id) {
-    for (const auto& channel : channels)
-        if (channel && channel->channel_id == channel_id) return channel;
-    return nullptr;
-}
-
-std::string captureSlotSnapshot(
-    const app::AppConfig& config,
-    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
-    snapshot::SnapshotStorage& storage,
-    const std::string& slot_id) {
-    const auto* area = findArea(config, slot_id);
-    if (!area) return {};
-    auto channel = findChannel(channels, area->channel_id);
-    if (!channel) return {};
-    return storage.saveIvaAreaSnapshot(
-        channel, slot_id,
-        {area->roi_x, area->roi_y, area->roi_width, area->roi_height});
 }
 
 // EVDA-138에서 카메라 응답 규약이 확정되기 전 사용하는 MQTT 요청 초안이다.
@@ -220,6 +199,14 @@ int main() {
     if (!database.open(config.db_path)) {
         return 1;
     }
+    try {
+        database.migrateRuntimeSchema();
+    } catch (const std::exception& error) {
+        util::logError("Runtime DB migration failed: " +
+                       std::string(error.what()));
+        database.close();
+        return 1;
+    }
 
     // 센서/통신 스레드는 DB I/O를 직접 기다리지 않고 bounded reporter queue에 기록한다.
     event::SystemEventReporter system_event_reporter(
@@ -315,10 +302,19 @@ int main() {
         parking_timer = std::make_unique<parking_timer::ParkingSlotManager>(
             database, *timer_events,
             std::chrono::seconds(config.parking_timeout_seconds),
-            [&config, &channels, &snapshot_storage](
-                std::int64_t, const std::string& slot_id, const std::string&) {
-                return captureSlotSnapshot(
-                    config, channels, snapshot_storage, slot_id);
+            [&database](
+                std::int64_t session_id, const std::string& slot_id,
+                const std::string&) {
+                // 새 증거 worker가 T0 기준 이미지를 이미 저장했다면 같은 파일을
+                // 재사용한다. 이전 DB/촬영 실패 세션만 기존 Snapshot으로 보완한다.
+                if (const auto existing = database.findEvidenceImagePath(
+                        session_id, "OVERSTAY_EVIDENCE")) {
+                    return *existing;
+                }
+                util::logWarn("Timer reached before overstay evidence was ready: "
+                              "session=" + std::to_string(session_id) +
+                              " slot=" + slot_id);
+                return std::string{};
             });
         util::logInfo("parking timer enabled: timeout=" +
                       std::to_string(config.parking_timeout_seconds) + "s");
@@ -341,6 +337,40 @@ int main() {
             }
         });
 
+    parking::EvidenceCaptureWorker::Config evidence_config;
+    evidence_config.overstayDelay = std::chrono::seconds(
+        config.parking_overstay_evidence_delay_seconds);
+    auto evidence_worker = std::make_unique<parking::EvidenceCaptureWorker>(
+        snapshot_storage, database, evidence_config,
+        [&ocr_worker, &timer_events](
+            const parking::EvidenceCaptureResult& result) {
+            if (!result.stored) return;
+            if (result.reason == parking::EvidenceReason::OccupancyStart) {
+                ocr_worker.enqueue(static_cast<int>(result.sessionId),
+                                   result.slotId, result.imagePath);
+                if (timer_events) {
+                    timer_events->publish(
+                        "OCCUPANCY_START_EVIDENCE_STORED", result.slotId, "",
+                        parking_timer::utcNow(), result.imagePath,
+                        result.sessionId);
+                }
+            } else if (timer_events) {
+                timer_events->publish(
+                    "OVERSTAY_EVIDENCE_STORED", result.slotId, "",
+                    parking_timer::utcNow(), result.imagePath,
+                    result.sessionId);
+            }
+        });
+    if (!evidence_worker->start()) {
+        if (http_server) http_server->stop();
+        system_event_reporter.stop();
+        database.close();
+        return 1;
+    }
+    util::logInfo("parking evidence worker enabled: overstay_delay=" +
+                  std::to_string(
+                      config.parking_overstay_evidence_delay_seconds) + "s");
+
     bestshot::BestShotReceiver bestshot_receiver(
         channels, database, trigger_coordinator, ocr_worker, g_running);
 
@@ -352,16 +382,12 @@ int main() {
         auto slot_configs = parking::ParkingSlotConfigLoader::loadFromFile(
             config.parking_slot_config_path);
         hall_service = std::make_unique<sensor::HallParkingService>(
-            std::move(slot_configs), config, channels, snapshot_storage,
-            database,
-            [&ocr_worker](int session_id, const std::string& slot_id,
-                          const std::string& path) {
-                ocr_worker.enqueue(session_id, slot_id, path);
-            },
+            std::move(slot_configs), config, channels, database,
             [&ocr_worker](int session_id) {
                 ocr_worker.cancelSession(session_id);
             },
-            *parking_timer, *timer_events, system_event_sink,
+            *parking_timer, *timer_events, *evidence_worker,
+            system_event_sink,
             [&capture_runtime](
                 const parking::ParkingTransitionResult& transition) {
                 if (capture_runtime) capture_runtime->onTransition(transition);
@@ -375,6 +401,7 @@ int main() {
         rtsp_receiver.stop();
         if (http_server) http_server->stop();
         hall_service.reset();
+        evidence_worker->stop();
         parking_timer.reset();
         timer_events.reset();
         system_event_reporter.stop();
@@ -401,8 +428,9 @@ int main() {
     if (!mqtt_bridge.start()) {
         g_running.store(false);
         bestshot_receiver.stop();
-        ocr_worker.stop();
         hall_service.reset();
+        evidence_worker->stop();
+        ocr_worker.stop();
         parking_timer.reset();
         timer_events.reset();
         rtsp_receiver.stop();
@@ -480,8 +508,9 @@ int main() {
     if (capture_runtime) capture_runtime->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
-    ocr_worker.stop();
     hall_service.reset();
+    evidence_worker->stop();
+    ocr_worker.stop();
     parking_timer.reset();
     timer_events.reset();
     rtsp_receiver.stop();

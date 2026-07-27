@@ -30,6 +30,7 @@ typedef struct DbImageRow {
     char original_path[DB_TEXT_PATH];
     char enhanced_path[DB_TEXT_PATH];
     char enhancement_type[DB_TEXT_SMALL];
+    char evidence_reason[DB_TEXT_SMALL];
     char ocr_result[DB_TEXT_SMALL];
     char captured_at[DB_TEXT_SMALL];
 } DbImageRow;

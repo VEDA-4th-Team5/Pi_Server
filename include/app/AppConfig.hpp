@@ -89,6 +89,8 @@ struct AppConfig {
 
     bool parking_timer_enabled;
     int parking_timeout_seconds;
+    // 모든 활성 세션의 장기 점유 증거 촬영 지연. 기본 1시간이다.
+    int parking_overstay_evidence_delay_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

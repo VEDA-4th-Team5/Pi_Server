@@ -53,8 +53,15 @@ struct ImageView {
     std::string original_path;
     std::string enhanced_path;
     std::string enhancement_type;
+    std::string evidence_reason;
     std::string ocr_result;
     std::string captured_at;
+};
+
+enum class EvidenceInsertResult {
+    Inserted,
+    Duplicate,
+    InactiveSession
 };
 
 /**
@@ -112,6 +119,23 @@ public:
     bool getImage(int image_id, ImageView& row);
     /** @brief 파일 삭제가 끝난 조기 출차 세션의 IMAGE_LOG 행을 모두 제거한다. */
     bool deleteSessionImageRecords(int session_id);
+
+    /** @brief 서버 시작 시 운영 DB에 안전한 멱등 migration만 적용한다. */
+    void migrateRuntimeSchema();
+    /** @brief 홀센서 입차의 ACTIVE 세션을 만들고 실제 SQLite ID를 반환한다. */
+    std::int64_t createHallSession(const std::string& slot_id,
+                                   const std::string& source_id,
+                                   const std::string& entry_time);
+    /** @brief 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다. */
+    EvidenceInsertResult insertEvidenceImage(
+        std::int64_t session_id,
+        const std::string& original_path,
+        const std::string& evidence_reason,
+        const std::string& captured_at);
+    /** @brief 이미 저장된 세션 증거 이미지 경로를 조회한다. */
+    std::optional<std::string> findEvidenceImagePath(
+        std::int64_t session_id,
+        const std::string& evidence_reason) const;
 
     /** @brief schema와 seed SQL을 적용하며 구형 컬럼을 먼저 호환 마이그레이션한다. */
     void initialize(const std::filesystem::path& schema_file,

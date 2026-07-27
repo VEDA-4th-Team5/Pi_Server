@@ -95,9 +95,15 @@ set +a
 ```bash
 export PARKING_TIMER_ENABLED=true
 export PARKING_TIMEOUT_SECONDS=3600
+export PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS=3600
 export PARKING_OCCUPANCY_CONFIRM_MS=10000
 export CAPTURE_SCHED_ENABLED=true
 ```
+
+확정된 입차는 최신 RTSP FrameBuffer의 ROI를
+`OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
+`PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더
+저장한다. 테스트에서는 이 값을 5~10초로 낮출 수 있다.
 
 촬영 scheduler의 MQTT 성공 로그는 Broker에 요청을 발행했다는 뜻이다. 카메라의
 실제 촬영 응답·이미지 다운로드·OCR 연결은 후속 EVDA-138 범위다.
