@@ -113,6 +113,21 @@ AppConfig AppConfig::loadFromEnv() {
     config.parking_slots_config_path =
         getEnvOrDefault("PARKING_SLOTS_CONFIG", "config/parking_slots.json");
 
+    // 기본 0(비활성): 첫 OCCUPIED 즉시 T0. 켜려면 예: 10000(10초)으로 설정.
+    config.parking_occupancy_confirm_ms =
+        getEnvIntOrDefault("PARKING_OCCUPANCY_CONFIRM_MS", 0);
+
+    // 입차 후 촬영 스케줄러. 규약(EVDA-138) 확정 전까지 draft 이므로 기본 off.
+    config.capture_sched_enabled =
+        getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);
+    config.capture_topic_prefix =
+        getEnvOrDefault("CAPTURE_TOPIC_PREFIX", "parking/capture");
+    config.capture_response_timeout_ms =
+        getEnvIntOrDefault("CAPTURE_RESPONSE_TIMEOUT_MS", 3000);
+    config.capture_retry_interval_ms =
+        getEnvIntOrDefault("CAPTURE_RETRY_INTERVAL_MS", 2000);
+    config.capture_max_retries = getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2);
+
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
     config.gemini_api_key =

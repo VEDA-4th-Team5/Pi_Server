@@ -100,7 +100,8 @@ ParkingTransitionResult ParkingSlotManager::handle(
             sessionId,
             slot.config.slotId,
             event.sensorId,
-            event.occurredAt);
+            event.occurredAt,
+            event.receivedMonotonic);
 
         auto result = makeResult(
             ParkingTransitionCode::SessionStarted,

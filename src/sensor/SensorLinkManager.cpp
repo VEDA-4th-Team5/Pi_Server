@@ -138,6 +138,10 @@ void SensorLinkManager::dispatchLine(const std::string& line) const {
     }
 
     const auto receivedAt = std::chrono::system_clock::now();
+    // Captured at the same instant as receivedAt, purely so duration checks
+    // (e.g. the parking occupancy confirmation gate) never depend on the
+    // wall clock, which on a Pi without an RTC can jump when NTP syncs.
+    const auto receivedMonotonic = std::chrono::steady_clock::now();
     std::string error;
 
     if (SensorProtocolParser::isFireLine(line)) {
@@ -160,6 +164,7 @@ void SensorLinkManager::dispatchLine(const std::string& line) const {
         return;
     }
     message->transport = "uart";
+    message->receivedMonotonic = receivedMonotonic;
     if (parking_handler_) {
         parking_handler_(*message);
     }

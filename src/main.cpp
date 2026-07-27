@@ -7,6 +7,9 @@
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
 #include "parking/ActiveParkingSessionIndex.hpp"
+#include "parking/CaptureRequest.hpp"
+#include "parking/CaptureScheduler.hpp"
+#include "parking/CaptureSchedulerRuntime.hpp"
 #include "parking/ParkingSessionWorker.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
@@ -17,6 +20,7 @@
 #include "sensor/SensorLinkManager.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 #include "util/Logger.hpp"
+#include "util/TimeUtil.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -26,7 +30,9 @@
 #include <exception>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -57,8 +63,36 @@ std::vector<std::shared_ptr<camera::CameraChannel>> createCameraChannels(
     return channels;
 }
 
+// 촬영 요청 draft 페이로드. 카메라 촬영 규약(EVDA-138)이 확정되면 이 한 곳과
+// 토픽 prefix 만 교체한다. id/ROI 값은 설정에서 온 단순 값이라 별도 이스케이프는
+// 하지 않는다.
+std::string buildCapturePayload(const parking::CaptureRequest& request) {
+    std::ostringstream oss;
+    oss << "{"
+        << "\"schema\":\"capture_request_draft_v0\","
+        << "\"session_id\":\"" << request.sessionId << "\","
+        << "\"slot_id\":\"" << request.slotId << "\","
+        << "\"sensor_id\":\"" << request.sensorId << "\","
+        << "\"camera_id\":\"" << request.target.cameraId << "\","
+        << "\"channel_id\":\"" << request.target.channelId << "\","
+        << "\"area_name\":\"" << request.target.areaName << "\","
+        << "\"reason\":\"" << parking::toReasonString(request.reason) << "\","
+        << "\"attempt\":" << request.attempt << ","
+        << "\"roi\":{"
+        << "\"x\":" << request.target.roiX << ","
+        << "\"y\":" << request.target.roiY << ","
+        << "\"w\":" << request.target.roiWidth << ","
+        << "\"h\":" << request.target.roiHeight << "},"
+        << "\"response_timeout_ms\":" << request.responseTimeout.count() << ","
+        << "\"occupied_at\":\"" << util::isoString(request.sessionStartedAt)
+        << "\","
+        << "\"requested_at\":\"" << util::nowIsoString() << "\""
+        << "}";
+    return oss.str();
 }
- 
+
+}
+
 int main() {
     // OpenCV가 내부적으로 사용하는 FFmpeg에 TCP 전송과 타임아웃을 지정한다.
     // UDP보다 지연은 조금 늘 수 있지만 CCTV 스트림의 패킷 손실에 더 안정적이다.
@@ -199,6 +233,8 @@ int main() {
     std::unique_ptr<sensor::ParkingSensorEventAdapter> parking_adapter;
     std::unique_ptr<parking::ActiveParkingSessionIndex> active_session_index;
     std::unique_ptr<parking::ParkingSessionWorker> parking_worker;
+    std::unique_ptr<parking::CaptureScheduler> capture_scheduler;
+    std::unique_ptr<parking::CaptureSchedulerRuntime> capture_runtime;
 
     if (config.parking_hall_enabled) {
         try {
@@ -224,7 +260,15 @@ int main() {
                 std::make_unique<parking::ActiveParkingSessionIndex>();
             parking_worker =
                 std::make_unique<parking::ParkingSessionWorker>(
-                    parking_slot_configs);
+                    parking_slot_configs,
+                    std::chrono::milliseconds(
+                        config.parking_occupancy_confirm_ms));
+
+            if (config.parking_occupancy_confirm_ms > 0) {
+                util::logInfo(
+                    "parking occupancy confirm gate enabled: threshold_ms=" +
+                    std::to_string(config.parking_occupancy_confirm_ms));
+            }
 
             // sink 1: 활성 세션 read model 갱신 (IVA/BestShot 워커가 조회).
             parking::ActiveParkingSessionIndex* active_index_ptr =
@@ -246,6 +290,71 @@ int main() {
                                 " session=" + transition.sessionId);
                     }
                 });
+
+            // sink 3: 입차 후 촬영 스케줄러 (T0+30s / T0+60s). 카메라 촬영 규약
+            // (EVDA-138) 미확정이라 발행 토픽/페이로드는 draft 이며 기본 비활성.
+            // Core(CaptureScheduler)는 MQTT 를 모르고, 슬롯->채널->ROI 매핑과
+            // 발행 경계는 여기(main)에서 주입한다 (FireAlarmManager 와 같은 방식).
+            if (config.capture_sched_enabled) {
+                parking::CaptureSchedulerConfig sched_config;
+                sched_config.responseTimeout = std::chrono::milliseconds(
+                    config.capture_response_timeout_ms);
+                sched_config.retryInterval = std::chrono::milliseconds(
+                    config.capture_retry_interval_ms);
+                sched_config.maxRetries = config.capture_max_retries;
+
+                // 슬롯 -> 카메라 채널 -> ROI: AppConfig::iva_areas 에서 해석.
+                parking::CaptureTargetResolver resolver =
+                    [&config](const std::string& slotId)
+                    -> std::optional<parking::CaptureTarget> {
+                    for (const auto& area : config.iva_areas) {
+                        if (area.slot_id != slotId) {
+                            continue;
+                        }
+                        parking::CaptureTarget target;
+                        target.cameraId = config.camera_id;
+                        target.channelId = area.channel_id;
+                        target.areaName = area.area_name;
+                        target.roiX = area.roi_x;
+                        target.roiY = area.roi_y;
+                        target.roiWidth = area.roi_width;
+                        target.roiHeight = area.roi_height;
+                        return target;
+                    }
+                    return std::nullopt;
+                };
+
+                capture_scheduler =
+                    std::make_unique<parking::CaptureScheduler>(
+                        std::move(sched_config), std::move(resolver));
+
+                const std::string capture_prefix = config.capture_topic_prefix;
+                capture_runtime =
+                    std::make_unique<parking::CaptureSchedulerRuntime>(
+                        *capture_scheduler,
+                        [&mqtt_bridge, capture_prefix](
+                            const parking::CaptureRequest& request) {
+                            const std::string topic =
+                                capture_prefix + "/" + request.slotId;
+                            return mqtt_bridge.publish(
+                                topic, buildCapturePayload(request));
+                        });
+
+                parking::CaptureSchedulerRuntime* capture_runtime_ptr =
+                    capture_runtime.get();
+                parking_worker->addSink(
+                    [capture_runtime_ptr](
+                        const parking::ParkingTransitionResult& transition) {
+                        capture_runtime_ptr->onTransition(transition);
+                    });
+                capture_runtime->start();
+
+                util::logInfo(
+                    "capture scheduler enabled (DRAFT protocol pending "
+                    "EVDA-138): topic_prefix=" +
+                    capture_prefix + " offsets=30s,60s retries=" +
+                    std::to_string(config.capture_max_retries));
+            }
 
             util::logInfo(
                 "parking hall path enabled: slots=" +
@@ -354,6 +463,9 @@ int main() {
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
     // sensor_link 가 mqtt_bridge 를 콜백으로 잡고 있으므로 먼저 멈춘다.
     if (sensor_link) sensor_link->stop();
+    // 촬영 스케줄러는 sensor_link 정지 후(더 이상 전이 없음) 멈추고,
+    // publisher 가 잡은 mqtt_bridge 보다 먼저 멈춘다.
+    if (capture_runtime) capture_runtime->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
     ocr_worker.stop();

@@ -49,6 +49,7 @@ set(SENSOR_PARKING_SOURCES
     src/parking/ParkingSlotConfig.cpp
     src/parking/SensorSlotIndex.cpp
     src/parking/ParkingSensorSequenceGuard.cpp
+    src/parking/ParkingOccupancyConfirmationGate.cpp
     src/parking/ParkingOccupancySession.cpp
     src/parking/ParkingSlotManager.cpp
     src/parking/ParkingSessionWorker.cpp
@@ -71,6 +72,22 @@ add_executable(parking-session-worker-test
     ${SENSOR_PARKING_SOURCES})
 target_include_directories(parking-session-worker-test PRIVATE include)
 target_compile_options(parking-session-worker-test PRIVATE -Wall -Wextra)
+
+# T0+30s/T0+60s 촬영 스케줄러 정책 단위 테스트 (EVDA-135). 순수 로직만 링크하며
+# 스레드 런타임(CaptureSchedulerRuntime)은 pi-server 타깃에서만 빌드한다.
+add_executable(capture-scheduler-test
+    tests/unit/CaptureSchedulerTest.cpp
+    src/parking/CaptureScheduler.cpp
+    ${SENSOR_PARKING_SOURCES})
+target_include_directories(capture-scheduler-test PRIVATE include)
+target_compile_options(capture-scheduler-test PRIVATE -Wall -Wextra)
+
+# OCCUPIED 확정(T0) 유예시간 정책 단위 테스트 (EVDA-135 파생 결정).
+add_executable(parking-occupancy-confirmation-gate-test
+    tests/unit/ParkingOccupancyConfirmationGateTest.cpp
+    src/parking/ParkingOccupancyConfirmationGate.cpp)
+target_include_directories(parking-occupancy-confirmation-gate-test PRIVATE include)
+target_compile_options(parking-occupancy-confirmation-gate-test PRIVATE -Wall -Wextra)
 
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
@@ -125,6 +142,10 @@ add_test(NAME sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
 add_test(NAME parking-session-worker-test
     COMMAND parking-session-worker-test)
+add_test(NAME capture-scheduler-test
+    COMMAND capture-scheduler-test)
+add_test(NAME parking-occupancy-confirmation-gate-test
+    COMMAND parking-occupancy-confirmation-gate-test)
 
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
