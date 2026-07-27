@@ -1,7 +1,6 @@
  {
     "version": 1,
-    "_comment": "EV01~EV04 홀센서와 카메라 IVA/BestShot 매핑. sensor_id는 STM32 UART 메시지의 센서 ID
-    와 일치해야 하며, rule_name은 카메라 IVA Area 이름과 일치해야 한다.",
+    "_comment": "EV01~EV04 홀센서와 카메라 IVA/BestShot 매핑. sensor_id는 STM32 UART 메시지의 센서 ID와 일치해야 하며, rule_name은 카메라 IVA Area 이름과 일치해야 한다.",
     "slots": [
       {
         "slot_id": "EV01",

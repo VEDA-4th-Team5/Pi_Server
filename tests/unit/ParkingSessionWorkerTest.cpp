@@ -193,18 +193,27 @@ int main() {
             const auto flapOccupied =
                 gatedWorker.onSensorEvent(makeEventWithMonotonic(
                     "EV01", "HALL01", ParkingSensorState::Occupied, t0, t0m));
-            require(flapOccupied.has_value() && !flapOccupied->changed(),
+            require(!flapOccupied.has_value(),
                     "flap occupied must not start a session before threshold");
             const auto flapVacant =
                 gatedWorker.onSensorEvent(makeEventWithMonotonic(
                     "EV01", "HALL01", ParkingSensorState::Vacant,
                     t0 + std::chrono::seconds(3),
                     t0m + std::chrono::seconds(3)));
-            require(flapVacant.has_value() && !flapVacant->changed(),
+            require(!flapVacant.has_value(),
                     "flap vacant on an unconfirmed slot must not complete "
                     "anything");
 
-            // 진짜 주차: OCCUPIED가 10초 이상 유지 -> 그 순간이 T0로 확정.
+            // 진짜 주차: 첫 OCCUPIED를 보관한 뒤 10초 이상 유지된 두 번째
+            // OCCUPIED에서 확정한다.
+            const auto parkingAt = t0 + std::chrono::seconds(4);
+            const auto parkingPending =
+                gatedWorker.onSensorEvent(makeEventWithMonotonic(
+                    "EV01", "HALL01", ParkingSensorState::Occupied, parkingAt,
+                    t0m + std::chrono::seconds(4)));
+            require(!parkingPending.has_value(),
+                    "first sustained occupied must wait for threshold");
+
             const auto offset =
                 std::chrono::seconds(4) + std::chrono::seconds(10);
             const auto confirmAt = t0 + offset;

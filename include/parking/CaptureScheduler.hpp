@@ -17,7 +17,7 @@ namespace parking {
 // T0+60s captures agreed for the hall-occupancy path (EVDA-135).
 struct CaptureOffset {
     CaptureReason reason;
-    std::chrono::seconds delay;
+    std::chrono::milliseconds delay;
 };
 
 struct CaptureSchedulerConfig {
@@ -81,7 +81,7 @@ public:
 private:
     enum class Phase {
         Pending,
-        AwaitingResponse,
+        Dispatching,
         Done
     };
 

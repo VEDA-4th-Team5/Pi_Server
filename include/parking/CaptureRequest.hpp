@@ -58,6 +58,7 @@
 
       std::string slotId;
       std::string sensorId;
+      CaptureTarget target;
       CaptureReason reason{
           CaptureReason::HallOccupied30s
       };

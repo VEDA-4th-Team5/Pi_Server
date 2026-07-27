@@ -176,8 +176,6 @@ std::string buildQtParkingEvent(
 
 }
 
-}
-
 int main() {
     // OpenCV가 내부적으로 사용하는 FFmpeg에 TCP 전송과 타임아웃을 지정한다.
     // UDP보다 지연은 조금 늘 수 있지만 CCTV 스트림의 패킷 손실에 더 안정적이다.
