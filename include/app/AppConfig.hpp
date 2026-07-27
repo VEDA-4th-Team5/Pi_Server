@@ -62,6 +62,13 @@ struct AppConfig {
     int capture_retry_interval_ms;
     int capture_max_retries;
 
+    // 촬영본 → ROI crop → Gemini OCR → DB 연결 (EVDA-136).
+    // 30초 사진으로 첫 OCR을 하고, 실패하면 60초 사진으로 한 번 더 시도한다.
+    // 두 번 다 실패하면 UNKNOWN으로 남기며 절대 NON_EV로 단정하지 않는다.
+    int capture_ocr_max_attempts;
+    // EV/PHEV로 확정된 세션을 위반 판정 타이머에 올릴 때 쓰는 점유 한도.
+    int parking_overtime_sec;
+
     std::string snapshot_dir;
     std::string db_path;
     std::string gemini_api_key;

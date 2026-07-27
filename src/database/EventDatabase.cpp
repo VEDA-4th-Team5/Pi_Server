@@ -156,9 +156,15 @@ std::string EventDatabase::applyPlateOcr(int session_id,
     std::string classification = "OCR_FAILED";
     int vehicle_id = -1;
     int is_ev = -1;
+    int is_phev = -1;
     if (!plate_number.empty()) {
-        int lookup = db_get_vehicle_by_plate(plate_number.c_str(), &vehicle_id, &is_ev);
-        classification = lookup == 0 ? (is_ev ? "EV" : "NON_EV") : "UNKNOWN";
+        // PHEV도 충전구역 대상이므로 NON_EV로 뭉뚱그리지 않는다.
+        int lookup = db_get_vehicle_class_by_plate(plate_number.c_str(),
+                                                   &vehicle_id, &is_ev, &is_phev);
+        if (lookup != 0) classification = "UNKNOWN";
+        else if (is_ev == 1) classification = "EV";
+        else if (is_phev == 1) classification = "PHEV";
+        else classification = "NON_EV";
         if (session_id >= 0 &&
             db_assign_vehicle_to_session(session_id,
                                          lookup == 0 ? vehicle_id : -1,
@@ -174,6 +180,89 @@ std::string EventDatabase::applyPlateOcr(int session_id,
                         ("PLATE_OCR_" + classification).c_str(),
                         message.str().c_str());
     return classification;
+}
+
+bool EventDatabase::openHallSession(const std::string& slot_id,
+                                    int* session_id) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!opened_ || slot_id.empty() || session_id == nullptr) return false;
+
+    // 번호판은 아직 모른다. 촬영/OCR이 끝나면 db_assign_vehicle_to_session이
+    // 같은 행을 채우므로 여기서는 vehicle_id/plate_number 없이 연다.
+    if (db_update_slot_status(slot_id.c_str(), "OCCUPIED") < 0 ||
+        db_create_parking_session(-1, slot_id.c_str(), nullptr, session_id) < 0) {
+        util::logError("hall session open failed: slot=" + slot_id);
+        return false;
+    }
+
+    db_insert_event_log(*session_id, slot_id.c_str(), "HALL_OCCUPIED",
+                        "hall sensor occupancy confirmed");
+    return true;
+}
+
+bool EventDatabase::closeHallSession(int session_id,
+                                     const std::string& slot_id) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!opened_ || session_id < 0) return false;
+
+    bool success = true;
+    if (db_end_parking_session(session_id) < 0) {
+        util::logError("hall session close failed: session=" +
+                       std::to_string(session_id));
+        success = false;
+    }
+    if (!slot_id.empty() &&
+        db_update_slot_status(slot_id.c_str(), "VACANT") < 0) {
+        util::logError("hall slot release failed: slot=" + slot_id);
+        success = false;
+    }
+    db_insert_event_log(session_id, slot_id.empty() ? nullptr : slot_id.c_str(),
+                        "HALL_VACANT", "hall sensor reported an empty slot");
+    return success;
+}
+
+bool EventDatabase::attachCaptureImage(int session_id,
+                                       const std::string& slot_id,
+                                       const std::string& original_path,
+                                       const std::string& enhanced_path,
+                                       const std::string& enhancement_type) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!opened_ || session_id < 0 || original_path.empty()) return false;
+
+    // ocr_result는 비워 둔다. OCR을 돌리는 이미지라면 뒤이어
+    // db_update_image_ocr_by_path가 같은 행을 경로로 찾아 채운다.
+    if (db_insert_image_log(session_id, original_path.c_str(),
+                            enhanced_path.empty() ? nullptr
+                                                  : enhanced_path.c_str(),
+                            enhancement_type.c_str(), nullptr) < 0) {
+        util::logError("hall capture IMAGE_LOG insert failed: " + original_path);
+        return false;
+    }
+
+    std::string message = "type=" + enhancement_type + " image=" + original_path;
+    db_insert_event_log(session_id, slot_id.empty() ? nullptr : slot_id.c_str(),
+                        "HALL_CAPTURE_STORED", message.c_str());
+    return true;
+}
+
+bool EventDatabase::markPlateOcrUnresolved(int session_id,
+                                           const std::string& slot_id,
+                                           int attempts) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!opened_ || session_id < 0) return false;
+
+    // 읽지 못한 번호판은 "전기차가 아님"의 근거가 되지 않는다. vehicle_id를
+    // 비워 두면 조회 API가 NON_EV 대신 UNKNOWN을 돌려준다.
+    std::ostringstream message;
+    message << "ocr_status=FAILED ev_status=UNKNOWN attempts=" << attempts;
+    if (db_insert_event_log(session_id,
+                            slot_id.empty() ? nullptr : slot_id.c_str(),
+                            "PLATE_OCR_UNRESOLVED", message.str().c_str()) < 0) {
+        util::logError("hall OCR failure EVENT_LOG insert failed: session=" +
+                       std::to_string(session_id));
+        return false;
+    }
+    return true;
 }
 
 namespace {

@@ -77,6 +77,30 @@ public:
                               const std::string& image_path,
                               const std::string& plate_number,
                               double confidence);
+
+    // --- 홀센서 점유 경로 (EVDA-136) ---
+    // 촬영/OCR/이미지/이벤트가 모두 여기서 만든 하나의 session_id에 매달린다.
+
+    // OCCUPIED 확정 시 주차면을 점유로 바꾸고 PARKING_SESSION 행을 연다.
+    // 같은 주차면에 이미 활성 세션이 있으면 unique index가 막으므로 중복 세션은
+    // 생기지 않는다.
+    bool openHallSession(const std::string& slot_id, int* session_id);
+    // VACANT 시 세션을 종료하고 주차면을 비움으로 되돌린다.
+    bool closeHallSession(int session_id, const std::string& slot_id);
+    // 30초/60초 촬영본을 세션의 증거로 남긴다. enhancement_type은
+    // HALL_30S / HALL_60S (촬영 규약 §7). OCR을 돌리지 않는 증거 전용
+    // 이미지도 반드시 기록한다.
+    bool attachCaptureImage(int session_id,
+                            const std::string& slot_id,
+                            const std::string& original_path,
+                            const std::string& enhanced_path,
+                            const std::string& enhancement_type);
+    // 재시도까지 실패해 번호판을 읽지 못한 세션을 UNKNOWN으로 확정한다.
+    // vehicle_id/plate_number를 건드리지 않으므로 조회 API는 NON_EV가 아니라
+    // UNKNOWN을 보고한다 (촬영 규약 §8). 차량은 아직 서 있으므로 세션 상태는
+    // ACTIVE로 두어 1시간 타이머를 끊지 않는다.
+    bool markPlateOcrUnresolved(int session_id, const std::string& slot_id,
+                                int attempts);
     bool listParkingSlots(std::vector<ParkingSlotView>& rows);
     bool getParkingSlot(const std::string& slot_id, ParkingSlotView& row);
     bool listSessionImages(int session_id, std::vector<ImageView>& rows);

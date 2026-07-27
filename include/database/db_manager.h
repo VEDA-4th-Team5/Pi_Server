@@ -43,6 +43,10 @@ int db_open(const char *path);
 void db_close(void);
 /* 번호판으로 등록 차량 ID와 전기차 여부를 조회한다. */
 int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev);
+/* 위와 같지만 PHEV 여부까지 돌려준다. is_phev에 NULL을 넘겨도 된다.
+   PHEV도 충전구역 대상이므로 EV/PHEV를 NON_EV와 구분해야 하는 곳에서 쓴다. */
+int db_get_vehicle_class_by_plate(const char *plate_number, int *vehicle_id,
+                                  int *is_ev, int *is_phev);
 /* 지정 주차면의 VACANT/OCCUPIED/ERROR 상태를 변경한다. */
 int db_update_slot_status(const char *slot_id, const char *status);
 /* 입차 세션을 만들고 생성된 session_id를 호출자에게 돌려준다. */

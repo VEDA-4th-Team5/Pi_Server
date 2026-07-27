@@ -34,6 +34,15 @@ public:
         const NormalizedRoi& roi
     );
 
+    // 위와 같은 crop이지만 파일명에 촬영 사유 라벨을 넣는다. 홀센서 세션의
+    // 30초/60초 촬영본을 HALL_30S / HALL_60S로 구분하는 데 쓴다 (촬영 규약 §7).
+    std::string saveSlotRoiSnapshot(
+        const std::shared_ptr<camera::CameraChannel>& channel,
+        const std::string& slot_id,
+        const NormalizedRoi& roi,
+        const std::string& label
+    );
+
 private:
     cv::Mat waitForFullFrame(const std::shared_ptr<camera::CameraChannel>& channel);
     std::string snapshot_dir_;

@@ -10,12 +10,15 @@
 #include "parking/CaptureRequest.hpp"
 #include "parking/CaptureScheduler.hpp"
 #include "parking/CaptureSchedulerRuntime.hpp"
+#include "parking/HallCaptureCoordinator.hpp"
+#include "parking/HallCaptureTypes.hpp"
 #include "parking/ParkingSessionWorker.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "parking/SensorSlotIndex.hpp"
 #include "ocr/GeminiOcrClient.hpp"
 #include "ocr/OcrWorker.hpp"
+#include "parking_timer/TimerManager.hpp"
 #include "sensor/ParkingSensorEventAdapter.hpp"
 #include "sensor/SensorLinkManager.hpp"
 #include "snapshot/SnapshotStorage.hpp"
@@ -89,6 +92,15 @@ std::string buildCapturePayload(const parking::CaptureRequest& request) {
         << "\"requested_at\":\"" << util::nowIsoString() << "\""
         << "}";
     return oss.str();
+}
+
+std::shared_ptr<camera::CameraChannel> findChannel(
+    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
+    const std::string& channel_id
+) {
+    for (const auto& channel : channels)
+        if (channel && channel->channel_id == channel_id) return channel;
+    return nullptr;
 }
 
 }
@@ -233,6 +245,10 @@ int main() {
     std::unique_ptr<sensor::ParkingSensorEventAdapter> parking_adapter;
     std::unique_ptr<parking::ActiveParkingSessionIndex> active_session_index;
     std::unique_ptr<parking::ParkingSessionWorker> parking_worker;
+    // 촬영 스케줄러/런타임보다 먼저 선언한다. 저 둘의 콜백이 타이머와
+    // coordinator 를 잡고 있으므로 역순 소멸에서 나중에 사라져야 한다.
+    std::unique_ptr<parking_timer::TimerManager> violation_timer;
+    std::unique_ptr<parking::HallCaptureCoordinator> hall_coordinator;
     std::unique_ptr<parking::CaptureScheduler> capture_scheduler;
     std::unique_ptr<parking::CaptureSchedulerRuntime> capture_runtime;
 
@@ -291,7 +307,118 @@ int main() {
                     }
                 });
 
-            // sink 3: 입차 후 촬영 스케줄러 (T0+30s / T0+60s). 카메라 촬영 규약
+            // EV/PHEV 로 확정된 세션의 충전구역 점유 한도를 재는 타이머.
+            // 위반 확정 시 TimerManager 가 PARKING_SESSION 을 VIOLATION 으로
+            // 바꾸고 증거 IMAGE_LOG 를 남기므로, Qt 는 기존 HTTP 조회(I-10)로
+            // 본다. 별도 MQTT 위반 토픽은 규약에 없으므로 만들지 않는다.
+            violation_timer = std::make_unique<parking_timer::TimerManager>(
+                database,
+                [](const parking_timer::ViolationEvent& violation) {
+                    util::logLine(
+                        "PARKING_VIOLATION",
+                        "slot=" + violation.slot_id +
+                            " session_id=" + std::to_string(violation.log_id) +
+                            " plate=" + violation.car_number +
+                            " at=" + violation.violation_at);
+                },
+                [](const parking_timer::TimerError& error) {
+                    util::logWarn("overtime timer error slot=" + error.slot_id +
+                                  " session_id=" +
+                                  std::to_string(error.log_id) + ": " +
+                                  error.message);
+                });
+
+            // sink 3: 홀 세션 <-> PARKING_SESSION.session_id 연결 (EVDA-136).
+            // 촬영본·OCR 결과·이미지 행·이벤트 행이 모두 여기서 연 하나의
+            // session_id 에 매달린다. Core 는 DB/OCR/타이머 타입을 모르고,
+            // 모든 실제 동작은 아래 포트로 주입한다.
+            parking::HallCapturePorts hall_ports;
+            hall_ports.openSessionRow =
+                [&database](const std::string& slotId) -> std::optional<int> {
+                int sessionId = -1;
+                if (!database.openHallSession(slotId, &sessionId))
+                    return std::nullopt;
+                return sessionId;
+            };
+            hall_ports.closeSessionRow =
+                [&database](int dbSessionId, const std::string& slotId) {
+                    database.closeHallSession(dbSessionId, slotId);
+                };
+            hall_ports.writeImageLog =
+                [&database](int dbSessionId,
+                            const parking::CapturedImage& image) {
+                    database.attachCaptureImage(
+                        dbSessionId, image.slotId, image.originalPath,
+                        image.enhancedPath,
+                        parking::toEnhancementType(image.stage));
+                };
+            hall_ports.submitOcr =
+                [&ocr_worker](int dbSessionId,
+                              const parking::CapturedImage& image) {
+                    ocr::HallCaptureTask task;
+                    task.session_key = image.sessionId;
+                    task.session_id = dbSessionId;
+                    task.stage =
+                        image.stage == parking::CaptureStage::Second60s ? 1 : 0;
+                    task.slot_id = image.slotId;
+                    task.image_path = image.originalPath;
+                    task.enhanced_path = image.enhancedPath;
+                    ocr_worker.enqueueHallCapture(task);
+                };
+            hall_ports.writeOcrFailure =
+                [&database](int dbSessionId, const std::string& slotId,
+                            int attempts) {
+                    database.markPlateOcrUnresolved(dbSessionId, slotId,
+                                                     attempts);
+                };
+            const auto overtime =
+                std::chrono::seconds(std::max(1, config.parking_overtime_sec));
+            hall_ports.registerEvTimer =
+                [&violation_timer, overtime](int dbSessionId,
+                                             const std::string& slotId,
+                                             const std::string& plateNumber) {
+                    // 이미 존재하는 session_id 를 그대로 쓴다. 여기서 새 세션을
+                    // 만들면 같은 주차면에 활성 세션이 둘 생겨 부분 unique
+                    // index(ux_parking_session_active_slot)에 걸린다.
+                    violation_timer->schedule(
+                        dbSessionId, slotId, plateNumber,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            overtime));
+                };
+
+            hall_coordinator =
+                std::make_unique<parking::HallCaptureCoordinator>(
+                    std::move(hall_ports), config.capture_ocr_max_attempts);
+
+            parking::HallCaptureCoordinator* hall_coordinator_ptr =
+                hall_coordinator.get();
+            parking_worker->addSink(
+                [hall_coordinator_ptr](
+                    const parking::ParkingTransitionResult& transition) {
+                    hall_coordinator_ptr->onTransition(transition);
+                });
+
+            // OCR 결과를 정책으로 되돌린다. 워커 스레드에서 불린다.
+            ocr_worker.setHallCaptureCallback(
+                [hall_coordinator_ptr](const ocr::HallCaptureResult& result) {
+                    parking::HallOcrOutcome outcome;
+                    outcome.sessionId = result.session_key;
+                    outcome.stage = result.stage == 1
+                                        ? parking::CaptureStage::Second60s
+                                        : parking::CaptureStage::First30s;
+                    outcome.recognized = result.recognized;
+                    outcome.plateNumber = result.plate_number;
+                    outcome.confidence = result.confidence;
+                    outcome.classification = result.classification;
+                    hall_coordinator_ptr->onOcrOutcome(outcome);
+                });
+
+            util::logInfo(
+                "hall capture OCR linking enabled: max_attempts=" +
+                std::to_string(config.capture_ocr_max_attempts) +
+                " overtime_sec=" + std::to_string(config.parking_overtime_sec));
+
+            // sink 4: 입차 후 촬영 스케줄러 (T0+30s / T0+60s). 카메라 촬영 규약
             // (EVDA-138) 미확정이라 발행 토픽/페이로드는 draft 이며 기본 비활성.
             // Core(CaptureScheduler)는 MQTT 를 모르고, 슬롯->채널->ROI 매핑과
             // 발행 경계는 여기(main)에서 주입한다 (FireAlarmManager 와 같은 방식).
@@ -332,12 +459,55 @@ int main() {
                 capture_runtime =
                     std::make_unique<parking::CaptureSchedulerRuntime>(
                         *capture_scheduler,
-                        [&mqtt_bridge, capture_prefix](
+                        [&mqtt_bridge, &channels, &snapshot_storage,
+                         hall_coordinator_ptr, capture_prefix](
                             const parking::CaptureRequest& request) {
                             const std::string topic =
                                 capture_prefix + "/" + request.slotId;
-                            return mqtt_bridge.publish(
+                            const bool published = mqtt_bridge.publish(
                                 topic, buildCapturePayload(request));
+
+                            // 카메라가 MQTT 촬영 요청을 실제로 받아 응답하는지는
+                            // 아직 확인되지 않았다(촬영 규약 §1·§10). 지원이
+                            // 확인되지 않은 명령을 성공한 것처럼 쓰지 않으려고,
+                            // 촬영본은 이미 실기기에서 검증된 경로 - RTSP 최신
+                            // 프레임의 슬롯 ROI crop - 에서 가져온다. 규약이
+                            // 확정되면(EVDA-138) 아래 획득 부분만 "응답 수신 ->
+                            // HTTPS 다운로드"로 바꾸면 되고, 그 뒤 파이프라인은
+                            // 그대로 쓴다.
+                            std::shared_ptr<camera::CameraChannel> channel =
+                                findChannel(channels,
+                                            request.target.channelId);
+                            if (!channel) {
+                                util::logError(
+                                    "capture channel is not configured: " +
+                                    request.target.channelId);
+                                return false;
+                            }
+
+                            const parking::CaptureStage stage =
+                                parking::toStage(request.reason);
+                            snapshot::NormalizedRoi roi{
+                                request.target.roiX, request.target.roiY,
+                                request.target.roiWidth,
+                                request.target.roiHeight};
+                            std::string path =
+                                snapshot_storage.saveSlotRoiSnapshot(
+                                    channel, request.slotId, roi,
+                                    parking::toEnhancementType(stage));
+                            if (path.empty()) {
+                                // 프레임을 못 얻었다. 스케줄러의 재시도 예산에
+                                // 맡긴다.
+                                return false;
+                            }
+
+                            parking::CapturedImage image;
+                            image.sessionId = request.sessionId;
+                            image.slotId = request.slotId;
+                            image.stage = stage;
+                            image.originalPath = std::move(path);
+                            hall_coordinator_ptr->onCaptureImage(image);
+                            return published;
                         });
 
                 parking::CaptureSchedulerRuntime* capture_runtime_ptr =
@@ -468,9 +638,12 @@ int main() {
     if (capture_runtime) capture_runtime->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
+    // OCR 워커를 join 한 뒤에야 hall coordinator 로 들어오는 콜백이 끊긴다.
     ocr_worker.stop();
     rtsp_receiver.stop();
     if (http_server) http_server->stop();
+    // 위반 타이머 스레드는 DB 를 닫기 전에 반드시 먼저 세운다.
+    violation_timer.reset();
     database.close();
 
     util::logInfo("pi-server stopped");

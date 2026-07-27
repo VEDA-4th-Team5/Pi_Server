@@ -69,6 +69,15 @@ std::string SnapshotStorage::saveIvaAreaSnapshot(
     const std::string& slot_id,
     const NormalizedRoi& roi
 ) {
+    return saveSlotRoiSnapshot(channel, slot_id, roi, "IVA_ROI");
+}
+
+std::string SnapshotStorage::saveSlotRoiSnapshot(
+    const std::shared_ptr<camera::CameraChannel>& channel,
+    const std::string& slot_id,
+    const NormalizedRoi& roi,
+    const std::string& label
+) {
     if (!channel || slot_id.empty()) return "";
     cv::Mat frame = waitForFullFrame(channel);
     if (frame.empty()) return "";
@@ -85,7 +94,8 @@ std::string SnapshotStorage::saveIvaAreaSnapshot(
     int ph = std::min(frame.rows - py,
                       std::max(1, static_cast<int>((bottom - y) * frame.rows)));
     if (px < 0 || py < 0 || px >= frame.cols || py >= frame.rows || pw <= 0 || ph <= 0) {
-        util::logError("Invalid IVA ROI for slot=" + slot_id);
+        util::logError("Invalid slot ROI for slot=" + slot_id +
+                       " label=" + label);
         return "";
     }
 
@@ -97,11 +107,11 @@ std::string SnapshotStorage::saveIvaAreaSnapshot(
         channelDirectoryName(channel->channel_id) / slot_id / "scene";
     fs::create_directories(directory);
     std::string filename = channel->camera_id + "_" + channel->channel_id + "_" +
-        slot_id + "_IVA_ROI_" + std::to_string(cropped.cols) + "x" +
+        slot_id + "_" + label + "_" + std::to_string(cropped.cols) + "x" +
         std::to_string(cropped.rows) + "_" + util::nowStringForFilename() + ".jpg";
     std::string path = (directory / filename).string();
     if (!cv::imwrite(path, cropped)) {
-        util::logError("IVA area snapshot save failed: " + path);
+        util::logError("slot ROI snapshot save failed: " + path);
         return "";
     }
     return path;

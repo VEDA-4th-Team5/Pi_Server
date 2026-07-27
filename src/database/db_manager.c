@@ -116,10 +116,11 @@ void db_close(void)
     g_db = NULL;
 }
 
-int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev)
+int db_get_vehicle_class_by_plate(const char *plate_number, int *vehicle_id,
+                                  int *is_ev, int *is_phev)
 {
     static const char *sql =
-        "SELECT vehicle_id, is_ev FROM VEHICLE WHERE plate_number = ?;";
+        "SELECT vehicle_id, is_ev, is_phev FROM VEHICLE WHERE plate_number = ?;";
     sqlite3_stmt *stmt = NULL;
     int rc;
     if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL) return -1;
@@ -142,8 +143,14 @@ int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_e
     }
     *vehicle_id = sqlite3_column_int(stmt, 0);
     *is_ev = sqlite3_column_int(stmt, 1);
+    if (is_phev != NULL) *is_phev = sqlite3_column_int(stmt, 2);
     sqlite3_finalize(stmt);
     return 0;
+}
+
+int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev)
+{
+    return db_get_vehicle_class_by_plate(plate_number, vehicle_id, is_ev, NULL);
 }
 
 int db_update_slot_status(const char *slot_id, const char *status)

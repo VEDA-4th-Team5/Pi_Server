@@ -128,6 +128,13 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("CAPTURE_RETRY_INTERVAL_MS", 2000);
     config.capture_max_retries = getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2);
 
+    // 촬영본 OCR (EVDA-136). 30초 사진으로 먼저 읽고 실패하면 60초로 한 번 더.
+    config.capture_ocr_max_attempts =
+        getEnvIntOrDefault("CAPTURE_OCR_MAX_ATTEMPTS", 2);
+    // EV/PHEV 확정 세션의 충전구역 점유 한도. 데모는 짧게 줄여 쓴다.
+    config.parking_overtime_sec =
+        getEnvIntOrDefault("PARKING_OVERTIME_SEC", 3600);
+
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
     config.gemini_api_key =

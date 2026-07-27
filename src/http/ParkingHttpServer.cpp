@@ -27,7 +27,10 @@ json optionalText(const std::string& value) {
     return value.empty() ? json(nullptr) : json(value);
 }
 json evStatus(int is_ev) {
-    if (is_ev < 0) return nullptr;
+    // 등록 차량을 못 찾았거나 아직 OCR이 끝나지 않은 세션이다. 읽지 못한
+    // 번호판은 "전기차가 아님"의 근거가 아니므로 NON_EV가 아니라 UNKNOWN을
+    // 돌려준다 (촬영 규약 §8).
+    if (is_ev < 0) return json("UNKNOWN");
     return is_ev == 1 ? json("EV") : json("NON_EV");
 }
 json slotJson(const database::ParkingSlotView& slot) {

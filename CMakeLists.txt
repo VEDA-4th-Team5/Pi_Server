@@ -19,7 +19,14 @@ find_package(Threads REQUIRED)
 file(GLOB_RECURSE SERVER_CPP CONFIGURE_DEPENDS src/*.cpp)
 # 타이머는 별도 타깃(parking-timer-core / parking-timer)으로 빌드하므로 제외.
 list(FILTER SERVER_CPP EXCLUDE REGEX "src/timer/")
-add_executable(pi-server ${SERVER_CPP} src/database/db_manager.c)
+# 다만 위반 타이머 자체는 pi-server 안에서 돈다. EV/PHEV 로 확정된 홀 세션을
+# 기존 session_id 그대로 점유 한도 타이머에 올려야 하기 때문이다(EVDA-136).
+# EventDatabase 는 이미 pi-server 에 들어 있으므로(src/database/) DB 는
+# 하나뿐이고, src/timer/main.cpp 는 자체 main 이 있어 계속 제외한다.
+add_executable(pi-server ${SERVER_CPP}
+    src/timer/TimerManager.cpp
+    src/timer/Types.cpp
+    src/database/db_manager.c)
 target_include_directories(pi-server PRIVATE include include/uapi)
 target_compile_options(pi-server PRIVATE -Wall -Wextra)
 target_link_libraries(pi-server PRIVATE
@@ -81,6 +88,31 @@ add_executable(capture-scheduler-test
     ${SENSOR_PARKING_SOURCES})
 target_include_directories(capture-scheduler-test PRIVATE include)
 target_compile_options(capture-scheduler-test PRIVATE -Wall -Wextra)
+
+# 30초 우선 / 60초 폴백 OCR 재시도 정책 단위 테스트 (EVDA-136). 순수 정책만
+# 링크한다 — DB·Gemini·OpenCV 없이 결정표 전체를 돌린다.
+add_executable(hall-ocr-policy-test
+    tests/unit/HallOcrPolicyTest.cpp
+    src/parking/HallOcrPolicy.cpp)
+target_include_directories(hall-ocr-policy-test PRIVATE include)
+target_compile_options(hall-ocr-policy-test PRIVATE -Wall -Wextra)
+add_test(NAME hall-ocr-policy-test COMMAND hall-ocr-policy-test)
+
+# 홀 세션 <-> session_id 연결 및 포트 호출 순서 단위 테스트 (EVDA-136).
+# 포트는 전부 std::function 이므로 DB/OCR 없이 가짜 포트로 검증한다.
+add_executable(hall-capture-coordinator-test
+    tests/unit/HallCaptureCoordinatorTest.cpp
+    src/parking/HallCaptureCoordinator.cpp
+    src/parking/HallOcrPolicy.cpp
+    src/util/Logger.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp
+    ${SENSOR_PARKING_SOURCES})
+target_include_directories(hall-capture-coordinator-test PRIVATE include)
+target_compile_options(hall-capture-coordinator-test PRIVATE -Wall -Wextra)
+target_link_libraries(hall-capture-coordinator-test PRIVATE Threads::Threads)
+add_test(NAME hall-capture-coordinator-test
+    COMMAND hall-capture-coordinator-test)
 
 # OCCUPIED 확정(T0) 유예시간 정책 단위 테스트 (EVDA-135 파생 결정).
 add_executable(parking-occupancy-confirmation-gate-test
