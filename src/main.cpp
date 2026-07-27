@@ -150,6 +150,25 @@ int main() {
         return 1;
     }
 
+    // 이전 실행이 세션을 못 닫고 죽었으면(강제종료/재부팅) 그 ACTIVE 세션이
+    // 활성 슬롯 유니크 인덱스를 계속 막는다. 기록은 지우지 않고 UNKNOWN으로
+    // 닫아서 정리한다 -- 실제로 언제 차가 나갔는지 알 수 없는 세션을 정상
+    // 종료(ENDED)로 남기면 데이터가 거짓을 말하게 된다.
+    // RECOVER_STALE_SESSIONS_ON_START=false로 끄면 재부팅 전 상태를 건드리지
+    // 않고 그대로 남긴다(실측/디버깅 전용 -- 켜두지 않으면 다음 실제 점유
+    // 신호가 같은 슬롯에서 새 세션을 못 연다).
+    if (config.recover_stale_sessions_on_start) {
+        const int recovered_sessions = database.recoverStaleSessions();
+        if (recovered_sessions > 0) {
+            util::logWarn("recovered " + std::to_string(recovered_sessions) +
+                          " stale session(s) left open by a previous run");
+        }
+    } else {
+        util::logInfo(
+            "stale session recovery disabled "
+            "(RECOVER_STALE_SESSIONS_ON_START=false)");
+    }
+
     std::unique_ptr<http::ParkingHttpServer> http_server;
     if (config.http_api_enabled) {
         http::ServerConfig http_config;
@@ -429,6 +448,40 @@ int main() {
                 sched_config.retryInterval = std::chrono::milliseconds(
                     config.capture_retry_interval_ms);
                 sched_config.maxRetries = config.capture_max_retries;
+
+                // CAPTURE_OFFSETS_SEC="30,60"(기본)이 아니면 운영 프로토콜
+                // 값을 덮어쓴다. 값 하나만 주면 60초 촬영 없이 30초 한 번만
+                // 예약된다 -- 실기기 없이 반복 테스트할 때만 줄여서 쓴다.
+                std::vector<int> offset_seconds;
+                std::istringstream offsets_stream(config.capture_offsets_sec);
+                std::string offset_token;
+                while (std::getline(offsets_stream, offset_token, ',')) {
+                    try {
+                        offset_seconds.push_back(
+                            std::max(0, std::stoi(offset_token)));
+                    } catch (const std::exception&) {
+                        util::logWarn(
+                            "invalid CAPTURE_OFFSETS_SEC token ignored: " +
+                            offset_token);
+                    }
+                }
+                if (!offset_seconds.empty()) {
+                    sched_config.offsets.clear();
+                    sched_config.offsets.push_back(
+                        {parking::CaptureReason::HallOccupied30s,
+                         std::chrono::seconds(offset_seconds[0])});
+                    if (offset_seconds.size() > 1) {
+                        sched_config.offsets.push_back(
+                            {parking::CaptureReason::HallOccupied60s,
+                             std::chrono::seconds(offset_seconds[1])});
+                    }
+                }
+                if (config.capture_offsets_sec != "30,60") {
+                    util::logWarn(
+                        "CAPTURE_OFFSETS_SEC overridden from protocol default "
+                        "(30,60): " + config.capture_offsets_sec +
+                        " -- test-only, do not use in production");
+                }
 
                 // 슬롯 -> 카메라 채널 -> ROI: AppConfig::iva_areas 에서 해석.
                 parking::CaptureTargetResolver resolver =

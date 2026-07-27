@@ -101,6 +101,12 @@ public:
     // ACTIVE로 두어 1시간 타이머를 끊지 않는다.
     bool markPlateOcrUnresolved(int session_id, const std::string& slot_id,
                                 int attempts);
+    // pi-server 시작 직후 한 번 호출한다. 이전 실행이 세션을 못 닫고 죽었으면
+    // (강제종료/재부팅) 그 ACTIVE 세션이 ux_parking_session_active_slot 을
+    // 계속 막으므로, 실제로 이어졌는지 알 수 없는 세션을 UNKNOWN 으로 닫아
+    // 다음 실제 점유 신호를 받을 수 있게 한다. 행 자체는 지우지 않는다.
+    // 정리한 세션 수를 돌려준다.
+    int recoverStaleSessions();
     bool listParkingSlots(std::vector<ParkingSlotView>& rows);
     bool getParkingSlot(const std::string& slot_id, ParkingSlotView& row);
     bool listSessionImages(int session_id, std::vector<ImageView>& rows);

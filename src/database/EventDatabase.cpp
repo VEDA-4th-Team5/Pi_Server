@@ -221,6 +221,13 @@ bool EventDatabase::closeHallSession(int session_id,
     return success;
 }
 
+int EventDatabase::recoverStaleSessions() {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!opened_) return 0;
+    const int recovered = db_recover_stale_sessions();
+    return recovered > 0 ? recovered : 0;
+}
+
 bool EventDatabase::attachCaptureImage(int session_id,
                                        const std::string& slot_id,
                                        const std::string& original_path,

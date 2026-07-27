@@ -127,6 +127,8 @@ AppConfig AppConfig::loadFromEnv() {
     config.capture_retry_interval_ms =
         getEnvIntOrDefault("CAPTURE_RETRY_INTERVAL_MS", 2000);
     config.capture_max_retries = getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2);
+    config.capture_offsets_sec =
+        getEnvOrDefault("CAPTURE_OFFSETS_SEC", "30,60");
 
     // 촬영본 OCR (EVDA-136). 30초 사진으로 먼저 읽고 실패하면 60초로 한 번 더.
     config.capture_ocr_max_attempts =
@@ -134,6 +136,9 @@ AppConfig AppConfig::loadFromEnv() {
     // EV/PHEV 확정 세션의 충전구역 점유 한도. 데모는 짧게 줄여 쓴다.
     config.parking_overtime_sec =
         getEnvIntOrDefault("PARKING_OVERTIME_SEC", 3600);
+
+    config.recover_stale_sessions_on_start =
+        getEnvBoolOrDefault("RECOVER_STALE_SESSIONS_ON_START", true);
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");

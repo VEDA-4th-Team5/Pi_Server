@@ -75,6 +75,11 @@ int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
                            void *context);
 int db_visit_session_images(int session_id, DbImageVisitor visitor, void *context);
 int db_get_image_by_id(int image_id, DbImageRow *row);
+/* 이전 실행이 세션을 닫지 못하고 종료됐을 때(재부팅/강제종료) 호출한다.
+   ACTIVE/VIOLATION 이면서 exit_time 이 없는 세션을 UNKNOWN 으로 닫고 해당
+   주차면을 VACANT 로 되돌린다. 기록은 지우지 않고 남긴다. 정리한 세션 수를
+   돌려준다(오류 시 음수). */
+int db_recover_stale_sessions(void);
 /* 통합 C++ 저장 계층에서 같은 연결로 transaction/query를 수행할 때 사용한다. */
 struct sqlite3 *db_native_handle(void);
 

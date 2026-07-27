@@ -213,6 +213,57 @@ int db_end_parking_session(int session_id)
     return finish_update(stmt, "주차 세션 종료", 1);
 }
 
+int db_recover_stale_sessions(void)
+{
+    /* 재부팅 전 실행이 정상 종료(VACANT)를 못 보고 죽으면 ACTIVE 세션이 남아
+       ux_parking_session_active_slot 유니크 인덱스를 계속 막는다. ENDED로
+       닫으면 실제로는 중단된 세션이 정상 종료처럼 보이므로 UNKNOWN으로 닫아
+       구분한다. 기록 자체(세션 행, IMAGE_LOG, EVENT_LOG)는 지우지 않는다. */
+    static const char *select_sql =
+        "SELECT session_id, slot_id FROM PARKING_SESSION "
+        "WHERE status IN ('ACTIVE', 'VIOLATION') AND exit_time IS NULL;";
+    static const char *close_sql =
+        "UPDATE PARKING_SESSION SET "
+        "exit_time = CURRENT_TIMESTAMP, "
+        "duration_sec = MAX(0, CAST(strftime('%s', CURRENT_TIMESTAMP) AS INTEGER) "
+        "- CAST(strftime('%s', entry_time) AS INTEGER)), "
+        "status = 'UNKNOWN' WHERE session_id = ?;";
+    sqlite3_stmt *select_stmt = NULL;
+    int recovered = 0;
+
+    if (require_db("세션 복구") < 0) return -1;
+    if (sqlite3_prepare_v2(g_db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[DB] 세션 복구 prepare 실패: %s\n", sqlite3_errmsg(g_db));
+        return -2;
+    }
+
+    while (sqlite3_step(select_stmt) == SQLITE_ROW) {
+        int session_id = sqlite3_column_int(select_stmt, 0);
+        char slot_id[DB_TEXT_SMALL];
+        sqlite3_stmt *close_stmt = NULL;
+
+        copy_column_text(select_stmt, 1, slot_id, sizeof(slot_id));
+
+        if (sqlite3_prepare_v2(g_db, close_sql, -1, &close_stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(close_stmt, 1, session_id);
+            if (sqlite3_step(close_stmt) == SQLITE_DONE) {
+                recovered++;
+            } else {
+                fprintf(stderr, "[DB] 세션 복구 실행 실패: %s\n", sqlite3_errmsg(g_db));
+            }
+            sqlite3_finalize(close_stmt);
+        } else {
+            fprintf(stderr, "[DB] 세션 복구 prepare 실패: %s\n", sqlite3_errmsg(g_db));
+        }
+
+        db_update_slot_status(slot_id, "VACANT");
+        db_insert_event_log(session_id, slot_id, "SESSION_INTERRUPTED",
+                            "pi-server restarted while session was open; closed as UNKNOWN");
+    }
+    sqlite3_finalize(select_stmt);
+    return recovered;
+}
+
 int db_insert_image_log(int session_id, const char *original_path,
                         const char *enhanced_path, const char *enhancement_type,
                         const char *ocr_result)

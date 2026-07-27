@@ -61,6 +61,10 @@ struct AppConfig {
     int capture_response_timeout_ms;
     int capture_retry_interval_ms;
     int capture_max_retries;
+    // T0 이후 촬영 시점(초). 기본 "30,60"이 촬영 규약값. 두 번째 값을
+    // 생략하면 60초 캡처 없이 30초 한 번만 예약한다. 실기기 없이 빠르게
+    // 반복 테스트할 때만 줄인다(예: "1,3") -- 운영값은 절대 바꾸지 않는다.
+    std::string capture_offsets_sec;
 
     // 촬영본 → ROI crop → Gemini OCR → DB 연결 (EVDA-136).
     // 30초 사진으로 첫 OCR을 하고, 실패하면 60초 사진으로 한 번 더 시도한다.
@@ -68,6 +72,12 @@ struct AppConfig {
     int capture_ocr_max_attempts;
     // EV/PHEV로 확정된 세션을 위반 판정 타이머에 올릴 때 쓰는 점유 한도.
     int parking_overtime_sec;
+
+    // 시작 시 이전 실행이 못 닫은 ACTIVE/VIOLATION 세션을 UNKNOWN으로 정리할지.
+    // 기본 true(권장) -- 끄면 그 세션이 활성 슬롯 unique index를 계속 막아
+    // 다음 실제 점유 신호가 새 세션을 못 연다. 재부팅 전 상태를 있는 그대로
+    // 남겨두고 봐야 하는 실측/디버깅 때만 false로 끈다.
+    bool recover_stale_sessions_on_start;
 
     std::string snapshot_dir;
     std::string db_path;
