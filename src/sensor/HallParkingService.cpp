@@ -78,7 +78,7 @@ bool HallParkingService::handleLine(const std::string& line,
     std::string error;
     auto message = parser_.parse(line, std::chrono::system_clock::now(), &error);
     if (!message) {
-        util::logWarn("Hall sensor message rejected: " + error);
+        util::logWarn("Hall sensor message rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorMessageInvalid,
                ::event::SystemEventSeverity::Warning, error, transport);
         return false;
@@ -86,14 +86,14 @@ bool HallParkingService::handleLine(const std::string& line,
     message->transport = transport;
     auto event = adapter_.adapt(*message, &error);
     if (!event) {
-        util::logWarn("Hall sensor event rejected: " + error);
+        util::logWarn("Hall sensor event rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorNotMapped,
                ::event::SystemEventSeverity::Warning,
                error + "; sensor_id=" + message->sensorId, transport);
         return false;
     }
     if (!sequence_guard_.accept(*event, &error)) {
-        util::logWarn("Hall sensor event rejected: " + error);
+        util::logWarn("Hall sensor event rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorSequenceRejected,
                ::event::SystemEventSeverity::Warning, error, transport,
                event->slotId);
