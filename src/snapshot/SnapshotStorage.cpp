@@ -85,6 +85,19 @@ std::string SnapshotStorage::saveEvidenceSnapshot(
     return saveAreaSnapshot(channel, slot_id, roi, prefix);
 }
 
+std::string SnapshotStorage::saveHallCaptureSnapshot(
+    const std::shared_ptr<camera::CameraChannel>& channel,
+    const std::int64_t session_id,
+    const std::string& slot_id,
+    const std::string& capture_stage,
+    const NormalizedRoi& roi
+) {
+    if (session_id < 0 || capture_stage.empty()) return "";
+    const std::string prefix = "session_" + std::to_string(session_id) +
+        "_slot_" + slot_id + "_" + capture_stage;
+    return saveAreaSnapshot(channel, slot_id, roi, prefix);
+}
+
 std::string SnapshotStorage::saveAreaSnapshot(
     const std::shared_ptr<camera::CameraChannel>& channel,
     const std::string& slot_id,
@@ -131,7 +144,8 @@ std::string SnapshotStorage::saveAreaSnapshot(
             std::to_string(cropped.rows) + "_" + util::nowStringForFilename() +
             ".jpg";
     } else {
-        filename = filename_prefix + "_" + util::nowStringForFilename() + ".jpg";
+        filename = filename_prefix + "_" + util::nowStringForFilename() +
+            "_" + std::to_string(next_file_sequence_.fetch_add(1)) + ".jpg";
     }
     std::string path = (directory / filename).string();
     if (!cv::imwrite(path, cropped)) {

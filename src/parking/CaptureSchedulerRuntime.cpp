@@ -76,9 +76,9 @@ void CaptureSchedulerRuntime::run() {
 
         const auto now = std::chrono::steady_clock::now();
         for (const auto& request : scheduler_.due(now)) {
-            bool published = false;
+            bool accepted = false;
             try {
-                published = publisher_ && publisher_(request);
+                accepted = publisher_ && publisher_(request);
             } catch (const std::exception& error) {
                 util::logError(std::string("capture request publish threw: ") +
                                error.what() + " " + describe(request));
@@ -88,19 +88,19 @@ void CaptureSchedulerRuntime::run() {
             }
 
             const auto outcome = scheduler_.onDispatchResult(
-                request, published, std::chrono::steady_clock::now());
+                request, accepted, std::chrono::steady_clock::now());
             switch (outcome) {
                 case DispatchOutcome::Done:
                     util::logLine("CAPTURE_SCHED",
-                                  "capture request published " +
+                                  "capture task completed " +
                                       describe(request));
                     break;
                 case DispatchOutcome::WillRetry:
-                    util::logWarn("capture request publish failed; retry " +
+                    util::logWarn("capture task failed; retry " +
                                   describe(request));
                     break;
                 case DispatchOutcome::GaveUp:
-                    util::logError("capture request publish gave up " +
+                    util::logError("capture task gave up " +
                                    describe(request));
                     break;
                 case DispatchOutcome::Unknown:

@@ -11,6 +11,8 @@
 #include "parking/CaptureScheduler.hpp"
 #include "parking/CaptureSchedulerRuntime.hpp"
 #include "parking/EvidenceCaptureWorker.hpp"
+#include "parking/HallCaptureCoordinator.hpp"
+#include "parking/HallCaptureExecutor.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking_timer/EventManager.hpp"
@@ -271,6 +273,29 @@ int main() {
             config.capture_retry_interval_ms);
         scheduler_config.maxRetries = config.capture_max_retries;
 
+        std::vector<int> offset_seconds;
+        std::istringstream offset_stream(config.capture_offsets_sec);
+        std::string offset_token;
+        while (std::getline(offset_stream, offset_token, ',')) {
+            try {
+                offset_seconds.push_back(std::max(0, std::stoi(offset_token)));
+            } catch (const std::exception&) {
+                util::logWarn("invalid CAPTURE_OFFSETS_SEC token ignored: " +
+                              offset_token);
+            }
+        }
+        if (!offset_seconds.empty()) {
+            scheduler_config.offsets.clear();
+            scheduler_config.offsets.push_back(
+                {parking::CaptureReason::HallOccupied30s,
+                 std::chrono::seconds(offset_seconds[0])});
+            if (offset_seconds.size() > 1) {
+                scheduler_config.offsets.push_back(
+                    {parking::CaptureReason::HallOccupied60s,
+                     std::chrono::seconds(offset_seconds[1])});
+            }
+        }
+
         parking::CaptureTargetResolver resolver =
             [&config](const std::string& slot_id)
             -> std::optional<parking::CaptureTarget> {
@@ -282,17 +307,6 @@ int main() {
         };
         capture_scheduler = std::make_unique<parking::CaptureScheduler>(
             std::move(scheduler_config), std::move(resolver));
-
-        const std::string topic_prefix = config.capture_topic_prefix;
-        capture_runtime = std::make_unique<parking::CaptureSchedulerRuntime>(
-            *capture_scheduler,
-            [&capture_mqtt_bridge, topic_prefix](
-                const parking::CaptureRequest& request) {
-                if (capture_mqtt_bridge == nullptr) return false;
-                return capture_mqtt_bridge->publishApplicationEvent(
-                    topic_prefix + "/" + request.slotId,
-                    buildCaptureRequestPayload(request), 1, false);
-            });
     }
 
     std::unique_ptr<parking_timer::EventManager> timer_events;
@@ -337,17 +351,124 @@ int main() {
             }
         });
 
+    parking::HallCapturePorts hall_capture_ports;
+    hall_capture_ports.writeImageLog =
+        [&database](const parking::CapturedImage& image) {
+            try {
+                const auto result = database.insertHallCaptureImage(
+                    image.sessionId, image.originalPath, image.enhancedPath,
+                    parking::toEnhancementType(image.stage),
+                    parking_timer::utcNow());
+                switch (result) {
+                    case database::EvidenceInsertResult::Inserted:
+                        return parking::ImageStoreResult::Inserted;
+                    case database::EvidenceInsertResult::Duplicate:
+                        return parking::ImageStoreResult::Duplicate;
+                    case database::EvidenceInsertResult::InactiveSession:
+                        return parking::ImageStoreResult::InactiveSession;
+                }
+            } catch (const std::exception& error) {
+                util::logError("hall capture DB insert failed: " +
+                               std::string(error.what()));
+            }
+            return parking::ImageStoreResult::Failed;
+        };
+    hall_capture_ports.submitOcr =
+        [&ocr_worker](const parking::CapturedImage& image) {
+            ocr_worker.enqueueHallCapture({
+                image.sessionId,
+                image.stage == parking::CaptureStage::Second60s ? 1 : 0,
+                image.slotId,
+                image.originalPath,
+                image.enhancedPath});
+        };
+    hall_capture_ports.writeOcrFailure =
+        [&database](const std::int64_t session_id,
+                    const std::string& slot_id, const int attempts) {
+            if (!database.markPlateOcrUnresolved(
+                    session_id, slot_id, attempts)) {
+                util::logError("hall OCR failure log write failed: session=" +
+                               std::to_string(session_id));
+            }
+        };
+    hall_capture_ports.registerEvTimer =
+        [&parking_timer](const std::int64_t session_id,
+                         const std::string& slot_id,
+                         const std::string& plate_number) {
+            if (parking_timer) {
+                parking_timer->handleRecognizedSession(
+                    session_id, slot_id, plate_number);
+            }
+        };
+    auto hall_ocr_coordinator =
+        std::make_unique<parking::HallCaptureCoordinator>(
+            std::move(hall_capture_ports), config.capture_ocr_max_attempts);
+    ocr_worker.setHallCaptureCallback(
+        [&hall_ocr_coordinator](const ocr::HallCaptureResult& result) {
+            if (!hall_ocr_coordinator) return;
+            hall_ocr_coordinator->onOcrOutcome({
+                result.session_id,
+                result.stage == 1 ? parking::CaptureStage::Second60s
+                                  : parking::CaptureStage::First30s,
+                result.recognized,
+                result.plate_number,
+                result.confidence,
+                result.classification});
+        });
+
+    std::unique_ptr<parking::HallCaptureExecutor> hall_capture_executor;
+    if (capture_scheduler) {
+        const std::string topic_prefix = config.capture_topic_prefix;
+        if (config.hall_capture_ocr_enabled) {
+            hall_capture_executor =
+                std::make_unique<parking::HallCaptureExecutor>(
+                    channels, snapshot_storage, *hall_ocr_coordinator,
+                    [&capture_mqtt_bridge, topic_prefix](
+                        const parking::CaptureRequest& request) {
+                        return capture_mqtt_bridge != nullptr &&
+                            capture_mqtt_bridge->publishApplicationEvent(
+                                topic_prefix + "/" + request.slotId,
+                                buildCaptureRequestPayload(request), 1, false);
+                    });
+            capture_runtime =
+                std::make_unique<parking::CaptureSchedulerRuntime>(
+                    *capture_scheduler,
+                    [&hall_capture_executor](
+                        const parking::CaptureRequest& request) {
+                        return hall_capture_executor &&
+                               hall_capture_executor->execute(request);
+                    });
+        } else {
+            capture_runtime =
+                std::make_unique<parking::CaptureSchedulerRuntime>(
+                    *capture_scheduler,
+                    [&capture_mqtt_bridge, topic_prefix](
+                        const parking::CaptureRequest& request) {
+                        return capture_mqtt_bridge != nullptr &&
+                            capture_mqtt_bridge->publishApplicationEvent(
+                                topic_prefix + "/" + request.slotId,
+                                buildCaptureRequestPayload(request), 1, false);
+                    });
+        }
+    }
+
     parking::EvidenceCaptureWorker::Config evidence_config;
     evidence_config.overstayDelay = std::chrono::seconds(
         config.parking_overstay_evidence_delay_seconds);
     auto evidence_worker = std::make_unique<parking::EvidenceCaptureWorker>(
         snapshot_storage, database, evidence_config,
-        [&ocr_worker, &timer_events](
+        [&ocr_worker, &timer_events, &config](
             const parking::EvidenceCaptureResult& result) {
             if (!result.stored) return;
             if (result.reason == parking::EvidenceReason::OccupancyStart) {
-                ocr_worker.enqueue(static_cast<int>(result.sessionId),
-                                   result.slotId, result.imagePath);
+                // 30/60초 홀 OCR이 활성화되면 차량이 자리를 잡은 뒤의 ROI를
+                // 사용한다. 스케줄러가 꺼진 환경에서는 기존 시작 증거 OCR로
+                // fallback하여 번호판 인식 기능이 사라지지 않게 한다.
+                if (!(config.hall_capture_ocr_enabled &&
+                      config.capture_sched_enabled)) {
+                    ocr_worker.enqueue(static_cast<int>(result.sessionId),
+                                       result.slotId, result.imagePath);
+                }
                 if (timer_events) {
                     timer_events->publish(
                         "OCCUPANCY_START_EVIDENCE_STORED", result.slotId, "",
@@ -388,8 +509,10 @@ int main() {
             },
             *parking_timer, *timer_events, *evidence_worker,
             system_event_sink,
-            [&capture_runtime](
+            [&capture_runtime, &hall_ocr_coordinator](
                 const parking::ParkingTransitionResult& transition) {
+                if (hall_ocr_coordinator)
+                    hall_ocr_coordinator->onTransition(transition);
                 if (capture_runtime) capture_runtime->onTransition(transition);
             });
     }
@@ -445,7 +568,7 @@ int main() {
         util::logInfo(
             "capture scheduler enabled (DRAFT protocol pending EVDA-138): "
             "topic_prefix=" + config.capture_topic_prefix +
-            " offsets=30s,60s retries=" +
+            " offsets=" + config.capture_offsets_sec + "s retries=" +
             std::to_string(config.capture_max_retries));
     }
 

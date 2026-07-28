@@ -51,6 +51,10 @@ struct AppConfig {
     int capture_response_timeout_ms;
     int capture_retry_interval_ms;
     int capture_max_retries;
+    // 실제 RTSP ROI 30/60초 촬영을 Gemini 재시도 정책에 연결한다.
+    bool hall_capture_ocr_enabled;
+    std::string capture_offsets_sec;
+    int capture_ocr_max_attempts;
 
     // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
     // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.

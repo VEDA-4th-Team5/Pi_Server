@@ -11,7 +11,7 @@
 
 namespace parking {
 
-// true는 카메라 촬영 완료가 아니라 MQTT Broker에 요청 발행이 접수됐음을 뜻한다.
+// true는 주입된 촬영 실행기(RTSP 저장/DB 또는 MQTT-only)가 작업을 수락했음을 뜻한다.
 using CapturePublisher = std::function<bool(const CaptureRequest& request)>;
 
 class CaptureSchedulerRuntime {

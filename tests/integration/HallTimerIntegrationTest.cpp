@@ -327,6 +327,37 @@ int main(int argc, char* argv[]) {
                     violation_images.size() == 2,
                 "violation evidence was incorrectly deleted on departure");
 
+        // 재시작을 모사해 메모리 상태에는 없고 DB에만 남은 ACTIVE를 만든다.
+        const auto adopted_id = database.createHallSession(
+            "EV02", "HALL02", parking_timer::utcNow());
+        const auto count_before_adopt = database.listLogs().size();
+        require(service.handleLine("SENSOR:HALL02:OCCUPIED:1"),
+                "recovery OCCUPIED was rejected");
+        require(waitUntil([&] {
+                    const auto active = database.findActiveBySlot("EV02");
+                    return active && active->id == adopted_id;
+                }, 1s),
+                "existing ACTIVE session was not adopted");
+        std::this_thread::sleep_for(80ms);
+        require(database.listLogs().size() == count_before_adopt,
+                "adopting an ACTIVE session created a duplicate row");
+        require(service.handleLine("SENSOR:HALL02:VACANT:2"),
+                "adopted session VACANT was rejected");
+        require(waitUntil([&] {
+                    return !database.findActiveBySlot("EV02").has_value();
+                }, 1s),
+                "adopted ACTIVE session was not closed by VACANT");
+
+        const auto stale_id = database.createHallSession(
+            "EV03", "HALL03", parking_timer::utcNow());
+        require(stale_id > 0, "stale session fixture was not created");
+        require(service.handleLine("SENSOR:HALL03:VACANT:1"),
+                "startup VACANT reconciliation was rejected");
+        require(waitUntil([&] {
+                    return !database.findActiveBySlot("EV03").has_value();
+                }, 1s),
+                "VACANT did not close a DB-only stale ACTIVE session");
+
         system_events.stop();
         std::cout << "[PASS] hall→snapshot→timer→violation→retention flow\n";
         return 0;
