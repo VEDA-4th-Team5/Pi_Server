@@ -29,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <ctime>
 #include <cstdlib>
 #include <exception>
 #include <iomanip>
@@ -71,6 +72,46 @@ const app::IvaAreaConfig* findArea(const app::AppConfig& config,
     for (const auto& area : config.iva_areas)
         if (area.slot_id == slot_id) return &area;
     return nullptr;
+}
+
+std::shared_ptr<camera::CameraChannel> findChannel(
+    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
+    const std::string& channel_id) {
+    for (const auto& channel : channels)
+        if (channel && channel->channel_id == channel_id) return channel;
+    return nullptr;
+}
+
+std::chrono::steady_clock::time_point restoreMonotonicStart(
+    const std::string& utc_value,
+    const std::chrono::seconds fallback_elapsed) {
+    const auto steady_now = std::chrono::steady_clock::now();
+    if (utc_value.size() < 19) return steady_now - fallback_elapsed;
+
+    std::string seconds = utc_value.substr(0, 19);
+    if (seconds[10] == 'T') seconds[10] = ' ';
+    std::tm utc{};
+    std::istringstream input(seconds);
+    input >> std::get_time(&utc, "%Y-%m-%d %H:%M:%S");
+    if (input.fail()) return steady_now - fallback_elapsed;
+    const std::time_t timestamp = timegm(&utc);
+    if (timestamp == static_cast<std::time_t>(-1))
+        return steady_now - fallback_elapsed;
+
+    auto started = std::chrono::system_clock::from_time_t(timestamp);
+    if (utc_value.size() >= 23 && utc_value[19] == '.') {
+        try {
+            started += std::chrono::milliseconds(
+                std::stoi(utc_value.substr(20, 3)));
+        } catch (...) {
+            return steady_now - fallback_elapsed;
+        }
+    }
+    const auto wall_now = std::chrono::system_clock::now();
+    if (started >= wall_now) return steady_now;
+    const auto elapsed = std::chrono::duration_cast<
+        std::chrono::steady_clock::duration>(wall_now - started);
+    return steady_now - elapsed;
 }
 
 // EVDA-138에서 카메라 응답 규약이 확정되기 전 사용하는 MQTT 요청 초안이다.
@@ -297,12 +338,13 @@ int main() {
 
     std::unique_ptr<parking_timer::EventManager> timer_events;
     std::unique_ptr<parking_timer::ParkingSlotManager> parking_timer;
+    parking::EvidenceCaptureWorker* evidence_worker_for_timer = nullptr;
     if (config.parking_timer_enabled) {
         timer_events = std::make_unique<parking_timer::EventManager>();
         parking_timer = std::make_unique<parking_timer::ParkingSlotManager>(
             database, *timer_events,
             std::chrono::seconds(config.parking_timeout_seconds),
-            [&database](
+            [&database, &evidence_worker_for_timer](
                 std::int64_t session_id, const std::string& slot_id,
                 const std::string&) {
                 // 새 증거 worker가 T0 기준 이미지를 이미 저장했다면 같은 파일을
@@ -310,6 +352,9 @@ int main() {
                 if (const auto existing = database.findEvidenceImagePath(
                         session_id, "OVERSTAY_EVIDENCE")) {
                     return *existing;
+                }
+                if (evidence_worker_for_timer != nullptr) {
+                    evidence_worker_for_timer->expediteOverstay(session_id);
                 }
                 util::logWarn("Timer reached before overstay evidence was ready: "
                               "session=" + std::to_string(session_id) +
@@ -367,6 +412,7 @@ int main() {
         database.close();
         return 1;
     }
+    evidence_worker_for_timer = evidence_worker.get();
     util::logInfo("parking evidence worker enabled: overstay_delay=" +
                   std::to_string(
                       config.parking_overstay_evidence_delay_seconds) + "s");
@@ -408,6 +454,41 @@ int main() {
         database.close();
         return 1;
     }
+
+    // 프로세스 재시작으로 사라진 evidence 작업을 원래 DB entry_time(T0) 기준으로
+    // 타이머보다 먼저 복원한다. 이미 저장된 증거 종류는 worker가 건너뛴다.
+    std::size_t restored_evidence{};
+    std::size_t failed_evidence_restore{};
+    for (const auto& record : database.listLogs()) {
+        if (record.departed_at.has_value() ||
+            (record.status != "PARKED" && record.status != "ACTIVE")) {
+            continue;
+        }
+        const auto* area = findArea(config, record.slot_id);
+        auto channel = area ? findChannel(channels, area->channel_id) : nullptr;
+        if (area == nullptr || !channel) {
+            ++failed_evidence_restore;
+            util::logError("evidence restore mapping missing: session=" +
+                           std::to_string(record.id) + " slot=" +
+                           record.slot_id);
+            continue;
+        }
+        const auto fallback_elapsed = std::chrono::seconds(
+            config.parking_overstay_evidence_delay_seconds);
+        if (evidence_worker->restoreSession({
+                record.id, record.slot_id, std::move(channel),
+                {area->roi_x, area->roi_y,
+                 area->roi_width, area->roi_height},
+                restoreMonotonicStart(record.parked_at,
+                                      fallback_elapsed)})) {
+            ++restored_evidence;
+        } else {
+            ++failed_evidence_restore;
+        }
+    }
+    util::logInfo("parking evidence restored active sessions=" +
+                  std::to_string(restored_evidence) + " failed=" +
+                  std::to_string(failed_evidence_restore));
 
     ocr_worker.start();
     bestshot_receiver.start();

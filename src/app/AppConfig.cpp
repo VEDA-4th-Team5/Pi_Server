@@ -140,6 +140,8 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("PARKING_HALL_ENABLED", false);
     config.parking_slots_config_path =
         getEnvOrDefault("PARKING_SLOTS_CONFIG", "config/parking_slots.json");
+    config.parking_hall_work_queue_capacity = std::max(
+        1, getEnvIntOrDefault("PARKING_HALL_WORK_QUEUE_CAPACITY", 100));
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");

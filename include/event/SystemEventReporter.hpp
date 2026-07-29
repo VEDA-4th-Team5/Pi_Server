@@ -36,6 +36,7 @@ enum class SystemEventCode {
     SensorNotMapped,
     SensorSequenceRejected,
     SensorHandlerFailed,
+    HallWorkQueueOverflow,
     UartOpenFailed,
     UartReadFailed,
     UartWriteFailed,

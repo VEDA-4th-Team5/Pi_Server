@@ -70,6 +70,7 @@ int main() {
         std::vector<parking::EvidenceCaptureResult> results;
         parking::EvidenceCaptureWorker::Config config;
         config.overstayDelay = 60ms;
+        config.maxPendingJobs = 2;
         parking::EvidenceCaptureWorker worker(
             storage, database, config,
             [&](const parking::EvidenceCaptureResult& result) {
@@ -114,11 +115,46 @@ int main() {
                            countReason(images, "OCCUPANCY_START_EVIDENCE") == 1;
                 }, 1s), "session2 start evidence missing");
         worker.cancelSession(session2);
+        require(worker.pendingCount() == 0,
+                "canceled overstay job did not release queue capacity");
         std::this_thread::sleep_for(100ms);
         std::vector<database::ImageView> images2;
         require(database.listSessionImages(static_cast<int>(session2), images2) &&
                     countReason(images2, "OVERSTAY_EVIDENCE") == 0,
                 "canceled overstay evidence was stored");
+        require(database.departActiveBySlot("EV02", "2026-07-27T09:11:00")
+                    .has_value(),
+                "canceled fixture session was not closed");
+
+        const auto restored_session = database.createHallSession(
+            "EV03", "HALL03", "2026-07-27T09:15:00");
+        const std::string restored_start_path = storage.saveEvidenceSnapshot(
+            channel, restored_session, "EV03", "OCCUPANCY_START_EVIDENCE",
+            {0.0, 0.0, 1.0, 1.0});
+        require(!restored_start_path.empty(),
+                "restore fixture start image was not created");
+        require(database.insertEvidenceImage(
+                    restored_session, restored_start_path,
+                    "OCCUPANCY_START_EVIDENCE", "2026-07-27T09:15:00") ==
+                    database::EvidenceInsertResult::Inserted,
+                "restore fixture start image DB row was not created");
+        require(worker.restoreSession({
+                    restored_session, "EV03", channel,
+                    {0.0, 0.0, 1.0, 1.0},
+                    std::chrono::steady_clock::now() - 40ms}),
+                "restored session schedule failed");
+        require(waitUntil([&] {
+                    std::vector<database::ImageView> images;
+                    return database.listSessionImages(
+                               static_cast<int>(restored_session), images) &&
+                           countReason(images,
+                               "OCCUPANCY_START_EVIDENCE") == 1 &&
+                           countReason(images, "OVERSTAY_EVIDENCE") == 1;
+                }, 1s),
+                "restored T0 did not produce one overstay evidence image");
+        require(database.departActiveBySlot("EV03", "2026-07-27T09:16:00")
+                    .has_value(),
+                "restored fixture session was not closed");
 
         const auto session3 = database.createHallSession(
             "EV03", "HALL03", "2026-07-27T09:20:00");

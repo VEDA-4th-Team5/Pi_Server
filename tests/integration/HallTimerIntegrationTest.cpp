@@ -92,6 +92,30 @@ int main(int argc, char* argv[]) {
         require(argc >= 2, "parking slot fixture path is required");
         auto configs = parking::ParkingSlotConfigLoader::loadFromFile(argv[1]);
 
+        sensor::HallParkingWorkQueue bounded_queue(1);
+        sensor::HallParkingWorkItem occupied;
+        occupied.event.slotId = "EV01";
+        occupied.event.state = parking::ParkingSensorState::Occupied;
+        require(bounded_queue.push(occupied) ==
+                    sensor::HallParkingWorkQueue::PushResult::Added,
+                "first hall work item was not queued");
+        auto vacant = occupied;
+        vacant.event.state = parking::ParkingSensorState::Vacant;
+        require(bounded_queue.push(vacant) ==
+                    sensor::HallParkingWorkQueue::PushResult::Coalesced &&
+                    bounded_queue.size() == 1,
+                "same-slot latest state was not coalesced");
+        auto other_slot = occupied;
+        other_slot.event.slotId = "EV02";
+        require(bounded_queue.push(other_slot) ==
+                    sensor::HallParkingWorkQueue::PushResult::Full &&
+                    bounded_queue.size() == bounded_queue.capacity(),
+                "distinct-slot overflow exceeded bounded capacity");
+        const auto latest = bounded_queue.pop();
+        require(latest && latest->event.state ==
+                              parking::ParkingSensorState::Vacant,
+                "coalesced queue did not retain the latest VACANT state");
+
         database::EventDatabase database(temporary.database);
         const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
         database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
@@ -139,6 +163,20 @@ int main(int argc, char* argv[]) {
                     message);
             }, reporter_config);
         require(system_events.start(), "system event reporter did not start");
+        event::SystemEvent overflow_event;
+        overflow_event.source = event::SystemEventSource::HallSensor;
+        overflow_event.code = event::SystemEventCode::HallWorkQueueOverflow;
+        overflow_event.severity = event::SystemEventSeverity::Error;
+        overflow_event.slot_id = "EV02";
+        overflow_event.transport = "test";
+        overflow_event.message = "bounded hall work queue full";
+        system_events.report(std::move(overflow_event));
+        require(waitUntil([&] {
+                    return countEventType(
+                               temporary.database,
+                               "HALL_WORK_QUEUE_OVERFLOW") == 1;
+                }, 1s),
+                "hall queue overflow was not persisted to EVENT_LOG");
 
         std::atomic<int> enqueued_session{-1};
         std::atomic<int> canceled_session{-1};

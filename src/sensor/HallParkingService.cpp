@@ -2,6 +2,7 @@
 
 #include "util/Logger.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <utility>
 
@@ -24,6 +25,44 @@ std::shared_ptr<camera::CameraChannel> findChannel(
 }
 
 }  // namespace
+
+HallParkingWorkQueue::HallParkingWorkQueue(const std::size_t capacity)
+    : capacity_(std::max<std::size_t>(1, capacity)) {}
+
+bool HallParkingWorkQueue::canAccept(const std::string& slot_id) const {
+    return items_.size() < capacity_ ||
+        std::any_of(items_.begin(), items_.end(),
+            [&slot_id](const HallParkingWorkItem& item) {
+                return item.event.slotId == slot_id;
+            });
+}
+
+HallParkingWorkQueue::PushResult HallParkingWorkQueue::push(
+    HallParkingWorkItem item) {
+    const auto same_slot = std::find_if(
+        items_.begin(), items_.end(),
+        [&item](const HallParkingWorkItem& queued) {
+            return queued.event.slotId == item.event.slotId;
+        });
+    if (same_slot != items_.end()) {
+        *same_slot = std::move(item);
+        return PushResult::Coalesced;
+    }
+    if (items_.size() >= capacity_) return PushResult::Full;
+    items_.push_back(std::move(item));
+    return PushResult::Added;
+}
+
+std::optional<HallParkingWorkItem> HallParkingWorkQueue::pop() {
+    if (items_.empty()) return std::nullopt;
+    HallParkingWorkItem item = std::move(items_.front());
+    items_.pop_front();
+    return item;
+}
+
+bool HallParkingWorkQueue::empty() const noexcept { return items_.empty(); }
+std::size_t HallParkingWorkQueue::size() const noexcept { return items_.size(); }
+std::size_t HallParkingWorkQueue::capacity() const noexcept { return capacity_; }
 
 HallParkingService::HallParkingService(
     std::vector<parking::ParkingSlotConfig> slot_configs,
@@ -48,7 +87,9 @@ HallParkingService::HallParkingService(
       event_manager_(event_manager),
       evidence_worker_(evidence_worker),
       system_event_reporter_(system_event_reporter),
-      transition_sink_(std::move(transition_sink)) {
+      transition_sink_(std::move(transition_sink)),
+      work_queue_(static_cast<std::size_t>(
+          std::max(1, app_config.parking_hall_work_queue_capacity))) {
     work_worker_ = std::thread(&HallParkingService::workLoop, this);
     if (app_config_.parking_occupancy_confirm_ms > 0) {
         confirmation_gate_.emplace(std::chrono::milliseconds(
@@ -121,13 +162,42 @@ bool HallParkingService::processEventLocked(
         }
     }
 
+    if (!canEnqueueWorkLocked(event)) return false;
     const auto transition = occupancy_manager_.handle(event);
     if (!transition.changed()) {
         util::logInfo("Hall sensor event ignored: slot=" + event.slotId +
                       " reason=" + transition.message);
         return true;
     }
-    work_queue_.push_back({event, transition});
+    return enqueueWorkLocked({event, transition});
+}
+
+bool HallParkingService::canEnqueueWorkLocked(
+    const parking::ParkingSensorEvent& event) {
+    if (work_queue_.canAccept(event.slotId)) return true;
+    const std::string message =
+        "hall work queue full; newest distinct-slot event rejected; size=" +
+        std::to_string(work_queue_.size()) + " capacity=" +
+        std::to_string(work_queue_.capacity());
+    util::logError(message + " slot=" + event.slotId);
+    report(::event::SystemEventCode::HallWorkQueueOverflow,
+           ::event::SystemEventSeverity::Error, message,
+           event.sourceTransport, event.slotId);
+    return false;
+}
+
+bool HallParkingService::enqueueWorkLocked(HallParkingWorkItem item) {
+    if (!canEnqueueWorkLocked(item.event)) return false;
+    const auto slot_id = item.event.slotId;
+    const auto latest_state = item.event.state;
+    const auto result = work_queue_.push(std::move(item));
+    if (result == HallParkingWorkQueue::PushResult::Coalesced) {
+        util::logLine("HALL_WORK_QUEUE",
+            "pending slot event coalesced slot=" + slot_id + " latest=" +
+            (latest_state == parking::ParkingSensorState::Occupied
+                 ? "OCCUPIED" : "VACANT"));
+    }
+    if (result == HallParkingWorkQueue::PushResult::Full) return false;
     work_condition_.notify_one();
     return true;
 }
@@ -228,15 +298,16 @@ bool HallParkingService::handleVacant(
 
 void HallParkingService::workLoop() {
     for (;;) {
-        WorkItem item;
+        HallParkingWorkItem item;
         {
             std::unique_lock lock(mutex_);
             work_condition_.wait(lock, [this] {
                 return stopping_ || !work_queue_.empty();
             });
             if (stopping_ && work_queue_.empty()) break;
-            item = std::move(work_queue_.front());
-            work_queue_.pop_front();
+            auto popped = work_queue_.pop();
+            if (!popped) continue;
+            item = std::move(*popped);
         }
         try {
             const bool success =
