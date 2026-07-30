@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/CameraChannel.hpp"
+#include "camera/CameraSnapshotApiClient.hpp"
 #include "parking/CaptureRequest.hpp"
 #include "parking/HallCaptureCoordinator.hpp"
 #include "snapshot/SnapshotStorage.hpp"
@@ -20,7 +21,9 @@ public:
         std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
         snapshot::SnapshotStorage& storage,
         HallCaptureCoordinator& coordinator,
-        DraftPublisher draftPublisher);
+        DraftPublisher draftPublisher,
+        camera::CameraSnapshotApiClient* snapshotApiClient = nullptr,
+        bool rtspFallback = false);
 
     /** @return 실제 RTSP 파일·DB 처리가 성공했거나 더 이상 재시도할 필요가 없으면 true. */
     bool execute(const CaptureRequest& request) noexcept;
@@ -30,6 +33,8 @@ private:
     snapshot::SnapshotStorage& storage_;
     HallCaptureCoordinator& coordinator_;
     DraftPublisher draftPublisher_;
+    camera::CameraSnapshotApiClient* snapshotApiClient_{};
+    bool rtspFallback_{};
 };
 
 }  // namespace parking

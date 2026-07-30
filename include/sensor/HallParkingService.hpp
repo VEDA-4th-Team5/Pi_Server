@@ -26,6 +26,29 @@
 
 namespace sensor {
 
+struct HallParkingWorkItem {
+    parking::ParkingSensorEvent event;
+    parking::ParkingTransitionResult transition;
+};
+
+/** @brief 슬롯별 최신 상태를 병합하는 비동기 작업용 bounded queue다. */
+class HallParkingWorkQueue {
+public:
+    enum class PushResult { Added, Coalesced, Full };
+
+    explicit HallParkingWorkQueue(std::size_t capacity);
+    [[nodiscard]] bool canAccept(const std::string& slot_id) const;
+    [[nodiscard]] PushResult push(HallParkingWorkItem item);
+    [[nodiscard]] std::optional<HallParkingWorkItem> pop();
+    [[nodiscard]] bool empty() const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] std::size_t capacity() const noexcept;
+
+private:
+    std::size_t capacity_;
+    std::deque<HallParkingWorkItem> items_;
+};
+
 /** @brief MQTT test/UART 공통 홀센서 메시지를 Snapshot·OCR·타이머 흐름으로 연결한다. */
 class HallParkingService {
 public:
@@ -63,6 +86,9 @@ private:
                       const parking::ParkingTransitionResult& transition);
     void confirmationLoop();
     void workLoop();
+    [[nodiscard]] bool canEnqueueWorkLocked(
+        const parking::ParkingSensorEvent& event);
+    bool enqueueWorkLocked(HallParkingWorkItem item);
     bool removeEarlyDepartureImages(std::int64_t session_id);
     void report(event::SystemEventCode code,
                 event::SystemEventSeverity severity,
@@ -90,12 +116,8 @@ private:
     std::mutex mutex_;
     std::condition_variable confirmation_condition_;
     std::thread confirmation_worker_;
-    struct WorkItem {
-        parking::ParkingSensorEvent event;
-        parking::ParkingTransitionResult transition;
-    };
     std::condition_variable work_condition_;
-    std::deque<WorkItem> work_queue_;
+    HallParkingWorkQueue work_queue_;
     std::thread work_worker_;
     bool stopping_{false};
 };

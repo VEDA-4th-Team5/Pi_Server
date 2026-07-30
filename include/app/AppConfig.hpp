@@ -21,6 +21,8 @@ struct IvaAreaConfig {
     double roi_y;
     double roi_width;
     double roi_height;
+    // CV Snapshot OpenAPI의 0-based channel. RTSP channel_id와 별도다.
+    int snapshot_api_channel{0};
 };
 
 struct AppConfig {
@@ -56,6 +58,20 @@ struct AppConfig {
     std::string capture_offsets_sec;
     int capture_ocr_max_attempts;
 
+    // CV5 cv_snapshot_api에서 original/enhanced JPEG를 생성·다운로드한다.
+    bool camera_snapshot_api_enabled;
+    bool camera_snapshot_api_rtsp_fallback;
+    std::string camera_open_api_base;
+    std::string camera_image_base;
+    std::string camera_api_username;
+    std::string camera_api_password;
+    int camera_image_server_port;
+    int camera_snapshot_connect_timeout_ms;
+    int camera_snapshot_request_timeout_ms;
+    int camera_snapshot_jpeg_timeout_ms;
+    int camera_snapshot_max_retries;
+    int camera_snapshot_retry_delay_ms;
+
     // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
     // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
     bool fire_alarm_enabled;
@@ -70,6 +86,8 @@ struct AppConfig {
     // 슬롯/센서 매핑은 코드가 아니라 아래 JSON 설정 파일에서 읽는다.
     bool parking_hall_enabled;
     std::string parking_slots_config_path;
+    // DB/파일 작업이 센서 입력보다 느릴 때 메모리가 무제한 증가하지 않게 한다.
+    int parking_hall_work_queue_capacity{100};
 
     std::string snapshot_dir;
     std::string db_path;

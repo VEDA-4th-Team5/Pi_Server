@@ -15,6 +15,7 @@ RTSP, MQTT, OpenCV, Gemini OCR, SQLite 및 Qt 조회 API를 사용합니다.
 - Qt용 HTTP/HTTPS 상태·이미지 조회 API
 - 가짜 홀센서 MQTT 입력과 실제 Snapshot·세션·타이머 연결
 - OCCUPIED 확정 유예시간과 T0+30초/60초 RTSP ROI 촬영·OCR scheduler
+- CV5 Snapshot OpenAPI의 동일 프레임 original/enhanced 다운로드 및 OCR 연결
 - 실제 UART line 및 UART 기반 LoRa CRC frame 수신 드라이버
 - 프로젝트 전용 Linux Character Device `/dev/parking_alert`
 - Qt용 주차 상태/위반 MQTT 이벤트 발행
@@ -33,9 +34,9 @@ STM32 실장비는 아직 연결되어 있지 않아 화재 경로는 FIFO 시�
 
 ```text
 Camera
-→ RTSP / MQTT / BestShot
+→ RTSP / MQTT / BestShot / CV Snapshot OpenAPI
 → Raspberry Pi C++ Server
-→ OpenCV 전처리
+→ 카메라 내부 CV 개선본 다운로드 (기본 비활성, CAP 설치 후 활성)
 → Gemini OCR
 → SQLite 및 이미지 파일 저장
 → Qt HTTP/HTTPS 조회
@@ -48,8 +49,8 @@ MQTT 메시지로 동일한 센서 업무 흐름을 검증합니다.
 SENSOR:HALL01:OCCUPIED:1
 → 설정된 유예시간 동안 VACANT 없이 유지되면 OCCUPIED 확정
 → EV01 최신 ROI Snapshot 저장
-→ T0+30초 ROI 촬영 및 첫 Gemini OCR
-→ 실패 시 T0+60초 ROI 촬영으로 Gemini OCR 재시도
+→ T0+30초 카메라 original/enhanced 촬영 및 첫 Gemini OCR
+→ 실패 시 T0+60초 동일 방식으로 Gemini OCR 재시도
 → EV/PHEV이면 동일 SQLite session_id로 장기 점유 타이머 등록
 → 제한시간 초과 시 최신 Snapshot 추가 저장
 → parking/v1/events/EV01 및 parking/v1/state/EV01 MQTT 알림
@@ -72,6 +73,19 @@ ctest --test-dir cmake-build --output-on-failure
 `libcpp-httplib-dev`가 포함됩니다.
 
 ## 실행
+
+현재 로컬 카메라·Gemini 설정과 STM32 UART 자동 탐색을 적용해 실행합니다.
+`.env.fire.local`이 있으면 화재·홀센서 시험 설정도 함께 적용합니다.
+
+```bash
+./run_server.sh
+```
+
+실행 중인 서버를 종료하고 같은 설정으로 다시 시작하려면 다음을 사용합니다.
+
+```bash
+./run_server.sh restart
+```
 
 비밀정보는 다음 로컬 파일에서 관리하며 Git에 커밋하지 않습니다.
 
@@ -97,6 +111,7 @@ set +a
 export PARKING_TIMER_ENABLED=true
 export PARKING_TIMEOUT_SECONDS=3600
 export PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS=3600
+export PARKING_HALL_WORK_QUEUE_CAPACITY=100
 export PARKING_OCCUPANCY_CONFIRM_MS=10000
 export CAPTURE_SCHED_ENABLED=true
 export HALL_CAPTURE_OCR_ENABLED=true
@@ -108,10 +123,16 @@ export HALL_CAPTURE_OCR_ENABLED=true
 `PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더
 저장한다. 테스트에서는 이 값을 5~10초로 낮출 수 있다.
 
-촬영 scheduler는 MQTT draft 요청 발행과 별개로, Pi가 이미 유지하는 RTSP
-FrameBuffer의 최신 프레임을 ROI crop하여 파일·IMAGE_LOG·Gemini OCR로 연결한다.
-MQTT 발행 성공은 카메라 촬영 성공으로 간주하지 않는다. 카메라의 요청형
-Snapshot 응답 규약은 여전히 EVDA-138에서 확정해야 한다.
+재시작 시 활성 세션의 원래 T0를 기준으로 아직 없는 증거 작업을 복원한다. 조기 출차는
+대기 중인 Job을 즉시 제거하며, 홀센서 비동기 큐는 같은 슬롯의 최신 상태를 병합하고
+서로 다른 슬롯이 설정 용량을 넘을 때 `HALL_WORK_QUEUE_OVERFLOW`를 기록한다.
+
+`CAMERA_SNAPSHOT_API_ENABLED=true`이면 촬영 scheduler는 CV5 카메라의
+`/images/generate`를 호출하고 같은 프레임의 original/enhanced JPEG를 즉시 내려받아
+파일·IMAGE_LOG·Gemini OCR로 연결한다. 개선본이 제공되므로 Hall OCR에서는 Pi의
+OpenCV 화질 개선을 실행하지 않는다. API가 비활성이면 기존 RTSP FrameBuffer 촬영을
+유지한다. 상세 설정과 실기기 검증 절차는
+[`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md)에 있다.
 
 가짜 홀센서 입력:
 
@@ -239,6 +260,7 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 상세 문서:
 
 - [`docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`](docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md): 카메라 MQTT 촬영 요청 목표 규약과 ROI 처리
+- [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md): CV5 카메라 내부 화질 개선 이미지 연동
 - [`docs/GEMINI_OCR_GUIDE.md`](docs/GEMINI_OCR_GUIDE.md): OpenCV 전처리, Gemini HTTPS OCR, DB 반영과 수동 테스트
 - [`docs/UART_LORA_PROTOCOL.md`](docs/UART_LORA_PROTOCOL.md): STM32 UART 및 LoRa frame 규약
 - [`docs/PARKING_ALERT_DRIVER.md`](docs/PARKING_ALERT_DRIVER.md): 전용 Linux Character Device 빌드·ABI·검증
@@ -246,11 +268,17 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 
 ## 코드 이해 문서
 
-폴더·파일·핵심 함수와 런타임 흐름은
-[`Pi_Server_Code_Guide.pdf`](Pi_Server_Code_Guide.pdf)에 정리되어 있습니다.
+코드와 함께 diff·검색하기 쉬운 기준 문서는
+[`docs/generated/PI_SERVER_CODE_GUIDE.md`](docs/generated/PI_SERVER_CODE_GUIDE.md)입니다.
+이 Markdown에는 현재 아키텍처와 Doxygen에서 자동 추출한 C/C++ 파일별 함수 목록이 들어갑니다.
+배포·열람용 결과는 [`Pi_Server_Code_Guide.pdf`](Pi_Server_Code_Guide.pdf)입니다.
 
-PDF를 다시 생성하려면 다음을 실행합니다.
+코드 또는 Doxygen 주석을 수정한 뒤 두 문서를 함께 다시 생성합니다.
 
 ```bash
-cmake --build build --target docs
+cmake -S . -B cmake-build
+cmake --build cmake-build --target docs -j2
 ```
+
+중간 Doxygen XML·HTML·JavaScript는 추적하지 않는 `build/docs/`에만 생성됩니다.
+Markdown과 PDF가 최종 결과물이므로 대량 생성 파일을 Git에 추가할 필요가 없습니다.

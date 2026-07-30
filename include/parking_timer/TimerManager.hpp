@@ -68,6 +68,7 @@ private:
         std::string slot_id;
         std::string car_number;
         std::uint32_t retry_count{};
+        std::uint32_t evidence_retry_count{};
         // 최초 steady_clock deadline 도달 때 캡처하며 DB retry에서도 보존한다.
         std::string violation_at;
     };
@@ -79,6 +80,7 @@ private:
     void run();
     void processExpired(TimerItem item);
     void retryAfterDatabaseError(TimerItem item, std::string message) noexcept;
+    void retryAfterEvidencePending(TimerItem item) noexcept;
     void reportError(const TimerItem& item, std::string message) noexcept;
 
     EventDatabase& database_;

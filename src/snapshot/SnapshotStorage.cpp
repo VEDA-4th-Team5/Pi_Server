@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <thread>
 
@@ -22,6 +23,16 @@ std::string channelDirectoryName(const std::string& channel_id) {
         return "ch" + channel_id.substr(number);
     }
     return channel_id.empty() ? "unknown" : channel_id;
+}
+
+bool writeBytes(const fs::path& path,
+                const std::vector<unsigned char>& bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) return false;
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    output.flush();
+    return output.good();
 }
 
 }
@@ -96,6 +107,72 @@ std::string SnapshotStorage::saveHallCaptureSnapshot(
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + capture_stage;
     return saveAreaSnapshot(channel, slot_id, roi, prefix);
+}
+
+StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
+    const std::string& channel_id,
+    const std::int64_t session_id,
+    const std::string& slot_id,
+    const std::string& capture_stage,
+    const std::vector<unsigned char>& original_jpeg,
+    const std::vector<unsigned char>& enhanced_jpeg
+) {
+    if (channel_id.empty() || session_id < 0 || slot_id.empty() ||
+        capture_stage.empty() || original_jpeg.empty() ||
+        enhanced_jpeg.empty()) {
+        util::logError("camera API snapshot contains an empty field or JPEG");
+        return {};
+    }
+
+    const fs::path scene_dir = fs::path(snapshot_dir_) /
+        channelDirectoryName(channel_id) / slot_id / "scene";
+    const fs::path enhanced_dir = scene_dir / "enhanced";
+    std::error_code error;
+    fs::create_directories(enhanced_dir, error);
+    if (error) {
+        util::logError("camera API snapshot directory create failed: " +
+                       error.message());
+        return {};
+    }
+
+    const std::string unique = util::nowStringForFilename() + "_" +
+        std::to_string(next_file_sequence_.fetch_add(1));
+    const std::string prefix = "session_" + std::to_string(session_id) +
+        "_slot_" + slot_id + "_" + capture_stage + "_CAMERA_API_" + unique;
+    const fs::path original_path = scene_dir / (prefix + "_original.jpg");
+    const fs::path enhanced_path = enhanced_dir / (prefix + "_enhanced.jpg");
+    const fs::path original_temp = original_path.string() + ".tmp";
+    const fs::path enhanced_temp = enhanced_path.string() + ".tmp";
+
+    if (!writeBytes(original_temp, original_jpeg) ||
+        !writeBytes(enhanced_temp, enhanced_jpeg)) {
+        fs::remove(original_temp, error);
+        fs::remove(enhanced_temp, error);
+        util::logError("camera API JPEG file write failed: session=" +
+                       std::to_string(session_id) + " slot=" + slot_id);
+        return {};
+    }
+    fs::rename(original_temp, original_path, error);
+    if (error) {
+        const std::string message = error.message();
+        std::error_code ignored;
+        fs::remove(original_temp, ignored);
+        fs::remove(enhanced_temp, ignored);
+        util::logError("camera API original JPEG commit failed: " +
+                       message);
+        return {};
+    }
+    fs::rename(enhanced_temp, enhanced_path, error);
+    if (error) {
+        const std::string message = error.message();
+        std::error_code ignored;
+        fs::remove(original_path, ignored);
+        fs::remove(enhanced_temp, ignored);
+        util::logError("camera API enhanced JPEG commit failed: " +
+                       message);
+        return {};
+    }
+    return {original_path.string(), enhanced_path.string()};
 }
 
 std::string SnapshotStorage::saveAreaSnapshot(

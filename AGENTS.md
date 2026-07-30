@@ -4,6 +4,15 @@
 
 이 프로젝트는 Hanwha Vision CCTV 기반 스마트 주차/관제 시스템의 Raspberry Pi 서버 파트이다.
 
+## Documentation Rule
+
+- C/C++ 소스, 공개 함수, 런타임 구조 또는 CMake 구성이 변경되면 작업 종료 전에
+  `cmake --build cmake-build --target docs -j2`를 실행한다.
+- 자동 생성 기준 문서는 `docs/generated/PI_SERVER_CODE_GUIDE.md`이며 직접 수정하지 않는다.
+- 함수 설명은 해당 C/C++ 선언·정의의 Doxygen `@brief` 주석에서 관리한다.
+- 최종 열람 문서는 `Pi_Server_Code_Guide.pdf`이다.
+- Doxygen XML/HTML/JavaScript 중간 산출물은 `build/docs/`에만 두고 Git에 추가하지 않는다.
+
 ## Hard Constraints
 
 - Python은 절대 사용하지 않는다.

@@ -130,6 +130,30 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvOrDefault("CAPTURE_OFFSETS_SEC", "30,60");
     config.capture_ocr_max_attempts =
         std::clamp(getEnvIntOrDefault("CAPTURE_OCR_MAX_ATTEMPTS", 2), 1, 2);
+    config.camera_snapshot_api_enabled =
+        getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_ENABLED", false);
+    config.camera_snapshot_api_rtsp_fallback =
+        getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_RTSP_FALLBACK", false);
+    config.camera_open_api_base =
+        getEnvOrDefault("CAMERA_OPEN_API_BASE", "");
+    config.camera_image_base =
+        getEnvOrDefault("CAMERA_IMAGE_BASE", "");
+    config.camera_api_username = getEnvOrLocalSetting(
+        "CAMERA_API_USERNAME", "", ".env.camera.local");
+    config.camera_api_password = getEnvOrLocalSetting(
+        "CAMERA_API_PASSWORD", "", ".env.camera.local");
+    config.camera_image_server_port = std::clamp(
+        getEnvIntOrDefault("CAMERA_IMAGE_SERVER_PORT", 8080), 1024, 65535);
+    config.camera_snapshot_connect_timeout_ms = std::max(
+        1, getEnvIntOrDefault("CAMERA_SNAPSHOT_CONNECT_TIMEOUT_MS", 3000));
+    config.camera_snapshot_request_timeout_ms = std::max(
+        1, getEnvIntOrDefault("CAMERA_SNAPSHOT_REQUEST_TIMEOUT_MS", 30000));
+    config.camera_snapshot_jpeg_timeout_ms = std::max(
+        1, getEnvIntOrDefault("CAMERA_SNAPSHOT_JPEG_TIMEOUT_MS", 10000));
+    config.camera_snapshot_max_retries = std::clamp(
+        getEnvIntOrDefault("CAMERA_SNAPSHOT_MAX_RETRIES", 2), 0, 5);
+    config.camera_snapshot_retry_delay_ms = std::max(
+        1, getEnvIntOrDefault("CAMERA_SNAPSHOT_RETRY_DELAY_MS", 250));
 
     config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
     config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");
@@ -146,6 +170,8 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("PARKING_HALL_ENABLED", false);
     config.parking_slots_config_path =
         getEnvOrDefault("PARKING_SLOTS_CONFIG", "config/parking_slots.json");
+    config.parking_hall_work_queue_capacity = std::max(
+        1, getEnvIntOrDefault("PARKING_HALL_WORK_QUEUE_CAPACITY", 100));
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
@@ -234,7 +260,9 @@ AppConfig AppConfig::loadFromEnv() {
             getEnvDoubleOrDefault((prefix + "ROI_X").c_str(), 0.0),
             getEnvDoubleOrDefault((prefix + "ROI_Y").c_str(), 0.0),
             getEnvDoubleOrDefault((prefix + "ROI_WIDTH").c_str(), 1.0),
-            getEnvDoubleOrDefault((prefix + "ROI_HEIGHT").c_str(), 1.0)
+            getEnvDoubleOrDefault((prefix + "ROI_HEIGHT").c_str(), 1.0),
+            std::max(0, getEnvIntOrDefault(
+                (prefix + "SNAPSHOT_API_CHANNEL").c_str(), 0))
         });
     }
 

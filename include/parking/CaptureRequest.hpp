@@ -46,6 +46,7 @@
       double roiY{0.0};
       double roiWidth{1.0};
       double roiHeight{1.0};
+      int snapshotApiChannel{0};
   };
 
   /**

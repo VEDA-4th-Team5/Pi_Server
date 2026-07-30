@@ -158,17 +158,6 @@ EntryResult ParkingSlotManager::handleRecognizedSession(
     std::lock_guard transition_lock(transition_mutex_);
     const auto category = database_.classifyVehicle(car_number);
     const auto now = utcNow();
-    if (category == VehicleCategory::Unknown) {
-        events_.publish("UNKNOWN_VEHICLE", slot_id, car_number, now,
-                        "manual confirmation required; timer not started");
-        return {false, category, session_id, "vehicle is not registered"};
-    }
-    if (category == VehicleCategory::NonEv) {
-        events_.publish("NON_EV_ALERT", slot_id, car_number, now,
-                        "not scheduled in the EV overtime timer");
-        return {false, category, session_id, "non-EV vehicle"};
-    }
-
     const auto record = database_.findLogById(session_id);
     if (!record.has_value() || record->slot_id != slot_id ||
         record->departed_at.has_value()) {
@@ -176,6 +165,23 @@ EntryResult ParkingSlotManager::handleRecognizedSession(
                         "session is missing, mismatched, or already ended");
         return {false, category, session_id, "session is not active"};
     }
+    if (category == VehicleCategory::Unknown) {
+        events_.publish("UNKNOWN_VEHICLE", slot_id, car_number, now,
+                        "manual confirmation required; timer not started");
+        return {false, category, session_id, "vehicle is not registered"};
+    }
+    if (category == VehicleCategory::NonEv) {
+        // 전기차 전용면의 일반 차량은 OCR 확정 시점에 즉시 위반으로 전환한다.
+        // violation_at이 남아야 이후 VACANT에서도 증거 이미지가 삭제되지 않는다.
+        if (!database_.markViolation(session_id, now, "")) {
+            return {false, category, session_id,
+                    "non-EV violation was already handled or session ended"};
+        }
+        events_.publish("NON_EV_ALERT", slot_id, car_number, now,
+                        "non-EV vehicle in EV charging slot", session_id);
+        return {false, category, session_id, "non-EV vehicle"};
+    }
+
     if (!scheduled_session_ids_.insert(session_id).second) {
         return {false, category, session_id, "timer already scheduled"};
     }

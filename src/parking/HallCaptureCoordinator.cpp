@@ -18,10 +18,6 @@ std::string describe(const CapturedImage& image) {
            toEnhancementType(image.stage) + " image=" + image.originalPath;
 }
 
-bool isElectric(const std::string& classification) {
-    return classification == "EV" || classification == "PHEV";
-}
-
 }  // namespace
 
 HallCaptureCoordinator::HallCaptureCoordinator(HallCapturePorts ports,
@@ -148,9 +144,11 @@ void HallCaptureCoordinator::onOcrOutcome(const HallOcrOutcome& outcome) {
     }
 
     if (fold.resolved) {
-        if (isElectric(outcome.classification) && ports_.registerEvTimer) {
-            ports_.registerEvTimer(outcome.sessionId, slotId,
-                                   outcome.plateNumber);
+        // EV/PHEV는 장기점유 타이머에, NON_EV는 즉시 위반 경보에 연결해야 하므로
+        // 분류 결과와 관계없이 ParkingSlotManager의 단일 정책 진입점을 호출한다.
+        if (ports_.handleRecognizedSession) {
+            ports_.handleRecognizedSession(outcome.sessionId, slotId,
+                                           outcome.plateNumber);
         }
         util::logLine("HALL_OCR", "plate resolved slot=" + slotId +
                                       " session_id=" + key + " plate=" +

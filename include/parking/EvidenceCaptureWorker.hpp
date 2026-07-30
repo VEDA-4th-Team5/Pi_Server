@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -68,6 +69,10 @@ public:
 
     /** @brief 시작 즉시 한 장과 T0+지연 한 장을 세션당 한 번 예약한다. */
     bool scheduleSession(EvidenceCaptureRequest request);
+    /** @brief 재시작 시 DB에 없는 증거만 원래 T0 기준으로 다시 예약한다. */
+    bool restoreSession(EvidenceCaptureRequest request);
+    /** @brief 타이머가 먼저 만료되면 기존 초과 증거 작업을 즉시 실행 대상으로 만든다. */
+    bool expediteOverstay(std::int64_t session_id);
     /** @brief VACANT 세션의 아직 실행되지 않은 작업을 취소한다. */
     void cancelSession(std::int64_t session_id);
     [[nodiscard]] std::size_t pendingCount() const;
@@ -79,6 +84,7 @@ private:
         std::uint64_t sequence{};
         EvidenceCaptureRequest request;
         EvidenceReason reason{EvidenceReason::OccupancyStart};
+        bool terminal{};
     };
     struct Later {
         bool operator()(const Job& left, const Job& right) const noexcept;
@@ -86,6 +92,10 @@ private:
 
     void run() noexcept;
     void process(Job job) noexcept;
+    bool scheduleSessionImpl(EvidenceCaptureRequest request,
+                             bool include_start,
+                             bool include_overstay,
+                             bool restored);
     [[nodiscard]] bool canceled(std::int64_t session_id) const;
     void emit(EvidenceCaptureResult result) noexcept;
 
@@ -101,6 +111,8 @@ private:
     bool running_{};
     bool stopping_{};
     std::uint64_t nextSequence_{};
+    std::optional<std::int64_t> inFlightSession_;
+    std::optional<EvidenceReason> inFlightReason_;
     std::thread worker_;
 };
 

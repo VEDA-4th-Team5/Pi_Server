@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace snapshot {
 
@@ -14,6 +15,11 @@ struct NormalizedRoi {
     double y;
     double width;
     double height;
+};
+
+struct StoredImagePair {
+    std::string originalPath;
+    std::string enhancedPath;
 };
 
 class SnapshotStorage {
@@ -51,6 +57,16 @@ public:
         const std::string& slot_id,
         const std::string& capture_stage,
         const NormalizedRoi& roi
+    );
+
+    /** @brief 카메라 CAP에서 받은 original/enhanced JPEG를 원자적으로 저장한다. */
+    StoredImagePair saveCameraApiHallCapture(
+        const std::string& channel_id,
+        std::int64_t session_id,
+        const std::string& slot_id,
+        const std::string& capture_stage,
+        const std::vector<unsigned char>& original_jpeg,
+        const std::vector<unsigned char>& enhanced_jpeg
     );
 
 private:

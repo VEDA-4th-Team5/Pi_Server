@@ -94,8 +94,23 @@ void testDeduplicationAndRecovery() {
     require(persisted[2].recovered, "recovered flag was lost");
     require(payloads[0].find("\"source\":\"UART\"") != std::string::npos,
             "serialized source is missing");
+    require(payloads[0].find("\"alarm_kind\":\"SENSOR_ERROR\"") !=
+                std::string::npos,
+            "serialized sensor alarm kind is missing");
+    require(payloads[0].find("\"alarm_state\":\"OPEN\"") !=
+                std::string::npos,
+            "serialized open alarm state is missing");
+    require(payloads[0].find("\"error_code\":\"UART_OPEN_FAILED\"") !=
+                std::string::npos,
+            "serialized detailed error code is missing");
     require(payloads[0].find("\"retry_count\":1") != std::string::npos,
             "serialized retry count is missing");
+    require(payloads[2].find("\"alarm_kind\":\"NONE\"") !=
+                std::string::npos,
+            "recovery did not clear the sensor alarm kind");
+    require(payloads[2].find("\"alarm_state\":\"RESOLVED\"") !=
+                std::string::npos,
+            "recovery did not resolve the sensor alarm");
 }
 
 void testSinkFailureIsRetried() {

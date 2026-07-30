@@ -28,6 +28,7 @@ std::string toString(const SystemEventCode code) {
     case SystemEventCode::SensorNotMapped: return "SENSOR_NOT_MAPPED";
     case SystemEventCode::SensorSequenceRejected: return "SENSOR_SEQUENCE_REJECTED";
     case SystemEventCode::SensorHandlerFailed: return "SENSOR_HANDLER_FAILED";
+    case SystemEventCode::HallWorkQueueOverflow: return "HALL_WORK_QUEUE_OVERFLOW";
     case SystemEventCode::UartOpenFailed: return "UART_OPEN_FAILED";
     case SystemEventCode::UartReadFailed: return "UART_READ_FAILED";
     case SystemEventCode::UartWriteFailed: return "UART_WRITE_FAILED";
@@ -48,9 +49,23 @@ std::string toString(const SystemEventSeverity severity) {
     return "ERROR";
 }
 
+std::string systemAlarmKind(const SystemEvent& event) {
+    return event.recovered ? "NONE" : "SENSOR_ERROR";
+}
+
+std::string systemAlarmState(const SystemEvent& event) {
+    return event.recovered ? "RESOLVED" : "OPEN";
+}
+
 std::string serializeSystemEvent(const SystemEvent& event) {
     std::ostringstream output;
-    output << "{\"source\":\"" << util::jsonEscape(toString(event.source))
+    output << "{\"alarm_kind\":\""
+           << util::jsonEscape(systemAlarmKind(event))
+           << "\",\"alarm_state\":\""
+           << util::jsonEscape(systemAlarmState(event))
+           << "\",\"error_code\":\""
+           << util::jsonEscape(toString(event.code))
+           << "\",\"source\":\"" << util::jsonEscape(toString(event.source))
            << "\",\"severity\":\"" << util::jsonEscape(toString(event.severity))
            << "\",\"transport\":\"" << util::jsonEscape(event.transport)
            << "\",\"device\":\"" << util::jsonEscape(event.device)

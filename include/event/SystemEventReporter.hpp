@@ -36,6 +36,7 @@ enum class SystemEventCode {
     SensorNotMapped,
     SensorSequenceRejected,
     SensorHandlerFailed,
+    HallWorkQueueOverflow,
     UartOpenFailed,
     UartReadFailed,
     UartWriteFailed,
@@ -63,6 +64,10 @@ struct SystemEvent {
 [[nodiscard]] std::string toString(SystemEventSource source);
 [[nodiscard]] std::string toString(SystemEventCode code);
 [[nodiscard]] std::string toString(SystemEventSeverity severity);
+/** @brief Qt 관제에서 사용하는 센서 오류 공통 분류를 반환한다. */
+[[nodiscard]] std::string systemAlarmKind(const SystemEvent& event);
+/** @brief 오류와 복구 여부를 Qt 알람 상태 문자열로 변환한다. */
+[[nodiscard]] std::string systemAlarmState(const SystemEvent& event);
 [[nodiscard]] std::string serializeSystemEvent(const SystemEvent& event);
 
 /**

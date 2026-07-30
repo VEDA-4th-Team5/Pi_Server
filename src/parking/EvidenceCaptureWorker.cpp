@@ -67,11 +67,46 @@ void EvidenceCaptureWorker::stop() {
     while (!jobs_.empty()) jobs_.pop();
     scheduledSessions_.clear();
     canceledSessions_.clear();
+    inFlightSession_.reset();
+    inFlightReason_.reset();
 }
 
 bool EvidenceCaptureWorker::scheduleSession(EvidenceCaptureRequest request) {
+    return scheduleSessionImpl(std::move(request), true, true, false);
+}
+
+bool EvidenceCaptureWorker::restoreSession(EvidenceCaptureRequest request) {
+    try {
+        const bool include_start = !database_.findEvidenceImagePath(
+            request.sessionId, "OCCUPANCY_START_EVIDENCE").has_value();
+        const bool include_overstay = !database_.findEvidenceImagePath(
+            request.sessionId, "OVERSTAY_EVIDENCE").has_value();
+        return scheduleSessionImpl(std::move(request), include_start,
+                                   include_overstay, true);
+    } catch (const std::exception& error) {
+        util::logError("Evidence restore lookup failed: session=" +
+                       std::to_string(request.sessionId) + " error=" +
+                       error.what());
+        return false;
+    }
+}
+
+bool EvidenceCaptureWorker::scheduleSessionImpl(
+    EvidenceCaptureRequest request,
+    const bool include_start,
+    const bool include_overstay,
+    const bool restored) {
     if (request.sessionId < 0 || request.slotId.empty() || !request.channel)
         return false;
+    const std::size_t requested_jobs =
+        static_cast<std::size_t>(include_start) +
+        static_cast<std::size_t>(include_overstay);
+    if (requested_jobs == 0) {
+        util::logLine("EVIDENCE_CAPTURE",
+            "restore skipped; evidence already complete session=" +
+            std::to_string(request.sessionId) + " slot=" + request.slotId);
+        return true;
+    }
     std::lock_guard lock(mutex_);
     if (!running_ || stopping_) return false;
     if (!scheduledSessions_.insert(request.sessionId).second) {
@@ -80,42 +115,95 @@ bool EvidenceCaptureWorker::scheduleSession(EvidenceCaptureRequest request) {
             std::to_string(request.sessionId) + " slot=" + request.slotId);
         return true;
     }
-    if (jobs_.size() + 2 > config_.maxPendingJobs) {
+    if (jobs_.size() + requested_jobs > config_.maxPendingJobs) {
         scheduledSessions_.erase(request.sessionId);
         util::logError("Evidence queue full: session=" +
                        std::to_string(request.sessionId) + " slot=" +
                        request.slotId);
         return false;
     }
+    canceledSessions_.erase(request.sessionId);
     const auto now = Clock::now();
-    jobs_.push(Job{now, nextSequence_++, request,
-                   EvidenceReason::OccupancyStart});
-    jobs_.push(Job{request.startedAtMonotonic + config_.overstayDelay,
-                   nextSequence_++, std::move(request),
-                   EvidenceReason::Overstay});
-    const auto& queued = jobs_.top().request;
-    util::logLine("EVIDENCE_CAPTURE",
-        "start capture scheduled session=" +
-        std::to_string(queued.sessionId) + " slot=" + queued.slotId +
-        " channel=" + queued.channel->channel_id +
-        " reason=OCCUPANCY_START_EVIDENCE");
-    util::logLine("EVIDENCE_CAPTURE",
-        "overstay capture scheduled session=" +
-        std::to_string(queued.sessionId) + " slot=" + queued.slotId +
-        " channel=" + queued.channel->channel_id +
-        " reason=OVERSTAY_EVIDENCE delay_ms=" +
-        std::to_string(config_.overstayDelay.count()));
+    const auto session_id = request.sessionId;
+    const auto slot_id = request.slotId;
+    const auto channel_id = request.channel->channel_id;
+    if (include_start) {
+        jobs_.push(Job{now, nextSequence_++, request,
+                       EvidenceReason::OccupancyStart, !include_overstay});
+        util::logLine("EVIDENCE_CAPTURE",
+            std::string(restored ? "restored start capture" :
+                                   "start capture scheduled") +
+            " session=" + std::to_string(session_id) + " slot=" + slot_id +
+            " channel=" + channel_id +
+            " reason=OCCUPANCY_START_EVIDENCE");
+    }
+    if (include_overstay) {
+        jobs_.push(Job{request.startedAtMonotonic + config_.overstayDelay,
+                       nextSequence_++, std::move(request),
+                       EvidenceReason::Overstay, true});
+        util::logLine("EVIDENCE_CAPTURE",
+            std::string(restored ? "restored overstay capture" :
+                                   "overstay capture scheduled") +
+            " session=" + std::to_string(session_id) + " slot=" + slot_id +
+            " channel=" + channel_id +
+            " reason=OVERSTAY_EVIDENCE delay_ms=" +
+            std::to_string(config_.overstayDelay.count()));
+    }
     condition_.notify_all();
     return true;
 }
 
 void EvidenceCaptureWorker::cancelSession(const std::int64_t session_id) {
     if (session_id < 0) return;
+    std::size_t removed{};
     {
         std::lock_guard lock(mutex_);
         canceledSessions_.insert(session_id);
+        std::vector<Job> retained;
+        retained.reserve(jobs_.size());
+        while (!jobs_.empty()) {
+            Job job = jobs_.top();
+            jobs_.pop();
+            if (job.request.sessionId == session_id) {
+                ++removed;
+            } else {
+                retained.push_back(std::move(job));
+            }
+        }
+        jobs_ = decltype(jobs_){Later{}, std::move(retained)};
+        scheduledSessions_.erase(session_id);
+        if (!inFlightSession_ || *inFlightSession_ != session_id)
+            canceledSessions_.erase(session_id);
     }
+    util::logLine("EVIDENCE_CAPTURE",
+        "pending jobs removed by cancellation session=" +
+        std::to_string(session_id) + " removed=" +
+        std::to_string(removed));
     condition_.notify_all();
+}
+
+bool EvidenceCaptureWorker::expediteOverstay(
+    const std::int64_t session_id) {
+    if (session_id < 0) return false;
+    std::lock_guard lock(mutex_);
+    bool found = inFlightSession_ && *inFlightSession_ == session_id &&
+                 inFlightReason_ && *inFlightReason_ == EvidenceReason::Overstay;
+    std::vector<Job> rebuilt;
+    rebuilt.reserve(jobs_.size());
+    const auto now = Clock::now();
+    while (!jobs_.empty()) {
+        Job job = jobs_.top();
+        jobs_.pop();
+        if (job.request.sessionId == session_id &&
+            job.reason == EvidenceReason::Overstay) {
+            job.deadline = now;
+            found = true;
+        }
+        rebuilt.push_back(std::move(job));
+    }
+    jobs_ = decltype(jobs_){Later{}, std::move(rebuilt)};
+    if (found) condition_.notify_all();
+    return found;
 }
 
 std::size_t EvidenceCaptureWorker::pendingCount() const {
@@ -152,20 +240,24 @@ void EvidenceCaptureWorker::run() noexcept {
                     job.request.slotId + " channel=" +
                     job.request.channel->channel_id + " reason=" +
                     toString(job.reason));
-                if (job.reason == EvidenceReason::Overstay) {
+                if (job.terminal) {
                     scheduledSessions_.erase(job.request.sessionId);
                     canceledSessions_.erase(job.request.sessionId);
                 }
                 continue;
             }
             const auto completed_session_id = job.request.sessionId;
-            const auto completed_reason = job.reason;
+            const bool terminal = job.terminal;
+            inFlightSession_ = completed_session_id;
+            inFlightReason_ = job.reason;
             lock.unlock();
             process(std::move(job));
             lock.lock();
-            if (completed_reason == EvidenceReason::Overstay) {
+            inFlightSession_.reset();
+            inFlightReason_.reset();
+            canceledSessions_.erase(completed_session_id);
+            if (terminal) {
                 scheduledSessions_.erase(completed_session_id);
-                canceledSessions_.erase(completed_session_id);
             }
         }
     } catch (const std::exception& error) {
