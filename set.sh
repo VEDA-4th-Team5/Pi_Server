@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+[ -f ./.env.fire.local ] || ./tools/fire_setup.sh
+
 set -a
 source ./.env.camera.local
 source ./.env.fire.local
