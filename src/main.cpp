@@ -4,6 +4,8 @@
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
 #include "device/SensorLinkManager.hpp"
+#include "event/FireAlarmEvent.hpp"
+#include "event/FireAlarmManager.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
@@ -19,8 +21,10 @@
 #include "parking_timer/ParkingSlotManager.hpp"
 #include "ocr/GeminiOcrClient.hpp"
 #include "ocr/OcrWorker.hpp"
+#include "sensor/FireSensorMessage.hpp"
 #include "sensor/ParkingSensorEventAdapter.hpp"
 #include "sensor/SensorLinkManager.hpp"
+#include "sensor/SensorProtocolParser.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 #include "sensor/HallParkingService.hpp"
 #include "util/Logger.hpp"
@@ -73,6 +77,17 @@ const app::IvaAreaConfig* findArea(const app::AppConfig& config,
     for (const auto& area : config.iva_areas)
         if (area.slot_id == slot_id) return &area;
     return nullptr;
+}
+
+event::FireSignal toFireSignal(const sensor::FireSensorMessage& message) {
+    event::FireSignal signal;
+    signal.sensorId = message.sensorId;
+    signal.detected = message.state == sensor::FireSensorState::Detected;
+    signal.occurredAt = message.occurredAt;
+    signal.sourceSequence = message.sequence;
+    signal.sourceTransport = message.transport;
+    signal.rawPayload = message.raw;
+    return signal;
 }
 
 // EVDA-138에서 카메라 응답 규약이 확정되기 전 사용하는 MQTT 요청 초안이다.
@@ -572,9 +587,32 @@ int main() {
             std::to_string(config.capture_max_retries));
     }
 
+    // MQTT publisher가 준비된 뒤에만 발행 콜백을 걸 수 있으므로 mqtt_bridge
+    // 시작 이후에 생성한다. 화재 최종 판단은 하지 않고 후보 이벤트만 올린다
+    // (관제실 사람이 확정) — event::FireAlarmManager 계약대로.
+    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
+    if (config.fire_alarm_enabled) {
+        fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
+            config.camera_id,
+            config.default_channel_id,
+            config.fire_topic_prefix,
+            event::parseFireSensorBindings(config.fire_sensor_slot_map),
+            [&mqtt_bridge](const std::string& topic,
+                           const std::string& payload) {
+                return mqtt_bridge.publish(topic, payload);
+            });
+        util::logInfo(
+            "fire alarm enabled: topic_prefix=" + config.fire_topic_prefix +
+            " bindings=" + std::to_string(fire_alarm_manager->bindingCount()));
+    }
+
     // 촬영 runtime과 MQTT publisher가 준비된 뒤 실제 UART/LoRa 입력을 연다.
+    // 화재와 홀센서는 같은 STM32 UART 링크를 공유하므로 SensorLinkManager는
+    // 하나만 열고, 수신 라인을 접두사(FIRE:/SENSOR:)로 갈라 보낸다.
+    const sensor::SensorProtocolParser fire_line_parser;
     std::unique_ptr<device::SensorLinkManager> sensor_link;
-    if (hall_service && sensor_link_mode != device::SensorLinkMode::Disabled) {
+    if ((hall_service || fire_alarm_manager) &&
+        sensor_link_mode != device::SensorLinkMode::Disabled) {
         device::SensorLinkManager::Config sensor_config;
         sensor_config.mode = sensor_link_mode;
         sensor_config.uart.device_path = config.sensor_uart_device;
@@ -583,8 +621,23 @@ int main() {
         sensor_config.reconnect_delay_ms = config.sensor_uart_reconnect_ms;
         sensor_link = std::make_unique<device::SensorLinkManager>(
             std::move(sensor_config),
-            [&hall_service](const std::string& line,
-                            const std::string& transport) {
+            [&hall_service, &fire_alarm_manager, &fire_line_parser](
+                const std::string& line, const std::string& transport) {
+                if (sensor::SensorProtocolParser::isFireLine(line)) {
+                    if (!fire_alarm_manager) return;
+                    std::string error;
+                    auto message = fire_line_parser.parseFire(
+                        line, std::chrono::system_clock::now(), &error);
+                    if (!message) {
+                        util::logWarn(
+                            "fire line rejected: " + error + " | " + line);
+                        return;
+                    }
+                    message->transport = transport.empty() ? "uart" : transport;
+                    message->raw = line;
+                    fire_alarm_manager->onFireSignal(toFireSignal(*message));
+                    return;
+                }
                 if (hall_service) hall_service->handleLine(line, transport);
             }, system_event_sink);
         if (!sensor_link->start()) {
@@ -628,6 +681,7 @@ int main() {
 
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
     if (sensor_link) sensor_link->stop();
+    fire_alarm_manager.reset();
     if (capture_runtime) capture_runtime->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
