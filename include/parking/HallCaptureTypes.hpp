@@ -60,7 +60,7 @@ using OcrSubmitter = std::function<void(const CapturedImage& image)>;
 using OcrFailureWriter =
     std::function<void(std::int64_t sessionId, const std::string& slotId,
                        int attempts)>;
-using EvTimerRegistrar =
+using RecognizedSessionHandler =
     std::function<void(std::int64_t sessionId, const std::string& slotId,
                        const std::string& plateNumber)>;
 
@@ -68,7 +68,7 @@ struct HallCapturePorts {
     ImageLogWriter writeImageLog;
     OcrSubmitter submitOcr;
     OcrFailureWriter writeOcrFailure;
-    EvTimerRegistrar registerEvTimer;
+    RecognizedSessionHandler handleRecognizedSession;
 };
 
 }  // namespace parking

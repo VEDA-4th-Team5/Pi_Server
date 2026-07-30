@@ -22,19 +22,15 @@ HallCaptureExecutor::HallCaptureExecutor(
     std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
     snapshot::SnapshotStorage& storage,
     HallCaptureCoordinator& coordinator,
-    DraftPublisher draftPublisher)
+    DraftPublisher draftPublisher,
+    camera::CameraSnapshotApiClient* snapshotApiClient,
+    const bool rtspFallback)
     : channels_(channels), storage_(storage), coordinator_(coordinator),
-      draftPublisher_(std::move(draftPublisher)) {}
+      draftPublisher_(std::move(draftPublisher)),
+      snapshotApiClient_(snapshotApiClient), rtspFallback_(rtspFallback) {}
 
 bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
     try {
-        const bool mqttPublished = draftPublisher_ && draftPublisher_(request);
-        if (!mqttPublished) {
-            util::logWarn("capture MQTT draft publish failed; local RTSP "
-                          "capture continues slot=" + request.slotId +
-                          " session=" + request.sessionId);
-        }
-
         std::size_t consumed{};
         const std::int64_t sessionId = std::stoll(request.sessionId, &consumed);
         if (consumed != request.sessionId.size() || sessionId < 0) {
@@ -49,6 +45,55 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
             return false;
         }
         const CaptureStage stage = toStage(request.reason);
+
+        if (snapshotApiClient_ != nullptr) {
+            camera::CameraGeneratedImages generated;
+            if (snapshotApiClient_->generate(request.target.snapshotApiChannel,
+                                              generated)) {
+                const auto paths = storage_.saveCameraApiHallCapture(
+                    request.target.channelId, sessionId, request.slotId,
+                    toEnhancementType(stage), generated.originalJpeg,
+                    generated.enhancedJpeg);
+                if (paths.originalPath.empty() || paths.enhancedPath.empty())
+                    return false;
+
+                const auto result = coordinator_.onCaptureImage(
+                    {sessionId, request.slotId, stage, paths.originalPath,
+                     paths.enhancedPath});
+                if (result == CaptureImageResult::Stored) {
+                    util::logLine(
+                        "CAMERA_SNAPSHOT_API",
+                        "capture stored slot=" + request.slotId +
+                        " session=" + request.sessionId + " channel=" +
+                        std::to_string(request.target.snapshotApiChannel) +
+                        " run_id=" + generated.runId + " environment=" +
+                        generated.detectedEnvironment + " filter=" +
+                        generated.autoFilter);
+                    return true;
+                }
+
+                std::error_code ignored;
+                std::filesystem::remove(paths.originalPath, ignored);
+                std::filesystem::remove(paths.enhancedPath, ignored);
+                return result == CaptureImageResult::Duplicate ||
+                       result == CaptureImageResult::InactiveSession;
+            }
+            util::logError(
+                "camera snapshot API capture failed slot=" + request.slotId +
+                " session=" + request.sessionId + " channel=" +
+                std::to_string(request.target.snapshotApiChannel) +
+                " error=" + snapshotApiClient_->lastError());
+            if (!rtspFallback_) return false;
+            util::logWarn("falling back to RTSP hall capture slot=" +
+                          request.slotId + " session=" + request.sessionId);
+        }
+
+        const bool mqttPublished = draftPublisher_ && draftPublisher_(request);
+        if (!mqttPublished) {
+            util::logWarn("capture MQTT draft publish failed; local RTSP "
+                          "capture continues slot=" + request.slotId +
+                          " session=" + request.sessionId);
+        }
         const snapshot::NormalizedRoi roi{
             request.target.roiX, request.target.roiY,
             request.target.roiWidth, request.target.roiHeight};

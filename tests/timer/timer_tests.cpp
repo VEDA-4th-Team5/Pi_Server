@@ -4,6 +4,7 @@
 #include "parking_timer/TimerManager.hpp"
 #include "parking_timer/Types.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -331,6 +332,44 @@ void testSnapshotFailureStillMarksViolation() {
     removeDatabaseFiles(path);
 }
 
+void testPendingEvidenceRetriesBeforeViolation() {
+    const auto path = temporaryDatabase("evidence_pending");
+    {
+        EventDatabase database(path);
+        initialize(database);
+        const auto log_id = database.insertParked(
+            "123가4567", "EV01", parking_timer::utcNow(), "entry.jpg");
+        std::atomic<int> provider_calls{};
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::string violation_image;
+        parking_timer::TimerManager timers(
+            database,
+            [&](const parking_timer::ViolationEvent& event) {
+                {
+                    std::lock_guard lock(mutex);
+                    violation_image = event.image_path_2;
+                }
+                condition.notify_one();
+            }, {}, nullptr,
+            [&](std::int64_t, const std::string&,
+                const std::string&) -> std::string {
+                return provider_calls.fetch_add(1) == 0
+                    ? std::string{} : "overstay-restored.jpg";
+            });
+        timers.schedule(log_id, "EV01", "123가4567", 20ms);
+        std::unique_lock lock(mutex);
+        require(condition.wait_for(lock, 1500ms,
+                                   [&] { return !violation_image.empty(); }),
+                "pending evidence was not retried before violation");
+        require(violation_image == "overstay-restored.jpg",
+                "violation used an empty or unexpected evidence path");
+        require(provider_calls.load() >= 2,
+                "evidence provider was not called again");
+    }
+    removeDatabaseFiles(path);
+}
+
 }  // namespace
 
 /**
@@ -345,6 +384,7 @@ int main() {
         testEarlierDeadlineWakesWorker();
         testWorkerContainsCallbackExceptions();
         testSnapshotFailureStillMarksViolation();
+        testPendingEvidenceRetriesBeforeViolation();
         std::cout << "All parking timer tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

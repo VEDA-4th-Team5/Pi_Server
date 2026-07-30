@@ -33,7 +33,13 @@ ctest --test-dir cmake-build --output-on-failure
 `hall-timer-integration-test`는 카메라 대신 메모리의 OpenCV frame을 사용하지만 실제
 `SnapshotStorage`와 SQLite를 사용한다. OCCUPIED 중복 방지, VACANT 시 OCR 취소,
 추가 OCCUPIED 없이 유예시간 후 자동 확정, SQLite 정수 세션 ID의 scheduler 전달,
-위반 전 파일/IMAGE_LOG 삭제, 위반 후 증거 보존까지 검증한다.
+위반 전 파일/IMAGE_LOG 삭제, 위반 후 증거 보존까지 검증한다. 동일 슬롯의 대기 센서
+이벤트는 최신 상태로 병합되고 서로 다른 슬롯은 bounded capacity를 넘지 않는 것도 확인한다.
+
+`evidence-capture-worker-test`는 조기 출차 취소 직후 pending Job이 제거되어 큐 용량이
+회수되는지, 재시작 세션의 원래 T0 기준으로 `OVERSTAY_EVIDENCE`가 한 번만 복원되는지
+검증한다. `parking-timer-tests`는 증거 worker와 타이머의 동일 deadline 경합에서 빈 경로를
+즉시 확정하지 않고 제한적으로 재시도하는지 확인한다.
 
 ## 실기기 수동 검증
 

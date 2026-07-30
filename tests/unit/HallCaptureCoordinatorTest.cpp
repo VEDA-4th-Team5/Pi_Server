@@ -41,7 +41,7 @@ struct Recorder {
             [this](std::int64_t, const std::string&, const int attempts) {
                 failureAttempts.push_back(attempts);
             };
-        ports.registerEvTimer =
+        ports.handleRecognizedSession =
             [this](const std::int64_t sessionId, const std::string&,
                    const std::string&) {
                 timerSessions.push_back(sessionId);
@@ -103,6 +103,19 @@ void twoFailuresWriteUnknownOnce() {
             "failed OCR must not start EV timer");
 }
 
+void nonEvReachesParkingPolicy() {
+    Recorder recorder;
+    parking::HallCaptureCoordinator coordinator(recorder.ports());
+    coordinator.onTransition(transition(
+        parking::ParkingTransitionCode::SessionStarted, 89, "EV01"));
+    (void)coordinator.onCaptureImage(image(
+        89, parking::CaptureStage::First30s, "non-ev.jpg"));
+    coordinator.onOcrOutcome({89, parking::CaptureStage::First30s, true,
+                              "345다6789", 0.96, "NON_EV"});
+    require(recorder.timerSessions == std::vector<std::int64_t>{89},
+            "NON_EV recognition did not reach parking policy handler");
+}
+
 void inactiveAndDuplicateCapturesDoNotRunOcr() {
     Recorder recorder;
     auto ports = recorder.ports();
@@ -131,6 +144,7 @@ int main() {
     try {
         sameSqliteIdFlowsThroughEverything();
         twoFailuresWriteUnknownOnce();
+        nonEvReachesParkingPolicy();
         inactiveAndDuplicateCapturesDoNotRunOcr();
         std::cout << "HallCaptureCoordinatorTest passed\n";
         return EXIT_SUCCESS;

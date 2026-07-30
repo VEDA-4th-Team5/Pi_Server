@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-[ -f ./.env.fire.local ] || ./tools/fire_setup.sh
+set -euo pipefail
 
-set -a
-source ./.env.camera.local
-source ./.env.fire.local
-[ -f ./.env.gemini.local ] && source ./.env.gemini.local
-[ -f ./.env.iva.local ] && source ./.env.iva.local
-set +a
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
 
-exec ./build/pi-server
+[[ -f ./.env.fire.local ]] || ./tools/fire_setup.sh
+
+exec "$ROOT_DIR/run_server.sh" "$@"

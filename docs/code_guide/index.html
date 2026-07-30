@@ -44,7 +44,7 @@
   <div class="meta">
     <p><b>대상:</b> Hanwha Vision PNO-A9081R 기반 C++ 스마트 주차 서버</p>
     <p><b>기술:</b> C/C++ · MQTT · RTSP · OpenCV · Gemini HTTPS · SQLite · HTTP/HTTPS</p>
-    <p><b>기준일:</b> 2026-07-22 · C++20 통합 서버 기준</p>
+    <p><b>기준일:</b> 2026-07-28 · CV Snapshot API 통합 작업 트리 기준</p>
     <p><b>생성:</b> <code>cmake --build build --target docs</code></p>
   </div>
 </section>
@@ -56,8 +56,8 @@
   <li>서버 시작과 종료 흐름</li>
   <li>카메라 이벤트·Snapshot 흐름</li>
   <li>BestShot·OCR·EV 판별 흐름</li>
-  <li>센서·주차 상태 흐름</li>
-  <li>장기 점유 타이머 흐름</li>
+  <li>홀센서·30/60초 촬영·OCR 흐름</li>
+  <li>조기 출차·장기 점유 증거 흐름</li>
   <li>DB·HTTP/Qt 흐름</li>
   <li>폴더별 역할</li>
   <li>파일별 역할</li>
@@ -96,16 +96,21 @@
   ├─ AppConfig::loadFromEnv()
   ├─ CameraChannel 생성
   ├─ EventDatabase::open()
+  ├─ IMAGE_LOG runtime migration 및 stale session 복구
+  ├─ SystemEventReporter::start()
   ├─ ParkingHttpServer::start()             [설정 시]
   ├─ RtspStreamReceiver::start()
   ├─ waitForInitialFrames()
   ├─ OcrWorker::start()
+  ├─ EvidenceCaptureWorker::start()
   ├─ BestShotReceiver::start()
   ├─ MqttEventBridge::start()
+  ├─ CaptureSchedulerRuntime::start()       [설정 시]
+  ├─ SensorLinkManager::start()             [UART/LoRa 설정 시]
   ├─ EventManager publisher를 Qt MQTT에 연결
   ├─ 활성 EV/PHEV 세션 타이머 복구
   ├─ SIGINT/SIGTERM까지 대기
-  └─ MQTT → BestShot → OCR → RTSP → HTTP → DB 순서로 종료</pre>
+  └─ 입력/예약 worker → MQTT → OCR/BestShot → RTSP → HTTP → DB 순서로 종료</pre>
 <div class="note">
   RTSP 최초 프레임을 확보한 뒤 MQTT를 받는다. 이벤트가 먼저 들어오면 저장할 영상이 없기 때문에
   <code>main.cpp</code>의 초기화 순서가 중요하다.
@@ -155,43 +160,73 @@ Plate BestShot
   OCR 실패를 NON_EV로 간주하지 않는다.
 </div>
 
-<h2>5. 센서·주차 상태 흐름</h2>
-<pre>STM32/UART 메시지 (향후 실제 장치 연결)
-현재 parking/sensor/hall MQTT 또는 실제 UART/LoRa 입력
-→ MqttEventBridge 또는 SensorLinkManager
+<h2>5. 홀센서·30/60초 촬영·OCR 흐름</h2>
+<pre>STM32 UART/LoRa 또는 parking/sensor/hall MQTT test 입력
 → HallParkingService::handleLine()
-→ SensorProtocolParser::parse()
-→ SensorProtocolMessage
-→ ParkingSensorEventAdapter::adapt()
-→ SensorSlotIndex에서 sensor_id → slot_id 매핑
-→ ParkingSensorSequenceGuard 중복/역순 검사
+→ SensorProtocolParser::parse() / sensor_id → slot_id 매핑
+→ ParkingSensorSequenceGuard 중복·역순 검사
+→ ParkingOccupancyConfirmationGate (기본 10초 점유 확정 유예)
 → parking::ParkingSlotManager::apply()
-→ OCCUPIED: 최신 RTSP ROI 저장 → ACTIVE 세션 → OCR
-→ VACANT: 세션 종료 → 위반 전이면 이미지/IMAGE_LOG 삭제</pre>
+→ SessionStarted
+→ EventDatabase::createHallSession()에서 SQLite 정수 session_id 생성
+├─ EvidenceCaptureWorker: 최신 FrameBuffer ROI로 OCCUPANCY_START_EVIDENCE 1장 저장
+└─ CaptureSchedulerRuntime: T0+30초 / T0+60초 작업 예약
+   → HallCaptureExecutor
+   → CameraSnapshotApiClient: 같은 frame original/enhanced 생성·즉시 다운로드
+   → SnapshotStorage: 두 JPEG 저장 (API 비활성 시 기존 RTSP ROI 촬영)
+   → HallCaptureCoordinator / HallOcrPolicy
+   → OcrWorker::enqueueHallCapture()
+   → Gemini OCR, 번호판 정규화, VEHICLE EV/PHEV 조회
+   → 동일 PARKING_SESSION.session_id에 IMAGE_LOG/OCR 결과 연결
+   → EV/PHEV이면 같은 session_id로 장기 점유 타이머 등록</pre>
 <div class="note">
   MQTT test, UART line, LoRa CRC frame은 전송 계층만 다르다. 세 입력 모두 검증된 센서 문자열을
   같은 <code>HallParkingService::handleLine()</code>에 전달한다.
 </div>
+<div class="note warn">
+  30/60초 촬영 시점은 <code>CAPTURE_OFFSETS_SEC</code>, 점유 확정 유예는
+  <code>PARKING_OCCUPANCY_CONFIRM_MS</code>로 시험 시간을 줄일 수 있다. 카메라 API 모드에서는
+  개선본 경로가 OCR에 제공되므로 Pi OpenCV 화질 개선을 건너뛴다.
+</div>
+<pre>CAMERA_SNAPSHOT_API_ENABLED=true
+CAMERA_OPEN_API_BASE=http://CAMERA_IP/opensdk/APP_ID
+CAMERA_IMAGE_BASE=http://CAMERA_IP:8080
+CAMERA_IMAGE_SERVER_PORT=8080
+CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false</pre>
 <p><code>parking/</code>은 센서 기반 상태 전이 도메인이고, <code>parking_timer/</code>는 EV/PHEV 장기 점유 시간 관리다. 이름이 비슷하지만 책임이 다르다.</p>
 
-<h2>6. 장기 점유 타이머 흐름</h2>
-<pre>OCR callback → ParkingSlotManager::handleRecognizedSession(session_id, "EV01", plate)
-→ EventDatabase::classifyVehicle()
-→ EventDatabase::findActiveBySlot("EV01")
-→ 기존 ACTIVE session_id를 그대로 사용
-→ TimerManager::schedule()
-→ deadline 도달
-→ EvidenceProvider가 최신 RTSP ROI 저장
-→ EventDatabase::markViolation()
-→ VIOLATION_TRIGGERED 이벤트 → Qt MQTT
+<h2>6. 조기 출차·장기 점유 증거 흐름</h2>
+<pre>SessionStarted
+→ EvidenceCaptureWorker::scheduleSession()
+├─ 즉시: OCCUPANCY_START_EVIDENCE 저장 + IMAGE_LOG
+└─ T0 + PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS 예약
+   → 세션이 ACTIVE이면 OVERSTAY_EVIDENCE 저장 + IMAGE_LOG
 
-handleExit("EV01")
-→ EventDatabase::departActiveBySlot()
-→ 상태 ENDED, exit_time/duration_sec 저장
-→ 큐의 과거 노드는 DB 조건부 UPDATE로 무효화</pre>
+OCR에서 EV/PHEV 판정
+→ parking_timer::ParkingSlotManager::handleRecognizedSession()
+→ 기존 SQLite session_id 그대로 TimerManager::schedule()
+→ 1시간 만료 시 DB를 VIOLATION으로 전환
+→ Qt MQTT OVERTIME_VIOLATION 발행
+
+VACANT
+→ EvidenceCaptureWorker::cancelSession()
+→ 해당 세션의 대기 Job 즉시 제거 및 큐 용량 회수
+→ CaptureSchedulerRuntime의 30/60초 작업 취소
+→ OcrWorker 작업 취소
+→ PARKING_SESSION 종료
+→ 위반 전 출차이면 IMAGE_LOG와 실제 이미지 파일 삭제</pre>
 <div class="note ok">
   타이머와 DB는 <code>int zone_id</code>가 아니라 <code>std::string slot_id</code>를 사용한다.
   따라서 <code>EV01</code>이 숫자 변환 없이 그대로 저장·조회된다.
+</div>
+<div class="note">
+  <code>EvidenceCaptureWorker</code>는 파일·OpenCV·SQLite 작업을 센서/MQTT callback 밖의 전용
+  스레드에서 수행한다. 세션 활성 상태를 DB에서 다시 확인하고 session+reason 중복 방지로
+  VACANT와 예약 실행의 경쟁 상태를 차단한다.
+</div>
+<div class="note">
+  재시작 시 SQLite의 활성 세션 T0를 기준으로 없는 증거만 복원한 뒤 타이머를 복원한다.
+  홀센서 작업 큐는 기본 100개로 제한하며 같은 슬롯의 대기 이벤트는 최신 상태로 병합한다.
 </div>
 
 <h2>7. DB와 Qt HTTP/HTTPS 흐름</h2>
@@ -200,7 +235,7 @@ handleExit("EV01")
 <tr><td><code>VEHICLE</code></td><td>번호판, EV 여부, PHEV 여부를 보관하는 차량 마스터</td></tr>
 <tr><td><code>PARKING_SLOT</code></td><td><code>EV01</code> 같은 주차면과 점유 상태</td></tr>
 <tr><td><code>PARKING_SESSION</code></td><td>입차, 위반, 출차, 점유시간 기록</td></tr>
-<tr><td><code>IMAGE_LOG</code></td><td>원본·전처리·BestShot·타이머 이미지 경로와 OCR 결과</td></tr>
+<tr><td><code>IMAGE_LOG</code></td><td>원본·전처리·BestShot·30/60초 OCR·시작/장기점유 증거 경로, OCR 결과와 <code>evidence_reason</code></td></tr>
 <tr><td><code>EVENT_LOG</code></td><td>카메라·OCR·주차 상태 이벤트와 처리 여부</td></tr>
 </table>
 <pre>Qt GET /api/v1/parking-slots
@@ -208,6 +243,11 @@ handleExit("EV01")
 → EventDatabase::listParkingSlots()
 → db_visit_parking_slots()
 → JSON 응답
+
+Qt GET /api/v1/parking-sessions/{session_id}/images
+→ EventDatabase::listSessionImages()
+→ captured_at 오름차순으로 시작/30·60초/장기점유 이미지 메타데이터 응답
+→ 절대 파일 경로 대신 /api/v1/images/{image_id}/original|enhanced URL 제공
 
 Qt GET /api/v1/images/{id}/enhanced
 → IMAGE_LOG 경로 조회
@@ -249,6 +289,8 @@ Qt → payload의 session_images_url을 HTTP GET
 <tr><td class="file">include/camera/CameraChannel.hpp</td><td>채널 ID, RTSP URL, 최신 프레임과 mutex를 공유하는 상태 객체</td><td><code>CameraChannel</code></td></tr>
 <tr><td class="file">include/camera/RtspStreamReceiver.hpp</td><td>채널별 RTSP 수신 스레드 인터페이스</td><td><code>start()</code>, <code>stop()</code>, <code>waitForInitialFrames()</code></td></tr>
 <tr><td class="file">src/camera/RtspStreamReceiver.cpp</td><td>OpenCV VideoCapture 연결·재접속·최신 프레임 갱신</td><td><code>captureLoop()</code></td></tr>
+<tr><td class="file">include/camera/CameraSnapshotApiClient.hpp</td><td>CV Snapshot OpenAPI/JPEG 응답과 설정 타입</td><td><code>initialize()</code>, <code>generate()</code></td></tr>
+<tr><td class="file">src/camera/CameraSnapshotApiClient.cpp</td><td>startserver·channels·filters discovery, 동일 run JPEG 다운로드·검증·재시도</td><td><code>CameraSnapshotApiClient</code></td></tr>
 </table>
 
 <h3>mqtt + event — 카메라 이벤트</h3>
@@ -260,12 +302,14 @@ Qt → payload의 session_images_url을 HTTP GET
 <tr><td class="file">src/event/CameraEventParser.cpp</td><td>Hanwha/ONVIF topic에서 채널·source·이벤트 종류 추출</td><td>문자열 파싱 구현</td></tr>
 <tr><td class="file">include/event/EventPayloadBuilder.hpp</td><td>정규 이벤트 JSON 생성 인터페이스</td><td><code>build()</code></td></tr>
 <tr><td class="file">src/event/EventPayloadBuilder.cpp</td><td>Qt/MQTT 전달용 JSON 직렬화</td><td><code>EventPayloadBuilder::build()</code></td></tr>
+<tr><td class="file">include/event/SystemEventReporter.hpp</td><td>센서·통신 오류를 업무 스레드와 분리하는 bounded 비동기 큐</td><td><code>start()</code>, <code>report()</code>, <code>stop()</code></td></tr>
+<tr><td class="file">src/event/SystemEventReporter.cpp</td><td>최대 100건 큐, 동일 오류 30초 억제, SQLite 실패 재시도와 예외 격리</td><td>worker loop와 중복 억제</td></tr>
 </table>
 
 <h3>snapshot — IVA ROI 이미지 저장</h3>
 <table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
 <tr><td class="file">include/snapshot/SnapshotStorage.hpp</td><td>최신 프레임 대기, ROI 정규화, 원본·전처리 저장 인터페이스</td><td><code>saveIvaAreaSnapshot()</code>, <code>waitForFullFrame()</code></td></tr>
-<tr><td class="file">src/snapshot/SnapshotStorage.cpp</td><td><code>data/snapshots/ch*/EV*/scene|enhanced</code> 경로 생성과 OpenCV 저장</td><td>ROI crop 및 파일명 생성</td></tr>
+<tr><td class="file">src/snapshot/SnapshotStorage.cpp</td><td>RTSP ROI와 카메라 API original/enhanced를 임시 파일 후 rename으로 저장</td><td><code>saveCameraApiHallCapture()</code></td></tr>
 </table>
 
 <h3>bestshot — 차량·번호판 BestShot</h3>
@@ -289,8 +333,8 @@ Qt → payload의 session_images_url을 HTTP GET
 <h3>database — SQLite 저장 계층</h3>
 <table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
 <tr><td class="file">include/database/EventDatabase.hpp</td><td>카메라·OCR·HTTP·타이머가 공유하는 단일 C++ DB 인터페이스</td><td><code>EventDatabase</code>, View/Record 구조체</td></tr>
-<tr><td class="file">src/database/EventDatabase.cpp</td><td>카메라 이벤트, 센서 Snapshot, BestShot, OCR, HTTP 조회용 DB orchestration</td><td><code>createEntryWithSnapshot()</code>, <code>createEntryWithBestShot()</code>, <code>deleteSessionImageRecords()</code></td></tr>
-<tr><td class="file">src/database/EventDatabaseTimer.cpp</td><td>EV/PHEV 분류와 장기 점유 세션·위반·출차 트랜잭션</td><td><code>insertParked()</code>, <code>markViolation()</code>, <code>departActiveBySlot()</code></td></tr>
+<tr><td class="file">src/database/EventDatabase.cpp</td><td>카메라 이벤트, BestShot, OCR, HTTP 이미지 조회용 DB orchestration</td><td><code>createEntryWithBestShot()</code>, <code>listSessionImages()</code>, <code>deleteSessionImageRecords()</code></td></tr>
+<tr><td class="file">src/database/EventDatabaseTimer.cpp</td><td>홀 DB 세션, 증거/30·60초 이미지, EV/PHEV 분류와 장기 점유·출차 트랜잭션</td><td><code>createHallSession()</code>, <code>insertEvidenceImage()</code>, <code>insertHallCaptureImage()</code>, <code>markViolation()</code></td></tr>
 <tr><td class="file">include/database/db_manager.h</td><td>SQLite C API 공개 함수와 조회 row 구조체</td><td><code>db_open()</code>, CRUD/visitor 함수</td></tr>
 <tr><td class="file">src/database/db_manager.c</td><td>prepared statement 기반 실제 SQLite CRUD</td><td>VEHICLE/SESSION/IMAGE/EVENT 쿼리</td></tr>
 <tr><td class="file">db/schema.sql</td><td>프로젝트 단일 DB 스키마</td><td>5개 테이블, FK, 인덱스, 활성 세션 UNIQUE</td></tr>
@@ -313,13 +357,21 @@ Qt → payload의 session_images_url을 HTTP GET
 <tr><td class="file">ParkingOccupancySession.hpp/.cpp</td><td>한 주차 세션의 Active/Completed 상태와 시간</td><td><code>complete()</code>, <code>duration()</code></td></tr>
 <tr><td class="file">ParkingSlotManager.hpp/.cpp</td><td>센서 이벤트로 주차면 상태 전이 결정</td><td><code>apply()</code>, <code>findSlot()</code></td></tr>
 <tr><td class="file">ActiveParkingSessionIndex.hpp/.cpp</td><td>활성 세션을 slot_id 기준으로 관리</td><td><code>apply()</code>, <code>find()</code>, <code>clear()</code></td></tr>
+<tr><td class="file">ParkingOccupancyConfirmationGate.hpp/.cpp</td><td>짧은 OCCUPIED/VACANT 튐을 막고 steady_clock 기준 점유를 확정</td><td><code>evaluate()</code>, <code>takeDue()</code></td></tr>
+<tr><td class="file">ParkingSessionWorker.hpp/.cpp</td><td>점유 확정 gate와 슬롯 상태 머신을 직렬화하고 transition sink에 전달</td><td><code>onSensorEvent()</code>, <code>addSink()</code></td></tr>
+<tr><td class="file">CaptureScheduler.hpp/.cpp</td><td>세션 T0+30/60초 촬영 요청과 재시도 일정을 관리</td><td><code>onTransition()</code>, <code>takeDue()</code></td></tr>
+<tr><td class="file">CaptureSchedulerRuntime.hpp/.cpp</td><td>steady_clock deadline 대기와 실제 capture callback 실행·취소</td><td><code>start()</code>, <code>stop()</code>, <code>onTransition()</code></td></tr>
+<tr><td class="file">HallCaptureExecutor.hpp/.cpp</td><td>예약 요청을 카메라 API original/enhanced로 변환하고 설정 시 RTSP fallback</td><td><code>execute()</code></td></tr>
+<tr><td class="file">HallCaptureCoordinator.hpp/.cpp</td><td>SQLite 정수 session_id, 30/60초 이미지, OCR 시도 결과를 한 세션으로 결합</td><td><code>onTransition()</code>, <code>onCaptureImage()</code>, <code>onOcrOutcome()</code></td></tr>
+<tr><td class="file">HallOcrPolicy.hpp/.cpp</td><td>두 촬영본의 OCR 성공·실패와 UNKNOWN 종료 정책</td><td><code>onImage()</code>, <code>onOcrOutcome()</code></td></tr>
+<tr><td class="file">EvidenceCaptureWorker.hpp/.cpp</td><td>시작·장기점유 증거 저장, 재시작 복원, 취소 Job 즉시 제거</td><td><code>scheduleSession()</code>, <code>restoreSession()</code>, <code>expediteOverstay()</code>, <code>cancelSession()</code></td></tr>
 <tr><td class="file">ParkingTriggerCoordinator.hpp/.cpp</td><td>IVA와 홀센서/BestShot 시간 상관관계 및 중복 억제</td><td><code>recordCameraIva()</code>, <code>recordHallState()</code>, <code>claimSlotForVehicle()</code></td></tr>
 </table>
 
 <h3>sensor — STM32 메시지 경계</h3>
 <table><tr><th>파일</th><th>역할</th><th>주요 함수/타입</th></tr>
 <tr><td class="file">SensorProtocolMessage.hpp</td><td>UART 한 줄 메시지의 파싱 결과</td><td><code>SensorProtocolMessage</code></td></tr>
-<tr><td class="file">SensorProtocolParser.hpp/.cpp</td><td>partial/multi-line byte stream buffering과 필드 검증</td><td><code>push()</code>, <code>parseLine()</code></td></tr>
+<tr><td class="file">SensorProtocolParser.hpp/.cpp</td><td>홀센서 한 줄 메시지의 필드·상태·값 일관성 검증</td><td><code>parse()</code></td></tr>
 <tr><td class="file">ParkingSensorEventAdapter.hpp/.cpp</td><td>프로토콜 메시지를 주차 도메인 이벤트로 변환</td><td><code>adapt()</code></td></tr>
 <tr><td class="file">HallParkingService.hpp/.cpp</td><td>홀 입력을 실제 Snapshot·세션·OCR·타이머 및 조기 정리 흐름으로 연결</td><td><code>handleLine()</code>, <code>handleOccupied()</code>, <code>handleVacant()</code></td></tr>
 </table>
@@ -362,11 +414,20 @@ Qt → payload의 session_images_url을 HTTP GET
 <table><tr><th>파일</th><th>검증/역할</th></tr>
 <tr><td class="file">tests/unit/ParkingDomainTest.cpp</td><td>슬롯 설정, 센서 매핑, 상태 전이, 세션 인덱스 단위 테스트</td></tr>
 <tr><td class="file">tests/unit/SensorParkingPipelineTest.cpp</td><td>partial/multi-line UART 파싱부터 주차 상태까지 파이프라인 테스트</td></tr>
-<tr><td class="file">tests/timer/timer_tests.cpp</td><td>EV01 입차, 중복, EV/PHEV 분류, 위반, 출차, worker 예외 테스트</td></tr>
+<tr><td class="file">tests/unit/ParkingOccupancyConfirmationGateTest.cpp</td><td>점유 확정 유예, VACANT 취소, steady_clock deadline 검증</td></tr>
+<tr><td class="file">tests/unit/ParkingSessionWorkerTest.cpp</td><td>SessionStarted/SessionCompleted와 중복 OCCUPIED 억제 검증</td></tr>
+<tr><td class="file">tests/unit/CaptureSchedulerTest.cpp</td><td>T0+30/60초 예약, 취소와 재시도 정책 검증</td></tr>
+<tr><td class="file">tests/unit/HallOcrPolicyTest.cpp</td><td>두 촬영본 OCR 성공·실패 및 UNKNOWN 정책 검증</td></tr>
+<tr><td class="file">tests/unit/HallCaptureCoordinatorTest.cpp</td><td>메모리 전이와 SQLite 정수 session_id의 결합·중복 방지 검증</td></tr>
+<tr><td class="file">tests/unit/SystemEventReporterTest.cpp</td><td>bounded queue, 30초 중복 억제, DB retry, 예외 미전파 검증</td></tr>
+<tr><td class="file">tests/timer/timer_tests.cpp</td><td>EV01 입차, 위반, 출차, 증거 준비 경합의 bounded 재시도, worker 예외 테스트</td></tr>
 <tr><td class="file">tests/integration/DbManagerTest.c</td><td>SQLite C CRUD 통합 확인</td></tr>
 <tr><td class="file">tests/integration/HttpApiTest.cpp</td><td>슬롯/이미지 HTTP API 응답과 경로 보안 확인</td></tr>
 <tr><td class="file">tests/integration/GeminiOcrTest.cpp</td><td>실제 환경변수 기반 Gemini OCR 수동 통합 검증</td></tr>
-<tr><td class="file">tests/integration/HallTimerIntegrationTest.cpp</td><td>가짜 frame과 SQLite로 입차·중복·조기삭제·위반 Snapshot·증거보존 통합 검증</td></tr>
+<tr><td class="file">tests/integration/HallTimerIntegrationTest.cpp</td><td>가짜 frame과 SQLite로 입차·조기삭제·위반 증거 및 슬롯별 bounded queue 병합 검증</td></tr>
+<tr><td class="file">tests/integration/HallCapturePipelineTest.cpp</td><td>30/60초 ROI 이미지·Gemini mock 결과를 같은 DB session_id에 연결</td></tr>
+<tr><td class="file">tests/integration/EvidenceCaptureWorkerTest.cpp</td><td>증거 1회 저장, T0 복원, 취소 용량 회수, 저장 실패와 고아 파일 정리</td></tr>
+<tr><td class="file">tests/integration/CameraSnapshotApiClientTest.cpp</td><td>mock CV API discovery, busy 재시도, 동일 run JPEG 검증·다운로드, 채널 거부</td></tr>
 <tr><td class="file">tests/unit/UartLoRaDriverTest.cpp</td><td>PTY 기반 UART 양방향, partial line, LoRa CRC·재동기화 및 alert 송신 검증</td></tr>
 <tr><td class="file">tests/fixtures/parking_slots.json</td><td>EV01~EV04 슬롯·센서·ROI 테스트 설정</td></tr>
 <tr><td class="file">config/timer.conf</td><td>타이머 DB 경로와 제한시간 예시</td></tr>
@@ -391,6 +452,11 @@ Qt → payload의 session_images_url을 HTTP GET
 <tr><td><code>MqttEventBridge::onMessage()</code></td><td>topic/payload → 카메라 이벤트 또는 홀 test 입력 분기 → 각 업무 흐름</td></tr>
 <tr><td><code>MqttEventBridge::publishQtEvent()</code></td><td>topic/JSON/QoS/retain → Mosquitto publish → Qt 상태·이벤트</td></tr>
 <tr><td><code>HallParkingService::handleLine()</code></td><td>홀 한 줄 → parse·mapping·중복검사 → 입차 Snapshot/OCR 또는 출차 정리</td></tr>
+<tr><td><code>EvidenceCaptureWorker::scheduleSession()</code></td><td>실제 DB session_id+채널+ROI → 시작/장기점유 작업 2건 예약 → 전용 worker 깨움</td></tr>
+<tr><td><code>CaptureSchedulerRuntime::onTransition()</code></td><td>SessionStarted/Completed → T0+30/60초 예약 또는 세션 작업 취소</td></tr>
+<tr><td><code>HallCaptureExecutor::execute()</code></td><td>예약 요청 → 카메라 API original/enhanced 또는 RTSP fallback 저장 → DB·OCR coordinator 전달</td></tr>
+<tr><td><code>CameraSnapshotApiClient::generate()</code></td><td>CV channel → 동일 frame original/enhanced 생성·JPEG 검증 → 메모리 byte 결과</td></tr>
+<tr><td><code>HallCaptureCoordinator::onCaptureImage()</code></td><td>30/60초 이미지 → 같은 SQLite session_id에 연결 → OCR 실행·보류·증거 전용·폐기 결정</td></tr>
 <tr><td><code>UartDriver::readSome()</code></td><td><code>/dev/tty*</code> → poll·partial read → 수신 byte 0..N개</td></tr>
 <tr><td><code>LoRaDriver::consume()</code></td><td>임의 byte chunk → SOF·길이·CRC 검증과 재동기화 → frame 0..N개</td></tr>
 <tr><td><code>SensorLinkManager::run()</code></td><td>UART 재연결 → line/LoRa 분기 → 센서 handler callback</td></tr>
@@ -404,18 +470,20 @@ Qt → payload의 session_images_url을 HTTP GET
 <tr><td><code>GeminiOcrClient::recognizePlate()</code></td><td>이미지 → base64 HTTPS 요청 → OCR 문자열/상태</td></tr>
 <tr><td><code>normalizePlateNumber()</code></td><td>Gemini 응답 → 불필요 문자 제거 → 정규화 번호판</td></tr>
 <tr><td><code>EventDatabase::createEntryWithBestShot()</code></td><td>slot/vehicle image → OCCUPIED+ACTIVE session+IMAGE_LOG → session_id</td></tr>
-<tr><td><code>EventDatabase::createEntryWithSnapshot()</code></td><td>홀 입차 Snapshot → ACTIVE session+IMAGE_LOG+EVENT_LOG → 같은 session_id</td></tr>
+<tr><td><code>EventDatabase::createHallSession()</code></td><td>홀 SessionStarted → ACTIVE PARKING_SESSION 생성 → 실제 SQLite 정수 session_id</td></tr>
+<tr><td><code>EventDatabase::insertEvidenceImage()</code></td><td>session/reason/path → 활성·중복 검사 transaction → IMAGE_LOG 또는 Duplicate/Inactive</td></tr>
+<tr><td><code>EventDatabase::insertHallCaptureImage()</code></td><td>30/60초 원본·전처리 경로 → 단계별 최대 한 장 → IMAGE_LOG</td></tr>
 <tr><td><code>EventDatabase::applyPlateOcr()</code></td><td>plate/confidence → VEHICLE 조회·세션 연결 → EV/PHEV/NON_EV/UNKNOWN</td></tr>
 <tr><td><code>EventDatabase::insertParked()</code></td><td>plate/EV01/time/image → transaction → ACTIVE session 및 TIMER_ENTRY 이미지</td></tr>
 <tr><td><code>EventDatabase::markViolation()</code></td><td>session/deadline/image → 조건부 transaction → VIOLATION 및 증거 이미지</td></tr>
 <tr><td><code>EventDatabase::departActiveBySlot()</code></td><td>EV01/출차시각 → 활성 세션 검색·duration 계산 → ENDED LogRecord</td></tr>
 <tr><td><code>ParkingHttpServer::registerRoutes()</code></td><td>DB/파일 저장소 → httplib route 등록 → Qt JSON/이미지 응답</td></tr>
-<tr><td><code>SensorProtocolParser::push()</code></td><td>임의 길이 byte chunk → newline buffering·필드 검증 → 메시지 0..N개</td></tr>
+<tr><td><code>SensorProtocolParser::parse()</code></td><td>홀 한 줄 → 필수 필드·STATE/VALUE 일관성 검증 → SensorProtocolMessage</td></tr>
 <tr><td><code>parking::ParkingSlotManager::apply()</code></td><td>센서 이벤트 → 상태 전이·중복 판단 → ParkingTransitionResult</td></tr>
 <tr><td><code>ParkingTriggerCoordinator::claimSlotForVehicle()</code></td><td>채널/최근 IVA·홀 이벤트 → 상관시간 검사 → BestShot 대상 slot_id</td></tr>
 <tr><td><code>parking_timer::ParkingSlotManager::handleEntry()</code></td><td>EV01/번호판 → 분류·중복 검사·세션 생성 → 타이머 예약</td></tr>
 <tr><td><code>TimerManager::schedule()</code></td><td>session/slot/delay → 최소 우선순위 큐 → worker 알림</td></tr>
-<tr><td><code>TimerManager::processExpired()</code></td><td>만료 노드 → 최신 RTSP 증거 요청 → 조건부 DB 위반 처리 → Qt publisher 또는 재시도</td></tr>
+<tr><td><code>TimerManager::processExpired()</code></td><td>만료 노드 → 저장된 OVERSTAY_EVIDENCE 경로 확인 → 조건부 DB 위반 처리 → Qt publisher 또는 재시도</td></tr>
 </table>
 
 <h2>11. 테스트와 디버깅</h2>
@@ -435,6 +503,8 @@ Pi_Server_Code_Guide.pdf</pre>
 <tr><td>RTSP 프레임 없음</td><td>환경변수 URL, <code>RtspStreamReceiver</code> 재접속 로그, URL 마스킹 결과</td></tr>
 <tr><td>MQTT 이벤트 없음</td><td>Mosquitto broker, subscribe topic, 카메라 publication, <code>MqttEventBridge</code> 로그</td></tr>
 <tr><td>IVA 사진 없음</td><td><code>IvaAreaConfig</code>의 channel/slot/ROI, 최신 frame 존재 여부, 저장 권한</td></tr>
+<tr><td>30/60초 촬영 없음</td><td><code>CAPTURE_SCHED_ENABLED</code>, <code>CAPTURE_OFFSETS_SEC</code>, SessionStarted와 <code>HallCaptureExecutor</code> 로그</td></tr>
+<tr><td>시작/장기점유 증거 없음</td><td>실제 SQLite session_id, FrameBuffer, ROI, <code>PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS</code>, Evidence worker 로그</td></tr>
 <tr><td>BestShot 없음</td><td>metadata profile, image URL, object type, <code>BestShotReceiver</code> download 로그</td></tr>
 <tr><td>OCR 실패</td><td>Gemini key/model/timeout, enhanced 이미지, 정규화 전 raw 결과</td></tr>
 <tr><td>EV 판별 오류</td><td><code>VEHICLE</code>의 plate_number/is_ev/is_phev, 정규화된 번호판</td></tr>
