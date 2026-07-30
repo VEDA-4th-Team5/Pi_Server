@@ -1,6 +1,6 @@
 # Test Scenarios
 
-기준일: 2026-07-26
+기준일: 2026-07-27
 
 ## 자동 테스트
 
@@ -22,6 +22,13 @@ ctest --test-dir cmake-build --output-on-failure
 8. `uart-lora-driver-test`: PTY UART 양방향, partial line, LoRa partial/multi frame,
    CRC 오류 재동기화, SensorLink callback 및 alert 송신
 9. `system-event-reporter-test`: 비동기 queue, 중복 억제, 저장 재시도와 예외 격리
+10. `evidence-capture-worker-test`: 시작·장기점유 증거, 중복 방지, VACANT 취소,
+    파일/DB 실패 시 가짜 행과 고아 파일 방지
+11. `hall-ocr-policy-test`: 30초 우선 OCR, 60초 fallback, 성공 후 재OCR 억제,
+    2회 실패 UNKNOWN 정책
+12. `hall-capture-coordinator-test`: SQLite 세션 ID 유지, 이미지·OCR·타이머 연결
+13. `hall-capture-pipeline-test`: 메모리 RTSP frame → ROI JPEG → IMAGE_LOG,
+    30/60초 중복·종료 세션 차단과 MQTT 발행 실패 격리
 
 `hall-timer-integration-test`는 카메라 대신 메모리의 OpenCV frame을 사용하지만 실제
 `SnapshotStorage`와 SQLite를 사용한다. OCCUPIED 중복 방지, VACANT 시 OCR 취소,
@@ -36,6 +43,8 @@ ctest --test-dir cmake-build --output-on-failure
 4. EV01의 실제 JPEG, ACTIVE 세션, `SLOT_OCCUPIED`를 확인한다.
 5. 테스트 환경에서만 `PARKING_TIMEOUT_SECONDS`를 짧게 설정해 실제 위반 Snapshot과
    `OVERTIME_VIOLATION`을 확인한다.
+   `PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS=5`로 설정하면 5초 뒤 증거 저장을
+   별도로 검증할 수 있다.
 6. HTTP의 `session_images_url`과 이미지 URL이 200으로 응답하는지 확인한다.
 7. 제한시간 전 VACANT와 제한시간 후 VACANT의 보존 정책 차이를 확인한다.
 

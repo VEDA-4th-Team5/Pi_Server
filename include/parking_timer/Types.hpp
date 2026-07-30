@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <optional>
 #include <string>
 
@@ -35,5 +36,6 @@ struct EntryResult {
 
 const char* toString(VehicleCategory category) noexcept;
 std::string utcNow();
+std::string utcString(std::chrono::system_clock::time_point value);
 
 }  // namespace parking_timer

@@ -4,20 +4,27 @@
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
 #include "device/SensorLinkManager.hpp"
+#include "event/FireAlarmEvent.hpp"
+#include "event/FireAlarmManager.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
 #include "parking/CaptureRequest.hpp"
 #include "parking/CaptureScheduler.hpp"
 #include "parking/CaptureSchedulerRuntime.hpp"
+#include "parking/EvidenceCaptureWorker.hpp"
+#include "parking/HallCaptureCoordinator.hpp"
+#include "parking/HallCaptureExecutor.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking_timer/EventManager.hpp"
 #include "parking_timer/ParkingSlotManager.hpp"
 #include "ocr/GeminiOcrClient.hpp"
 #include "ocr/OcrWorker.hpp"
+#include "sensor/FireSensorMessage.hpp"
 #include "sensor/ParkingSensorEventAdapter.hpp"
 #include "sensor/SensorLinkManager.hpp"
+#include "sensor/SensorProtocolParser.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 #include "sensor/HallParkingService.hpp"
 #include "util/Logger.hpp"
@@ -72,26 +79,15 @@ const app::IvaAreaConfig* findArea(const app::AppConfig& config,
     return nullptr;
 }
 
-std::shared_ptr<camera::CameraChannel> findChannel(
-    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
-    const std::string& channel_id) {
-    for (const auto& channel : channels)
-        if (channel && channel->channel_id == channel_id) return channel;
-    return nullptr;
-}
-
-std::string captureSlotSnapshot(
-    const app::AppConfig& config,
-    const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
-    snapshot::SnapshotStorage& storage,
-    const std::string& slot_id) {
-    const auto* area = findArea(config, slot_id);
-    if (!area) return {};
-    auto channel = findChannel(channels, area->channel_id);
-    if (!channel) return {};
-    return storage.saveIvaAreaSnapshot(
-        channel, slot_id,
-        {area->roi_x, area->roi_y, area->roi_width, area->roi_height});
+event::FireSignal toFireSignal(const sensor::FireSensorMessage& message) {
+    event::FireSignal signal;
+    signal.sensorId = message.sensorId;
+    signal.detected = message.state == sensor::FireSensorState::Detected;
+    signal.occurredAt = message.occurredAt;
+    signal.sourceSequence = message.sequence;
+    signal.sourceTransport = message.transport;
+    signal.rawPayload = message.raw;
+    return signal;
 }
 
 // EVDA-138에서 카메라 응답 규약이 확정되기 전 사용하는 MQTT 요청 초안이다.
@@ -220,6 +216,14 @@ int main() {
     if (!database.open(config.db_path)) {
         return 1;
     }
+    try {
+        database.migrateRuntimeSchema();
+    } catch (const std::exception& error) {
+        util::logError("Runtime DB migration failed: " +
+                       std::string(error.what()));
+        database.close();
+        return 1;
+    }
 
     // 센서/통신 스레드는 DB I/O를 직접 기다리지 않고 bounded reporter queue에 기록한다.
     event::SystemEventReporter system_event_reporter(
@@ -284,6 +288,29 @@ int main() {
             config.capture_retry_interval_ms);
         scheduler_config.maxRetries = config.capture_max_retries;
 
+        std::vector<int> offset_seconds;
+        std::istringstream offset_stream(config.capture_offsets_sec);
+        std::string offset_token;
+        while (std::getline(offset_stream, offset_token, ',')) {
+            try {
+                offset_seconds.push_back(std::max(0, std::stoi(offset_token)));
+            } catch (const std::exception&) {
+                util::logWarn("invalid CAPTURE_OFFSETS_SEC token ignored: " +
+                              offset_token);
+            }
+        }
+        if (!offset_seconds.empty()) {
+            scheduler_config.offsets.clear();
+            scheduler_config.offsets.push_back(
+                {parking::CaptureReason::HallOccupied30s,
+                 std::chrono::seconds(offset_seconds[0])});
+            if (offset_seconds.size() > 1) {
+                scheduler_config.offsets.push_back(
+                    {parking::CaptureReason::HallOccupied60s,
+                     std::chrono::seconds(offset_seconds[1])});
+            }
+        }
+
         parking::CaptureTargetResolver resolver =
             [&config](const std::string& slot_id)
             -> std::optional<parking::CaptureTarget> {
@@ -295,17 +322,6 @@ int main() {
         };
         capture_scheduler = std::make_unique<parking::CaptureScheduler>(
             std::move(scheduler_config), std::move(resolver));
-
-        const std::string topic_prefix = config.capture_topic_prefix;
-        capture_runtime = std::make_unique<parking::CaptureSchedulerRuntime>(
-            *capture_scheduler,
-            [&capture_mqtt_bridge, topic_prefix](
-                const parking::CaptureRequest& request) {
-                if (capture_mqtt_bridge == nullptr) return false;
-                return capture_mqtt_bridge->publishApplicationEvent(
-                    topic_prefix + "/" + request.slotId,
-                    buildCaptureRequestPayload(request), 1, false);
-            });
     }
 
     std::unique_ptr<parking_timer::EventManager> timer_events;
@@ -315,10 +331,19 @@ int main() {
         parking_timer = std::make_unique<parking_timer::ParkingSlotManager>(
             database, *timer_events,
             std::chrono::seconds(config.parking_timeout_seconds),
-            [&config, &channels, &snapshot_storage](
-                std::int64_t, const std::string& slot_id, const std::string&) {
-                return captureSlotSnapshot(
-                    config, channels, snapshot_storage, slot_id);
+            [&database](
+                std::int64_t session_id, const std::string& slot_id,
+                const std::string&) {
+                // 새 증거 worker가 T0 기준 이미지를 이미 저장했다면 같은 파일을
+                // 재사용한다. 이전 DB/촬영 실패 세션만 기존 Snapshot으로 보완한다.
+                if (const auto existing = database.findEvidenceImagePath(
+                        session_id, "OVERSTAY_EVIDENCE")) {
+                    return *existing;
+                }
+                util::logWarn("Timer reached before overstay evidence was ready: "
+                              "session=" + std::to_string(session_id) +
+                              " slot=" + slot_id);
+                return std::string{};
             });
         util::logInfo("parking timer enabled: timeout=" +
                       std::to_string(config.parking_timeout_seconds) + "s");
@@ -341,6 +366,147 @@ int main() {
             }
         });
 
+    parking::HallCapturePorts hall_capture_ports;
+    hall_capture_ports.writeImageLog =
+        [&database](const parking::CapturedImage& image) {
+            try {
+                const auto result = database.insertHallCaptureImage(
+                    image.sessionId, image.originalPath, image.enhancedPath,
+                    parking::toEnhancementType(image.stage),
+                    parking_timer::utcNow());
+                switch (result) {
+                    case database::EvidenceInsertResult::Inserted:
+                        return parking::ImageStoreResult::Inserted;
+                    case database::EvidenceInsertResult::Duplicate:
+                        return parking::ImageStoreResult::Duplicate;
+                    case database::EvidenceInsertResult::InactiveSession:
+                        return parking::ImageStoreResult::InactiveSession;
+                }
+            } catch (const std::exception& error) {
+                util::logError("hall capture DB insert failed: " +
+                               std::string(error.what()));
+            }
+            return parking::ImageStoreResult::Failed;
+        };
+    hall_capture_ports.submitOcr =
+        [&ocr_worker](const parking::CapturedImage& image) {
+            ocr_worker.enqueueHallCapture({
+                image.sessionId,
+                image.stage == parking::CaptureStage::Second60s ? 1 : 0,
+                image.slotId,
+                image.originalPath,
+                image.enhancedPath});
+        };
+    hall_capture_ports.writeOcrFailure =
+        [&database](const std::int64_t session_id,
+                    const std::string& slot_id, const int attempts) {
+            if (!database.markPlateOcrUnresolved(
+                    session_id, slot_id, attempts)) {
+                util::logError("hall OCR failure log write failed: session=" +
+                               std::to_string(session_id));
+            }
+        };
+    hall_capture_ports.registerEvTimer =
+        [&parking_timer](const std::int64_t session_id,
+                         const std::string& slot_id,
+                         const std::string& plate_number) {
+            if (parking_timer) {
+                parking_timer->handleRecognizedSession(
+                    session_id, slot_id, plate_number);
+            }
+        };
+    auto hall_ocr_coordinator =
+        std::make_unique<parking::HallCaptureCoordinator>(
+            std::move(hall_capture_ports), config.capture_ocr_max_attempts);
+    ocr_worker.setHallCaptureCallback(
+        [&hall_ocr_coordinator](const ocr::HallCaptureResult& result) {
+            if (!hall_ocr_coordinator) return;
+            hall_ocr_coordinator->onOcrOutcome({
+                result.session_id,
+                result.stage == 1 ? parking::CaptureStage::Second60s
+                                  : parking::CaptureStage::First30s,
+                result.recognized,
+                result.plate_number,
+                result.confidence,
+                result.classification});
+        });
+
+    std::unique_ptr<parking::HallCaptureExecutor> hall_capture_executor;
+    if (capture_scheduler) {
+        const std::string topic_prefix = config.capture_topic_prefix;
+        if (config.hall_capture_ocr_enabled) {
+            hall_capture_executor =
+                std::make_unique<parking::HallCaptureExecutor>(
+                    channels, snapshot_storage, *hall_ocr_coordinator,
+                    [&capture_mqtt_bridge, topic_prefix](
+                        const parking::CaptureRequest& request) {
+                        return capture_mqtt_bridge != nullptr &&
+                            capture_mqtt_bridge->publishApplicationEvent(
+                                topic_prefix + "/" + request.slotId,
+                                buildCaptureRequestPayload(request), 1, false);
+                    });
+            capture_runtime =
+                std::make_unique<parking::CaptureSchedulerRuntime>(
+                    *capture_scheduler,
+                    [&hall_capture_executor](
+                        const parking::CaptureRequest& request) {
+                        return hall_capture_executor &&
+                               hall_capture_executor->execute(request);
+                    });
+        } else {
+            capture_runtime =
+                std::make_unique<parking::CaptureSchedulerRuntime>(
+                    *capture_scheduler,
+                    [&capture_mqtt_bridge, topic_prefix](
+                        const parking::CaptureRequest& request) {
+                        return capture_mqtt_bridge != nullptr &&
+                            capture_mqtt_bridge->publishApplicationEvent(
+                                topic_prefix + "/" + request.slotId,
+                                buildCaptureRequestPayload(request), 1, false);
+                    });
+        }
+    }
+
+    parking::EvidenceCaptureWorker::Config evidence_config;
+    evidence_config.overstayDelay = std::chrono::seconds(
+        config.parking_overstay_evidence_delay_seconds);
+    auto evidence_worker = std::make_unique<parking::EvidenceCaptureWorker>(
+        snapshot_storage, database, evidence_config,
+        [&ocr_worker, &timer_events, &config](
+            const parking::EvidenceCaptureResult& result) {
+            if (!result.stored) return;
+            if (result.reason == parking::EvidenceReason::OccupancyStart) {
+                // 30/60초 홀 OCR이 활성화되면 차량이 자리를 잡은 뒤의 ROI를
+                // 사용한다. 스케줄러가 꺼진 환경에서는 기존 시작 증거 OCR로
+                // fallback하여 번호판 인식 기능이 사라지지 않게 한다.
+                if (!(config.hall_capture_ocr_enabled &&
+                      config.capture_sched_enabled)) {
+                    ocr_worker.enqueue(static_cast<int>(result.sessionId),
+                                       result.slotId, result.imagePath);
+                }
+                if (timer_events) {
+                    timer_events->publish(
+                        "OCCUPANCY_START_EVIDENCE_STORED", result.slotId, "",
+                        parking_timer::utcNow(), result.imagePath,
+                        result.sessionId);
+                }
+            } else if (timer_events) {
+                timer_events->publish(
+                    "OVERSTAY_EVIDENCE_STORED", result.slotId, "",
+                    parking_timer::utcNow(), result.imagePath,
+                    result.sessionId);
+            }
+        });
+    if (!evidence_worker->start()) {
+        if (http_server) http_server->stop();
+        system_event_reporter.stop();
+        database.close();
+        return 1;
+    }
+    util::logInfo("parking evidence worker enabled: overstay_delay=" +
+                  std::to_string(
+                      config.parking_overstay_evidence_delay_seconds) + "s");
+
     bestshot::BestShotReceiver bestshot_receiver(
         channels, database, trigger_coordinator, ocr_worker, g_running);
 
@@ -352,18 +518,16 @@ int main() {
         auto slot_configs = parking::ParkingSlotConfigLoader::loadFromFile(
             config.parking_slot_config_path);
         hall_service = std::make_unique<sensor::HallParkingService>(
-            std::move(slot_configs), config, channels, snapshot_storage,
-            database,
-            [&ocr_worker](int session_id, const std::string& slot_id,
-                          const std::string& path) {
-                ocr_worker.enqueue(session_id, slot_id, path);
-            },
+            std::move(slot_configs), config, channels, database,
             [&ocr_worker](int session_id) {
                 ocr_worker.cancelSession(session_id);
             },
-            *parking_timer, *timer_events, system_event_sink,
-            [&capture_runtime](
+            *parking_timer, *timer_events, *evidence_worker,
+            system_event_sink,
+            [&capture_runtime, &hall_ocr_coordinator](
                 const parking::ParkingTransitionResult& transition) {
+                if (hall_ocr_coordinator)
+                    hall_ocr_coordinator->onTransition(transition);
                 if (capture_runtime) capture_runtime->onTransition(transition);
             });
     }
@@ -375,6 +539,7 @@ int main() {
         rtsp_receiver.stop();
         if (http_server) http_server->stop();
         hall_service.reset();
+        evidence_worker->stop();
         parking_timer.reset();
         timer_events.reset();
         system_event_reporter.stop();
@@ -401,8 +566,9 @@ int main() {
     if (!mqtt_bridge.start()) {
         g_running.store(false);
         bestshot_receiver.stop();
-        ocr_worker.stop();
         hall_service.reset();
+        evidence_worker->stop();
+        ocr_worker.stop();
         parking_timer.reset();
         timer_events.reset();
         rtsp_receiver.stop();
@@ -417,13 +583,36 @@ int main() {
         util::logInfo(
             "capture scheduler enabled (DRAFT protocol pending EVDA-138): "
             "topic_prefix=" + config.capture_topic_prefix +
-            " offsets=30s,60s retries=" +
+            " offsets=" + config.capture_offsets_sec + "s retries=" +
             std::to_string(config.capture_max_retries));
     }
 
+    // MQTT publisher가 준비된 뒤에만 발행 콜백을 걸 수 있으므로 mqtt_bridge
+    // 시작 이후에 생성한다. 화재 최종 판단은 하지 않고 후보 이벤트만 올린다
+    // (관제실 사람이 확정) — event::FireAlarmManager 계약대로.
+    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
+    if (config.fire_alarm_enabled) {
+        fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
+            config.camera_id,
+            config.default_channel_id,
+            config.fire_topic_prefix,
+            event::parseFireSensorBindings(config.fire_sensor_slot_map),
+            [&mqtt_bridge](const std::string& topic,
+                           const std::string& payload) {
+                return mqtt_bridge.publish(topic, payload);
+            });
+        util::logInfo(
+            "fire alarm enabled: topic_prefix=" + config.fire_topic_prefix +
+            " bindings=" + std::to_string(fire_alarm_manager->bindingCount()));
+    }
+
     // 촬영 runtime과 MQTT publisher가 준비된 뒤 실제 UART/LoRa 입력을 연다.
+    // 화재와 홀센서는 같은 STM32 UART 링크를 공유하므로 SensorLinkManager는
+    // 하나만 열고, 수신 라인을 접두사(FIRE:/SENSOR:)로 갈라 보낸다.
+    const sensor::SensorProtocolParser fire_line_parser;
     std::unique_ptr<device::SensorLinkManager> sensor_link;
-    if (hall_service && sensor_link_mode != device::SensorLinkMode::Disabled) {
+    if ((hall_service || fire_alarm_manager) &&
+        sensor_link_mode != device::SensorLinkMode::Disabled) {
         device::SensorLinkManager::Config sensor_config;
         sensor_config.mode = sensor_link_mode;
         sensor_config.uart.device_path = config.sensor_uart_device;
@@ -432,8 +621,23 @@ int main() {
         sensor_config.reconnect_delay_ms = config.sensor_uart_reconnect_ms;
         sensor_link = std::make_unique<device::SensorLinkManager>(
             std::move(sensor_config),
-            [&hall_service](const std::string& line,
-                            const std::string& transport) {
+            [&hall_service, &fire_alarm_manager, &fire_line_parser](
+                const std::string& line, const std::string& transport) {
+                if (sensor::SensorProtocolParser::isFireLine(line)) {
+                    if (!fire_alarm_manager) return;
+                    std::string error;
+                    auto message = fire_line_parser.parseFire(
+                        line, std::chrono::system_clock::now(), &error);
+                    if (!message) {
+                        util::logWarn(
+                            "fire line rejected: " + error + " | " + line);
+                        return;
+                    }
+                    message->transport = transport.empty() ? "uart" : transport;
+                    message->raw = line;
+                    fire_alarm_manager->onFireSignal(toFireSignal(*message));
+                    return;
+                }
                 if (hall_service) hall_service->handleLine(line, transport);
             }, system_event_sink);
         if (!sensor_link->start()) {
@@ -477,11 +681,13 @@ int main() {
 
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
     if (sensor_link) sensor_link->stop();
+    fire_alarm_manager.reset();
     if (capture_runtime) capture_runtime->stop();
     mqtt_bridge.stop();
     bestshot_receiver.stop();
-    ocr_worker.stop();
     hall_service.reset();
+    evidence_worker->stop();
+    ocr_worker.stop();
     parking_timer.reset();
     timer_events.reset();
     rtsp_receiver.stop();

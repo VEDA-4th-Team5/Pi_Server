@@ -89,6 +89,24 @@ add_executable(parking-occupancy-confirmation-gate-test
 target_include_directories(parking-occupancy-confirmation-gate-test PRIVATE include)
 target_compile_options(parking-occupancy-confirmation-gate-test PRIVATE -Wall -Wextra)
 
+add_executable(hall-ocr-policy-test
+    tests/unit/HallOcrPolicyTest.cpp
+    src/parking/HallOcrPolicy.cpp)
+target_include_directories(hall-ocr-policy-test PRIVATE include)
+target_compile_options(hall-ocr-policy-test PRIVATE -Wall -Wextra)
+add_test(NAME hall-ocr-policy-test COMMAND hall-ocr-policy-test)
+
+add_executable(hall-capture-coordinator-test
+    tests/unit/HallCaptureCoordinatorTest.cpp
+    src/parking/HallCaptureCoordinator.cpp
+    src/parking/HallOcrPolicy.cpp
+    src/util/Logger.cpp)
+target_include_directories(hall-capture-coordinator-test PRIVATE include)
+target_compile_options(hall-capture-coordinator-test PRIVATE -Wall -Wextra)
+target_link_libraries(hall-capture-coordinator-test PRIVATE Threads::Threads)
+add_test(NAME hall-capture-coordinator-test
+    COMMAND hall-capture-coordinator-test)
+
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
     src/event/FireAlarmManager.cpp
@@ -234,6 +252,7 @@ add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
 add_executable(hall-timer-integration-test
     tests/integration/HallTimerIntegrationTest.cpp
     src/sensor/HallParkingService.cpp
+    src/parking/EvidenceCaptureWorker.cpp
     src/snapshot/SnapshotStorage.cpp
     src/event/SystemEventReporter.cpp
     src/util/StringUtil.cpp
@@ -249,16 +268,41 @@ add_test(NAME hall-timer-integration-test
     COMMAND hall-timer-integration-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
 
+add_executable(evidence-capture-worker-test
+    tests/integration/EvidenceCaptureWorkerTest.cpp
+    src/parking/EvidenceCaptureWorker.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(evidence-capture-worker-test PRIVATE include)
+target_compile_options(evidence-capture-worker-test PRIVATE -Wall -Wextra)
+target_link_libraries(evidence-capture-worker-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV Threads::Threads)
+target_compile_definitions(evidence-capture-worker-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME evidence-capture-worker-test COMMAND evidence-capture-worker-test)
+
+add_executable(hall-capture-pipeline-test
+    tests/integration/HallCapturePipelineTest.cpp
+    src/parking/HallCaptureExecutor.cpp
+    src/parking/HallCaptureCoordinator.cpp
+    src/parking/HallOcrPolicy.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(hall-capture-pipeline-test PRIVATE include)
+target_compile_options(hall-capture-pipeline-test PRIVATE -Wall -Wextra)
+target_link_libraries(hall-capture-pipeline-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV Threads::Threads)
+target_compile_definitions(hall-capture-pipeline-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME hall-capture-pipeline-test COMMAND hall-capture-pipeline-test)
+
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
-    src/http/ParkingHttpServer.cpp
-    src/database/EventDatabase.cpp
-    src/database/db_manager.c
-    src/util/Logger.cpp)
+    src/http/ParkingHttpServer.cpp)
 target_include_directories(http-api-test PRIVATE include)
 target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE
-    PkgConfig::HTTPLIB sqlite3 Threads::Threads)
+    parking-timer-core PkgConfig::HTTPLIB sqlite3 Threads::Threads)
 add_test(NAME http-api-test COMMAND http-api-test)
 
 # 사람이 관리하는 코드 가이드를 PDF로 생성한다.

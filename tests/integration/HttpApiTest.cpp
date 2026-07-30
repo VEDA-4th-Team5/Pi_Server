@@ -58,6 +58,21 @@ int main() {
 
     database::EventDatabase database;
     if (!database.open(db_path.string())) return 1;
+    // 구형 IMAGE_LOG에서 시작해도 migration이 반복 실행 가능해야 한다.
+    database.migrateRuntimeSchema();
+    database.migrateRuntimeSchema();
+    const fs::path start_evidence = data / "snapshots" / "start.jpg";
+    const fs::path overstay_evidence = data / "snapshots" / "overstay.jpg";
+    { std::ofstream output(start_evidence, std::ios::binary); output << "start"; }
+    { std::ofstream output(overstay_evidence, std::ios::binary); output << "overstay"; }
+    if (database.insertEvidenceImage(
+            7, start_evidence.string(), "OCCUPANCY_START_EVIDENCE",
+            "2026-07-15T12:00:02") !=
+        database::EvidenceInsertResult::Inserted) return 1;
+    if (database.insertEvidenceImage(
+            7, overstay_evidence.string(), "OVERSTAY_EVIDENCE",
+            "2026-07-15T13:00:00") !=
+        database::EvidenceInsertResult::Inserted) return 1;
     http::ServerConfig config;
     config.listen_address = "127.0.0.1";
     config.port = 18081;
@@ -94,6 +109,16 @@ int main() {
     }
     auto images = client.Get("/api/v1/parking-sessions/7/images");
     success &= expect(images && images->status == 200, "session images endpoint");
+    if (images) {
+        const auto items = nlohmann::json::parse(images->body).at("items");
+        success &= expect(items.size() == 3, "legacy and two evidence images returned");
+        success &= expect(
+            items.at(1).at("evidence_reason") == "OCCUPANCY_START_EVIDENCE" &&
+            items.at(2).at("evidence_reason") == "OVERSTAY_EVIDENCE",
+            "evidence reasons returned in captured_at order");
+        success &= expect(!items.at(1).contains("original_image_path"),
+                          "absolute path is not exposed");
+    }
     auto original = client.Get("/api/v1/images/9/original");
     success &= expect(original && original->status == 200 &&
                       original->body == "fake-jpeg-for-http-test", "original image response");

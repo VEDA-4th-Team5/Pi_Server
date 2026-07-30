@@ -18,6 +18,7 @@
 | Camera 촬영 응답/URL 수신 | 미구현, 응답 방식 확인 필요 |
 | HTTP/HTTPS Snapshot 다운로드 | BestShot은 구현, 요청형 Snapshot은 미구현 |
 | 30초·60초 촬영 scheduler | 구현: steady clock 예약·조기 출차 취소·발행 실패 재시도 |
+| 30초·60초 RTSP ROI 저장·OCR | 구현: 실제 SQLite session_id로 IMAGE_LOG·Gemini·타이머 연결 |
 
 현재 `saveIvaAreaSnapshot()`은 카메라에 좌표나 촬영 명령을 보내지 않는다. Pi가
 연속 수신한 RTSP 최신 프레임을 메모리에서 복사한 뒤 OpenCV로 crop한다.
@@ -25,6 +26,11 @@
 현재 scheduler는 `parking/capture/{slot_id}`에 `capture_request_draft_v0` JSON을
 QoS 1로 발행한다. 성공 로그는 Mosquitto가 발행 요청을 접수했다는 뜻이며, 카메라
 촬영 완료나 이미지 수신 성공을 뜻하지 않는다. 응답 correlation은 EVDA-138 범위다.
+
+다만 현재 운영 코드는 MQTT 응답을 기다리지 않고, 기존 RTSP FrameBuffer의
+최신 프레임을 같은 30초·60초 시점에 ROI crop한다. `HallCaptureExecutor` →
+`HallCaptureCoordinator` → `OcrWorker` 흐름이 실제 파일 저장, IMAGE_LOG,
+Gemini OCR을 하나의 SQLite `session_id`로 연결한다.
 
 ## 2. 목표 흐름
 

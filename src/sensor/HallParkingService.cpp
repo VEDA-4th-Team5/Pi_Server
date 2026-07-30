@@ -29,12 +29,11 @@ HallParkingService::HallParkingService(
     std::vector<parking::ParkingSlotConfig> slot_configs,
     const app::AppConfig& app_config,
     std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
-    snapshot::SnapshotStorage& snapshot_storage,
     database::EventDatabase& database,
-    OcrEnqueue ocr_enqueue,
     OcrCancel ocr_cancel,
     parking_timer::ParkingSlotManager& timer_manager,
     parking_timer::EventManager& event_manager,
+    parking::EvidenceCaptureWorker& evidence_worker,
     ::event::SystemEventReporter* system_event_reporter,
     TransitionSink transition_sink)
     : slot_configs_(std::move(slot_configs)),
@@ -43,14 +42,14 @@ HallParkingService::HallParkingService(
       occupancy_manager_(slot_configs_),
       app_config_(app_config),
       channels_(channels),
-      snapshot_storage_(snapshot_storage),
       database_(database),
-      ocr_enqueue_(std::move(ocr_enqueue)),
       ocr_cancel_(std::move(ocr_cancel)),
       timer_manager_(timer_manager),
       event_manager_(event_manager),
+      evidence_worker_(evidence_worker),
       system_event_reporter_(system_event_reporter),
       transition_sink_(std::move(transition_sink)) {
+    work_worker_ = std::thread(&HallParkingService::workLoop, this);
     if (app_config_.parking_occupancy_confirm_ms > 0) {
         confirmation_gate_.emplace(std::chrono::milliseconds(
             app_config_.parking_occupancy_confirm_ms));
@@ -68,7 +67,9 @@ HallParkingService::~HallParkingService() {
         stopping_ = true;
     }
     confirmation_condition_.notify_all();
+    work_condition_.notify_all();
     if (confirmation_worker_.joinable()) confirmation_worker_.join();
+    if (work_worker_.joinable()) work_worker_.join();
 }
 
 bool HallParkingService::handleLine(const std::string& line,
@@ -77,7 +78,7 @@ bool HallParkingService::handleLine(const std::string& line,
     std::string error;
     auto message = parser_.parse(line, std::chrono::system_clock::now(), &error);
     if (!message) {
-        util::logWarn("Hall sensor message rejected: " + error);
+        util::logWarn("Hall sensor message rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorMessageInvalid,
                ::event::SystemEventSeverity::Warning, error, transport);
         return false;
@@ -85,14 +86,14 @@ bool HallParkingService::handleLine(const std::string& line,
     message->transport = transport;
     auto event = adapter_.adapt(*message, &error);
     if (!event) {
-        util::logWarn("Hall sensor event rejected: " + error);
+        util::logWarn("Hall sensor event rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorNotMapped,
                ::event::SystemEventSeverity::Warning,
                error + "; sensor_id=" + message->sensorId, transport);
         return false;
     }
     if (!sequence_guard_.accept(*event, &error)) {
-        util::logWarn("Hall sensor event rejected: " + error);
+        util::logWarn("Hall sensor event rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorSequenceRejected,
                ::event::SystemEventSeverity::Warning, error, transport,
                event->slotId);
@@ -110,6 +111,13 @@ bool HallParkingService::processEventLocked(
         const bool already_occupied = slot != nullptr && slot->occupied();
         if (confirmation_gate_->evaluate(event, already_occupied) ==
             parking::ParkingOccupancyConfirmationGate::Decision::Suppress) {
+            if (event.state == parking::ParkingSensorState::Vacant) {
+                parking::ParkingTransitionResult recovery_transition;
+                recovery_transition.slotId = event.slotId;
+                recovery_transition.sessionId.clear();
+                work_queue_.push_back({event, recovery_transition});
+                work_condition_.notify_one();
+            }
             confirmation_condition_.notify_all();
             util::logInfo("Hall sensor event awaiting confirmation: slot=" +
                           event.slotId + " state=" +
@@ -122,13 +130,19 @@ bool HallParkingService::processEventLocked(
 
     const auto transition = occupancy_manager_.handle(event);
     if (!transition.changed()) {
+        // 재시작 직후 메모리 상태는 VACANT지만 DB에는 이전 ACTIVE가 남을 수
+        // 있다. VACANT는 비동기 worker에서 DB와 대조해 stale 세션을 닫는다.
+        if (event.state == parking::ParkingSensorState::Vacant) {
+            work_queue_.push_back({event, transition});
+            work_condition_.notify_one();
+        }
         util::logInfo("Hall sensor event ignored: slot=" + event.slotId +
                       " reason=" + transition.message);
         return true;
     }
-    return event.state == parking::ParkingSensorState::Occupied
-               ? handleOccupied(event, transition)
-               : handleVacant(event, transition);
+    work_queue_.push_back({event, transition});
+    work_condition_.notify_one();
+    return true;
 }
 
 bool HallParkingService::handleOccupied(
@@ -153,40 +167,64 @@ bool HallParkingService::handleOccupied(
                event.slotId);
         return false;
     }
-    const snapshot::NormalizedRoi roi{
-        area->roi_x, area->roi_y, area->roi_width, area->roi_height};
-    const std::string snapshot_path = snapshot_storage_.saveIvaAreaSnapshot(
-        channel, event.slotId, roi);
-    if (snapshot_path.empty()) {
+    std::int64_t session_id = -1;
+    bool adopted_existing = false;
+    try {
+        if (const auto existing = database_.findActiveBySlot(event.slotId)) {
+            session_id = existing->id;
+            adopted_existing = true;
+        } else {
+            session_id = database_.createHallSession(
+                event.slotId, event.sensorId,
+                parking_timer::utcString(event.occurredAt));
+        }
+    } catch (const std::exception& error) {
         report(::event::SystemEventCode::SensorHandlerFailed,
                ::event::SystemEventSeverity::Error,
-               "entry Snapshot capture failed", event.sourceTransport,
-               event.slotId);
-        return false;
-    }
-
-    int session_id = -1;
-    if (!database_.createEntryWithSnapshot(
-            event.slotId, snapshot_path, event.sensorId, &session_id)) {
-        std::error_code ignored;
-        std::filesystem::remove(snapshot_path, ignored);
-        report(::event::SystemEventCode::SensorHandlerFailed,
-               ::event::SystemEventSeverity::Error,
-               "entry session or EVENT_LOG creation failed",
+               "entry session creation failed: " + std::string(error.what()),
                event.sourceTransport, event.slotId);
         return false;
     }
     event_manager_.publish("SLOT_OCCUPIED", event.slotId, "",
-                           parking_timer::utcNow(), snapshot_path, session_id);
-    if (ocr_enqueue_) ocr_enqueue_(session_id, event.slotId, snapshot_path);
+                           parking_timer::utcNow(),
+                           adopted_existing ? "existing session adopted"
+                                            : "evidence capture scheduled",
+                           session_id);
+    if (adopted_existing) {
+        // 이미 시작 증거/타이머가 존재할 수 있으므로 T0를 현재 시각으로 다시
+        // 잡아 촬영을 중복 예약하지 않는다. 이후 VACANT는 같은 ID를 종료한다.
+        util::logLine("HALL_RECOVERY", "active session adopted slot=" +
+                      event.slotId + " session=" +
+                      std::to_string(session_id));
+        return true;
+    }
     if (transition_sink_) {
         auto database_transition = transition;
         database_transition.sessionId = std::to_string(session_id);
         transition_sink_(database_transition);
     }
+    const auto started_monotonic = transition.session
+        ? transition.session->startedAtMonotonic()
+        : event.receivedMonotonic;
+    if (!evidence_worker_.scheduleSession({
+            session_id, event.slotId, channel,
+            {area->roi_x, area->roi_y, area->roi_width, area->roi_height},
+            started_monotonic})) {
+        report(::event::SystemEventCode::SensorHandlerFailed,
+               ::event::SystemEventSeverity::Error,
+               "evidence capture scheduling failed", event.sourceTransport,
+               event.slotId);
+        try {
+            timer_manager_.handleExit(event.slotId);
+        } catch (...) {
+            util::logError("Failed to compensate unscheduled evidence session=" +
+                           std::to_string(session_id));
+        }
+        return false;
+    }
     util::logLine("HALL_OCCUPIED", "slot=" + event.slotId +
                   " session=" + std::to_string(session_id) +
-                  " snapshot=" + snapshot_path);
+                  " evidence=scheduled");
     return true;
 }
 
@@ -196,8 +234,15 @@ bool HallParkingService::handleVacant(
     auto departed = timer_manager_.handleExit(event.slotId);
     if (!departed) return true;
 
+    evidence_worker_.cancelSession(departed->id);
+    util::logLine("EVIDENCE_CAPTURE",
+                  "overstay capture canceled by VACANT session=" +
+                  std::to_string(departed->id) + " slot=" + event.slotId);
+
     if (transition_sink_) {
         auto database_transition = transition;
+        database_transition.code =
+            parking::ParkingTransitionCode::SessionCompleted;
         database_transition.sessionId = std::to_string(departed->id);
         transition_sink_(database_transition);
     }
@@ -210,6 +255,40 @@ bool HallParkingService::handleVacant(
                                "temporary entry images removed", departed->id);
     }
     return true;
+}
+
+void HallParkingService::workLoop() {
+    for (;;) {
+        WorkItem item;
+        {
+            std::unique_lock lock(mutex_);
+            work_condition_.wait(lock, [this] {
+                return stopping_ || !work_queue_.empty();
+            });
+            if (stopping_ && work_queue_.empty()) break;
+            item = std::move(work_queue_.front());
+            work_queue_.pop_front();
+        }
+        try {
+            const bool success =
+                item.event.state == parking::ParkingSensorState::Occupied
+                    ? handleOccupied(item.event, item.transition)
+                    : handleVacant(item.event, item.transition);
+            if (!success) {
+                util::logError("Hall parking async work failed: slot=" +
+                               item.event.slotId);
+            }
+        } catch (const std::exception& error) {
+            util::logError("Hall parking async exception: slot=" +
+                           item.event.slotId + " error=" + error.what());
+            report(::event::SystemEventCode::SensorHandlerFailed,
+                   ::event::SystemEventSeverity::Error, error.what(),
+                   item.event.sourceTransport, item.event.slotId);
+        } catch (...) {
+            util::logError("Hall parking async unknown exception: slot=" +
+                           item.event.slotId);
+        }
+    }
 }
 
 void HallParkingService::confirmationLoop() {

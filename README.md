@@ -14,7 +14,7 @@ RTSP, MQTT, OpenCV, Gemini OCR, SQLite 및 Qt 조회 API를 사용합니다.
 - SQLite 주차 세션·이미지·이벤트 저장
 - Qt용 HTTP/HTTPS 상태·이미지 조회 API
 - 가짜 홀센서 MQTT 입력과 실제 Snapshot·세션·타이머 연결
-- OCCUPIED 확정 유예시간과 T0+30초/60초 MQTT 촬영 요청 scheduler
+- OCCUPIED 확정 유예시간과 T0+30초/60초 RTSP ROI 촬영·OCR scheduler
 - 실제 UART line 및 UART 기반 LoRa CRC frame 수신 드라이버
 - 프로젝트 전용 Linux Character Device `/dev/parking_alert`
 - Qt용 주차 상태/위반 MQTT 이벤트 발행
@@ -48,8 +48,9 @@ MQTT 메시지로 동일한 센서 업무 흐름을 검증합니다.
 SENSOR:HALL01:OCCUPIED:1
 → 설정된 유예시간 동안 VACANT 없이 유지되면 OCCUPIED 확정
 → EV01 최신 ROI Snapshot 저장
-→ OCR 및 EV/PHEV 타이머
-→ T0+30초/60초 parking/capture/EV01 MQTT 요청 발행
+→ T0+30초 ROI 촬영 및 첫 Gemini OCR
+→ 실패 시 T0+60초 ROI 촬영으로 Gemini OCR 재시도
+→ EV/PHEV이면 동일 SQLite session_id로 장기 점유 타이머 등록
 → 제한시간 초과 시 최신 Snapshot 추가 저장
 → parking/v1/events/EV01 및 parking/v1/state/EV01 MQTT 알림
 → Qt가 session_images_url을 HTTP로 조회
@@ -95,12 +96,22 @@ set +a
 ```bash
 export PARKING_TIMER_ENABLED=true
 export PARKING_TIMEOUT_SECONDS=3600
+export PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS=3600
 export PARKING_OCCUPANCY_CONFIRM_MS=10000
 export CAPTURE_SCHED_ENABLED=true
+export HALL_CAPTURE_OCR_ENABLED=true
+# 실기기 반복 시험에서만 예: export CAPTURE_OFFSETS_SEC=5,10
 ```
 
-촬영 scheduler의 MQTT 성공 로그는 Broker에 요청을 발행했다는 뜻이다. 카메라의
-실제 촬영 응답·이미지 다운로드·OCR 연결은 후속 EVDA-138 범위다.
+확정된 입차는 최신 RTSP FrameBuffer의 ROI를
+`OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
+`PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더
+저장한다. 테스트에서는 이 값을 5~10초로 낮출 수 있다.
+
+촬영 scheduler는 MQTT draft 요청 발행과 별개로, Pi가 이미 유지하는 RTSP
+FrameBuffer의 최신 프레임을 ROI crop하여 파일·IMAGE_LOG·Gemini OCR로 연결한다.
+MQTT 발행 성공은 카메라 촬영 성공으로 간주하지 않는다. 카메라의 요청형
+Snapshot 응답 규약은 여전히 EVDA-138에서 확정해야 한다.
 
 가짜 홀센서 입력:
 

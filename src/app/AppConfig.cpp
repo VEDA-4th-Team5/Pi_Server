@@ -124,6 +124,12 @@ AppConfig AppConfig::loadFromEnv() {
         std::max(1, getEnvIntOrDefault("CAPTURE_RETRY_INTERVAL_MS", 2000));
     config.capture_max_retries =
         std::max(0, getEnvIntOrDefault("CAPTURE_MAX_RETRIES", 2));
+    config.hall_capture_ocr_enabled =
+        getEnvBoolOrDefault("HALL_CAPTURE_OCR_ENABLED", true);
+    config.capture_offsets_sec =
+        getEnvOrDefault("CAPTURE_OFFSETS_SEC", "30,60");
+    config.capture_ocr_max_attempts =
+        std::clamp(getEnvIntOrDefault("CAPTURE_OCR_MAX_ATTEMPTS", 2), 1, 2);
 
     config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
     config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");
@@ -174,6 +180,9 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
     config.parking_timeout_seconds =
         std::max(1, getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600));
+    config.parking_overstay_evidence_delay_seconds = std::max(
+        1, getEnvIntOrDefault(
+               "PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS", 3600));
 
     config.http_api_enabled = getEnvBoolOrDefault("HTTP_API_ENABLED", true);
     config.http_listen_address = getEnvOrDefault("HTTP_LISTEN_ADDRESS", "0.0.0.0");

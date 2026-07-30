@@ -35,10 +35,9 @@ const char* toString(const VehicleCategory category) noexcept {
  * @note 이 시각은 DB 기록과 관제 표시용이다. 타이머 경과시간 판정은 시스템 시각
  *       변경의 영향을 받지 않도록 `steady_clock`을 별도로 사용한다.
  */
-std::string utcNow() {
+std::string utcString(const std::chrono::system_clock::time_point now) {
     using namespace std::chrono;
     // 사람이 읽는 wall-clock과 밀리초 부분을 같은 순간에서 얻는다.
-    const auto now = system_clock::now();
     const auto millis = duration_cast<milliseconds>(now.time_since_epoch()) % seconds{1};
     const std::time_t raw_time = system_clock::to_time_t(now);
 
@@ -54,6 +53,10 @@ std::string utcNow() {
     output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%S") << '.' << std::setw(3)
            << std::setfill('0') << millis.count() << 'Z';
     return output.str();
+}
+
+std::string utcNow() {
+    return utcString(std::chrono::system_clock::now());
 }
 
 }  // namespace parking_timer
