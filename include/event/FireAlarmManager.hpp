@@ -14,11 +14,10 @@ namespace event {
 
 struct FireSensorBinding {
     std::string sensorId;
-    std::string slotId;
-    std::string channelId;  // 비면 기본 채널을 쓴다.
+    std::string channelId;
 };
 
-// "FIRE01=EV01:ch01,FIRE02=EV02" 형식을 파싱한다. channel 부분은 생략 가능.
+// "FLAME01=ch01,FLAME02=ch02" 형식의 시연용 채널 매핑을 파싱한다.
 [[nodiscard]] std::vector<FireSensorBinding> parseFireSensorBindings(
     const std::string& spec);
 

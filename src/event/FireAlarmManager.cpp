@@ -10,7 +10,7 @@ namespace event {
 namespace {
 
 // 매핑되지 않은 센서도 토픽 세그먼트가 비지 않도록 이 값으로 보낸다.
-constexpr const char* kUnmappedSlotTopic = "unmapped";
+constexpr const char* kUnmappedChannelTopic = "unmapped";
 
 std::string trim(const std::string& value) {
     const auto first = value.find_first_not_of(" \t\r\n");
@@ -44,16 +44,9 @@ std::vector<FireSensorBinding> parseFireSensorBindings(
         FireSensorBinding binding;
         binding.sensorId = trim(trimmed.substr(0, equals));
 
-        auto target = trim(trimmed.substr(equals + 1));
-        const auto colon = target.find(':');
-        if (colon == std::string::npos) {
-            binding.slotId = target;
-        } else {
-            binding.slotId = trim(target.substr(0, colon));
-            binding.channelId = trim(target.substr(colon + 1));
-        }
+        binding.channelId = trim(trimmed.substr(equals + 1));
 
-        if (binding.sensorId.empty() || binding.slotId.empty()) {
+        if (binding.sensorId.empty() || binding.channelId.empty()) {
             util::logWarn("fire sensor mapping ignored (empty id): " + trimmed);
             continue;
         }
@@ -121,24 +114,21 @@ bool FireAlarmManager::onFireSignal(const FireSignal& signal) {
     }
 
     const FireSensorBinding* binding = findBinding(signal.sensorId);
-    std::string slot_id;
-    std::string channel_id = default_channel_id_;
+    std::string channel_id;
 
     if (binding == nullptr) {
-        // 설정 누락으로 화재 신호를 버리지는 않는다. 주차면 없이라도 올린다.
+        // 설정 누락으로 화재 신호를 버리지는 않되 임의 채널로 귀속하지 않는다.
         util::logError(
-            "fire sensor is not mapped to a slot: " + signal.sensorId);
+            "fire sensor is not mapped to a channel: " + signal.sensorId);
     } else {
-        slot_id = binding->slotId;
-        if (!binding->channelId.empty()) {
-            channel_id = binding->channelId;
-        }
+        channel_id = binding->channelId;
     }
 
     const std::string topic =
-        topic_prefix_ + "/" + (slot_id.empty() ? kUnmappedSlotTopic : slot_id);
+        topic_prefix_ + "/" +
+        (channel_id.empty() ? kUnmappedChannelTopic : channel_id);
     const std::string payload = EventPayloadBuilder::buildFireJson(
-        camera_id_, channel_id, slot_id, signal);
+        camera_id_, channel_id, signal);
 
     if (!publisher_ || !publisher_(topic, payload)) {
         util::logError("fire alarm publish failed: " + topic);
@@ -149,7 +139,7 @@ bool FireAlarmManager::onFireSignal(const FireSignal& signal) {
         "FIRE_ALARM",
         std::string(signal.detected ? "SUSPECTED" : "CLEARED") +
             " sensor=" + signal.sensorId +
-            " slot=" + (slot_id.empty() ? "-" : slot_id) +
+            " channel=" + (channel_id.empty() ? "-" : channel_id) +
             " topic=" + topic +
             " raw=" + signal.rawPayload);
 

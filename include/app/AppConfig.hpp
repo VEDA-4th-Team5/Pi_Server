@@ -79,7 +79,7 @@ struct AppConfig {
     int fire_uart_baud;
     int fire_uart_reopen_delay_ms;
     std::string fire_topic_prefix;
-    std::string fire_sensor_slot_map;
+    std::string fire_sensor_channel_map;
 
     // 홀센서 주차 점유 경로 (STM32 UART -> Pi). 화재 경로와 같은 STM32 UART 링크를
     // 공유하므로 별도 device 설정을 두지 않고 fire_uart_* 를 재사용한다.

@@ -771,10 +771,29 @@ int main() {
             config.camera_id,
             config.default_channel_id,
             config.fire_topic_prefix,
-            event::parseFireSensorBindings(config.fire_sensor_slot_map),
+            event::parseFireSensorBindings(config.fire_sensor_channel_map),
             [&mqtt_bridge](const std::string& topic,
                            const std::string& payload) {
-                return mqtt_bridge.publish(topic, payload);
+                const auto separator = topic.find_last_of('/');
+                const std::string target =
+                    separator == std::string::npos ? "unmapped"
+                                                   : topic.substr(separator + 1);
+
+                // 화재 전용 토픽은 최신 상태 복원용 retained 메시지다. 주차 상태
+                // 토픽에는 화재를 섞지 않고 통합 이벤트 토픽만 함께 발행한다.
+                const bool fire_state_published =
+                    mqtt_bridge.publishApplicationEvent(topic, payload, 1, true);
+                const bool event_published = mqtt_bridge.publishQtEvent(
+                    "parking/v1/events/" + target, payload, 1, false);
+
+                if (!fire_state_published || !event_published) {
+                    util::logError(
+                        "fire alarm MQTT fan-out failed: channel=" + target +
+                        " state=" +
+                        (fire_state_published ? "ok" : "failed") +
+                        " event=" + (event_published ? "ok" : "failed"));
+                }
+                return fire_state_published && event_published;
             });
         util::logInfo(
             "fire alarm enabled: topic_prefix=" + config.fire_topic_prefix +

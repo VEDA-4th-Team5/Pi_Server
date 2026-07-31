@@ -184,8 +184,8 @@ ABI, 권한 설정, `read/write/ioctl/poll` 검증 방법은
 | `FIRE_ALARM_ENABLED` | `false` | 화재 경로 전체 on/off |
 | `FIRE_UART_DEVICE` | `/dev/ttyAMA0` | STM32 UART 장치. 테스트 시 FIFO 경로 |
 | `FIRE_UART_BAUD` | `115200` | 9600/19200/38400/57600/115200 |
-| `FIRE_TOPIC_PREFIX` | `parking/fire` | Qt 발행 토픽 접두사 (임시 확정값) |
-| `FIRE_SENSOR_SLOT_MAP` | (없음) | `FIRE01=EV01:ch01,FIRE02=EV02` |
+| `FIRE_TOPIC_PREFIX` | `parking/fire` | 화재 최신 상태 토픽 접두사 |
+| `FIRE_SENSOR_CHANNEL_MAP` | (없음) | `FLAME01=ch01,FLAME02=ch02,...` |
 
 STM32가 아직 연결되지 않은 동안에는 FIFO로 같은 수신 경로를 검증할 수 있습니다.
 
@@ -194,11 +194,11 @@ tools/fake_fire_sensor.sh --create-fifo /tmp/fake-uart
 
 FIRE_ALARM_ENABLED=true \
 FIRE_UART_DEVICE=/tmp/fake-uart \
-FIRE_SENSOR_SLOT_MAP='FIRE01=EV01' \
+FIRE_SENSOR_CHANNEL_MAP='FLAME01=ch01,FLAME02=ch02,FLAME03=ch03,FLAME04=ch04' \
   ./cmake-build/pi-server
 
 # 다른 터미널에서
-tools/fake_fire_sensor.sh /tmp/fake-uart FIRE01 detected
+tools/fake_fire_sensor.sh /tmp/fake-uart FLAME01 detected
 mosquitto_sub -h localhost -t 'parking/fire/#' -v
 ```
 

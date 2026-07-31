@@ -75,20 +75,20 @@ void testParser() {
 
 void testBindingSpec() {
     const auto bindings =
-        event::parseFireSensorBindings("F1=EV01:ch02, F2=EV02 ,,broken, =EV03");
+        event::parseFireSensorBindings("F1=ch01, F2=ch02 ,,broken, =ch03");
     require(bindings.size() == 2, "only well-formed entries must be kept");
-    require(bindings[0].sensorId == "F1" && bindings[0].slotId == "EV01" &&
-                bindings[0].channelId == "ch02",
-            "channel suffix must be parsed");
-    require(bindings[1].channelId.empty(),
-            "missing channel must fall back to the default");
+    require(bindings[0].sensorId == "F1" &&
+                bindings[0].channelId == "ch01",
+            "first channel mapping mismatch");
+    require(bindings[1].channelId == "ch02",
+            "second channel mapping mismatch");
 }
 
 void testAlarmFlow() {
     std::vector<PublishedMessage> published;
     event::FireAlarmManager manager(
         "cam01", "ch01", "parking/fire",
-        event::parseFireSensorBindings("F1=EV01:ch02"),
+        event::parseFireSensorBindings("F1=ch01"),
         [&published](const std::string& topic, const std::string& payload) {
             published.push_back({topic, payload});
             return true;
@@ -103,15 +103,28 @@ void testAlarmFlow() {
     require(manager.onFireSignal(toSignal(*first)),
             "first detection must publish");
     require(published.size() == 1, "exactly one publish expected");
-    require(published[0].topic == "parking/fire/EV01",
-            "topic must be <prefix>/<slot_id>");
-    require(contains(published[0].payload, "\"slot_id\":\"EV01\""),
-            "slot_id must be mapped from the sensor id");
-    require(contains(published[0].payload, "\"channel_id\":\"ch02\""),
-            "per-binding channel must win over the default");
+    require(published[0].topic == "parking/fire/ch01",
+            "topic must be <prefix>/<channel_id>");
     require(contains(published[0].payload,
-                     "\"event_type\":\"sensor_fire_suspected\""),
+                     "\"event_id\":\"fire-F1-1\""),
+            "source sequence must produce a stable event id");
+    require(contains(published[0].payload, "\"channel_id\":\"ch01\""),
+            "channel_id must be mapped from the sensor id");
+    require(contains(published[0].payload, "\"zone_id\":\"\""),
+            "channel fire must not claim a parking zone");
+    require(contains(published[0].payload, "\"slot_id\":\"\""),
+            "channel fire must not claim a specific slot");
+    require(contains(published[0].payload,
+                     "\"scope\":\"CAMERA_CHANNEL\""),
+            "fire scope must identify a camera channel");
+    require(contains(published[0].payload,
+                     "\"event_type\":\"FIRE_SUSPECTED\""),
             "fire must be published as a candidate, not a confirmation");
+    require(contains(published[0].payload,
+                     "\"alarm_kind\":\"FIRE_SUSPECTED\""),
+            "Qt alarm kind must identify a suspected fire");
+    require(contains(published[0].payload, "\"alarm_state\":\"OPEN\""),
+            "detected fire alarm must be open");
     require(contains(published[0].payload, "\"severity\":\"critical\""),
             "detected fire must be critical");
     require(contains(published[0].payload, "\"active\":true"),
@@ -137,8 +150,16 @@ void testAlarmFlow() {
             "state change back to cleared must publish");
     require(published.size() == 2, "clear must publish once");
     require(contains(published[1].payload,
-                     "\"event_type\":\"sensor_fire_cleared\""),
+                     "\"event_type\":\"FIRE_CLEARED\""),
             "clear event type mismatch");
+    require(contains(published[1].payload,
+                     "\"event_id\":\"fire-F1-3\""),
+            "clear event must carry its source sequence event id");
+    require(contains(published[1].payload, "\"alarm_kind\":\"NONE\""),
+            "cleared fire must remove the Qt alarm kind");
+    require(contains(published[1].payload,
+                     "\"alarm_state\":\"RESOLVED\""),
+            "cleared fire alarm must be resolved");
     require(contains(published[1].payload, "\"active\":false"),
             "cleared fire must not be active");
 }

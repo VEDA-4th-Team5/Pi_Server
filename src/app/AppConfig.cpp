@@ -162,8 +162,9 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("FIRE_UART_REOPEN_DELAY_MS", 2000);
     config.fire_topic_prefix =
         getEnvOrDefault("FIRE_TOPIC_PREFIX", "parking/fire");
-    // "FIRE01=EV01:ch01,FIRE02=EV02" 형식.
-    config.fire_sensor_slot_map = getEnvOrDefault("FIRE_SENSOR_SLOT_MAP", "");
+    // "FLAME01=ch01,FLAME02=ch02" 형식의 시연용 채널별 입력 매핑.
+    config.fire_sensor_channel_map =
+        getEnvOrDefault("FIRE_SENSOR_CHANNEL_MAP", "");
 
     // 홀센서 주차 점유 경로. 화재와 같은 STM32 UART 링크를 공유한다(fire_uart_* 재사용).
     config.parking_hall_enabled =

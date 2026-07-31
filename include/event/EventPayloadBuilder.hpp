@@ -21,7 +21,6 @@ public:
     static std::string buildFireJson(
         const std::string& camera_id,
         const std::string& channel_id,
-        const std::string& slot_id,
         const FireSignal& signal
     );
 };
