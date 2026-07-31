@@ -136,6 +136,17 @@ public:
     std::optional<std::string> findEvidenceImagePath(
         std::int64_t session_id,
         const std::string& evidence_reason) const;
+    /** @brief 활성 세션에 30/60초 ROI 촬영본을 단계별 최대 한 장 연결한다. */
+    EvidenceInsertResult insertHallCaptureImage(
+        std::int64_t session_id,
+        const std::string& original_path,
+        const std::string& enhanced_path,
+        const std::string& enhancement_type,
+        const std::string& captured_at);
+    /** @brief OCR 시도 소진을 UNKNOWN으로 한 번만 EVENT_LOG에 기록한다. */
+    bool markPlateOcrUnresolved(std::int64_t session_id,
+                                const std::string& slot_id,
+                                int attempts);
 
     /** @brief schema와 seed SQL을 적용하며 구형 컬럼을 먼저 호환 마이그레이션한다. */
     void initialize(const std::filesystem::path& schema_file,

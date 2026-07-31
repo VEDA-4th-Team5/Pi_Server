@@ -127,10 +127,11 @@ int main() {
         return 1;
     }
 
-    auto bindings = event::parseFireSensorBindings(config.fire_sensor_slot_map);
+    auto bindings =
+        event::parseFireSensorBindings(config.fire_sensor_channel_map);
     if (bindings.empty()) {
         util::logWarn(
-            "FIRE_SENSOR_SLOT_MAP 이 비어 있음 — slot_id 없이 발행됩니다");
+            "FIRE_SENSOR_CHANNEL_MAP 이 비어 있음 — channel_id 없이 발행됩니다");
     }
 
     event::FireAlarmManager fire_alarm_manager(

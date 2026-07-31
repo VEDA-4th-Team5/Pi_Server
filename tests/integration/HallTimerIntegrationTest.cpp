@@ -92,6 +92,8 @@ int main(int argc, char* argv[]) {
         require(argc >= 2, "parking slot fixture path is required");
         auto configs = parking::ParkingSlotConfigLoader::loadFromFile(argv[1]);
 
+        // bounded queue 정책은 같은 슬롯의 최신 상태를 병합하고, 다른 슬롯이
+        // capacity를 넘을 때만 거부해야 한다.
         sensor::HallParkingWorkQueue bounded_queue(1);
         sensor::HallParkingWorkItem occupied;
         occupied.event.slotId = "EV01";
@@ -281,12 +283,15 @@ int main(int argc, char* argv[]) {
                             std::to_string(first->id),
                     "departure did not cancel the SQLite capture schedule");
         }
-        require(!std::filesystem::exists(first_path),
-                "early departure did not remove Snapshot file");
         first_images.clear();
-        require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
-                    first_images.empty(),
-                "early departure did not remove IMAGE_LOG rows");
+        require(waitUntil([&] {
+                    first_images.clear();
+                    return !std::filesystem::exists(first_path) &&
+                           database.listSessionImages(
+                               static_cast<int>(first->id), first_images) &&
+                           first_images.empty();
+                }, 1s),
+                "early departure did not remove Snapshot/IMAGE_LOG data");
         std::this_thread::sleep_for(100ms);
         require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
                     first_images.empty(),
@@ -350,12 +355,14 @@ int main(int argc, char* argv[]) {
         for (const auto& image : violation_images)
             require(std::filesystem::exists(image.original_path),
                     "violation evidence path does not contain a real file");
-        {
-            std::lock_guard lock(event_mutex);
-            require(std::find(published_events.begin(), published_events.end(),
-                              "VIOLATION_TRIGGERED") != published_events.end(),
-                    "violation event was not sent to the external publisher");
-        }
+        require(waitUntil([&] {
+                    std::lock_guard lock(event_mutex);
+                    return std::find(published_events.begin(),
+                                     published_events.end(),
+                                     "VIOLATION_TRIGGERED") !=
+                           published_events.end();
+                }, 1s),
+                "violation event was not sent to the external publisher");
 
         require(service.handleLine("SENSOR:HALL01:VACANT:5"),
                 "post-violation VACANT was rejected");
@@ -364,6 +371,89 @@ int main(int argc, char* argv[]) {
                     static_cast<int>(second->id), violation_images) &&
                     violation_images.size() == 2,
                 "violation evidence was incorrectly deleted on departure");
+        require(waitUntil([&] {
+                    return !database.findActiveBySlot("EV01").has_value();
+                }, 1s),
+                "violating session departure did not finish before next entry");
+
+        // 일반 차량은 OCR 직후 즉시 위반이며, 출차해도 시작 증거를 보존한다.
+        require(service.handleLine("SENSOR:HALL01:OCCUPIED:6"),
+                "NON_EV OCCUPIED was rejected");
+        require(waitUntil([&] {
+                    return database.findActiveBySlot("EV01").has_value();
+                }, 1s),
+                "NON_EV session was not created");
+        auto non_ev = database.findActiveBySlot("EV01");
+        require(non_ev.has_value(), "NON_EV active session is missing");
+        std::vector<database::ImageView> non_ev_images;
+        require(waitUntil([&] {
+                    non_ev_images.clear();
+                    return database.listSessionImages(
+                               static_cast<int>(non_ev->id), non_ev_images) &&
+                           non_ev_images.size() == 1;
+                }, 1s),
+                "NON_EV start evidence was not stored");
+        const std::string non_ev_path = non_ev_images.front().original_path;
+        require(database.applyPlateOcr(
+                    static_cast<int>(non_ev->id), "EV01", non_ev_path,
+                    "345다6789", 0.98) == "NON_EV",
+                "seeded general vehicle was not classified as NON_EV");
+        const auto non_ev_result = timer_manager.handleRecognizedSession(
+            non_ev->id, "EV01", "345다6789");
+        require(!non_ev_result.accepted &&
+                    non_ev_result.category ==
+                        parking_timer::VehicleCategory::NonEv,
+                "NON_EV was incorrectly registered in overtime timer");
+        const auto non_ev_violation = database.findLogById(non_ev->id);
+        require(non_ev_violation &&
+                    non_ev_violation->status == "VIOLATION" &&
+                    non_ev_violation->violation_at.has_value(),
+                "NON_EV did not become an immediate violation");
+        {
+            std::lock_guard lock(event_mutex);
+            require(std::find(published_events.begin(), published_events.end(),
+                              "NON_EV_ALERT") != published_events.end(),
+                    "NON_EV alert was not sent to the external publisher");
+        }
+        require(service.handleLine("SENSOR:HALL01:VACANT:7"),
+                "NON_EV VACANT was rejected");
+        non_ev_images.clear();
+        require(database.listSessionImages(
+                    static_cast<int>(non_ev->id), non_ev_images) &&
+                    non_ev_images.size() == 1 &&
+                    std::filesystem::exists(non_ev_path),
+                "NON_EV evidence was incorrectly deleted on departure");
+
+        // 재시작을 모사해 메모리 상태에는 없고 DB에만 남은 ACTIVE를 만든다.
+        const auto adopted_id = database.createHallSession(
+            "EV02", "HALL02", parking_timer::utcNow());
+        const auto count_before_adopt = database.listLogs().size();
+        require(service.handleLine("SENSOR:HALL02:OCCUPIED:1"),
+                "recovery OCCUPIED was rejected");
+        require(waitUntil([&] {
+                    const auto active = database.findActiveBySlot("EV02");
+                    return active && active->id == adopted_id;
+                }, 1s),
+                "existing ACTIVE session was not adopted");
+        std::this_thread::sleep_for(80ms);
+        require(database.listLogs().size() == count_before_adopt,
+                "adopting an ACTIVE session created a duplicate row");
+        require(service.handleLine("SENSOR:HALL02:VACANT:2"),
+                "adopted session VACANT was rejected");
+        require(waitUntil([&] {
+                    return !database.findActiveBySlot("EV02").has_value();
+                }, 1s),
+                "adopted ACTIVE session was not closed by VACANT");
+
+        const auto stale_id = database.createHallSession(
+            "EV03", "HALL03", parking_timer::utcNow());
+        require(stale_id > 0, "stale session fixture was not created");
+        require(service.handleLine("SENSOR:HALL03:VACANT:1"),
+                "startup VACANT reconciliation was rejected");
+        require(waitUntil([&] {
+                    return !database.findActiveBySlot("EV03").has_value();
+                }, 1s),
+                "VACANT did not close a DB-only stale ACTIVE session");
 
         system_events.stop();
         std::cout << "[PASS] hall→snapshot→timer→violation→retention flow\n";

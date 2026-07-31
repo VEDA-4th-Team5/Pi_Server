@@ -119,7 +119,7 @@ bool HallParkingService::handleLine(const std::string& line,
     std::string error;
     auto message = parser_.parse(line, std::chrono::system_clock::now(), &error);
     if (!message) {
-        util::logWarn("Hall sensor message rejected: " + error);
+        util::logWarn("Hall sensor message rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorMessageInvalid,
                ::event::SystemEventSeverity::Warning, error, transport);
         return false;
@@ -127,14 +127,14 @@ bool HallParkingService::handleLine(const std::string& line,
     message->transport = transport;
     auto event = adapter_.adapt(*message, &error);
     if (!event) {
-        util::logWarn("Hall sensor event rejected: " + error);
+        util::logWarn("Hall sensor event rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorNotMapped,
                ::event::SystemEventSeverity::Warning,
                error + "; sensor_id=" + message->sensorId, transport);
         return false;
     }
     if (!sequence_guard_.accept(*event, &error)) {
-        util::logWarn("Hall sensor event rejected: " + error);
+        util::logWarn("Hall sensor event rejected: " + error + " | " + line);
         report(::event::SystemEventCode::SensorSequenceRejected,
                ::event::SystemEventSeverity::Warning, error, transport,
                event->slotId);
@@ -152,6 +152,13 @@ bool HallParkingService::processEventLocked(
         const bool already_occupied = slot != nullptr && slot->occupied();
         if (confirmation_gate_->evaluate(event, already_occupied) ==
             parking::ParkingOccupancyConfirmationGate::Decision::Suppress) {
+            if (event.state == parking::ParkingSensorState::Vacant) {
+                parking::ParkingTransitionResult recovery_transition;
+                recovery_transition.slotId = event.slotId;
+                recovery_transition.sessionId.clear();
+                if (!enqueueWorkLocked({event, recovery_transition}))
+                    return false;
+            }
             confirmation_condition_.notify_all();
             util::logInfo("Hall sensor event awaiting confirmation: slot=" +
                           event.slotId + " state=" +
@@ -165,6 +172,11 @@ bool HallParkingService::processEventLocked(
     if (!canEnqueueWorkLocked(event)) return false;
     const auto transition = occupancy_manager_.handle(event);
     if (!transition.changed()) {
+        // 재시작 직후 메모리 상태는 VACANT지만 DB에는 이전 ACTIVE가 남을 수
+        // 있다. VACANT는 비동기 worker에서 DB와 대조해 stale 세션을 닫는다.
+        if (event.state == parking::ParkingSensorState::Vacant) {
+            if (!enqueueWorkLocked({event, transition})) return false;
+        }
         util::logInfo("Hall sensor event ignored: slot=" + event.slotId +
                       " reason=" + transition.message);
         return true;
@@ -175,6 +187,7 @@ bool HallParkingService::processEventLocked(
 bool HallParkingService::canEnqueueWorkLocked(
     const parking::ParkingSensorEvent& event) {
     if (work_queue_.canAccept(event.slotId)) return true;
+
     const std::string message =
         "hall work queue full; newest distinct-slot event rejected; size=" +
         std::to_string(work_queue_.size()) + " capacity=" +
@@ -192,10 +205,13 @@ bool HallParkingService::enqueueWorkLocked(HallParkingWorkItem item) {
     const auto latest_state = item.event.state;
     const auto result = work_queue_.push(std::move(item));
     if (result == HallParkingWorkQueue::PushResult::Coalesced) {
-        util::logLine("HALL_WORK_QUEUE",
+        util::logLine(
+            "HALL_WORK_QUEUE",
             "pending slot event coalesced slot=" + slot_id + " latest=" +
             (latest_state == parking::ParkingSensorState::Occupied
                  ? "OCCUPIED" : "VACANT"));
+        work_condition_.notify_one();
+        return true;
     }
     if (result == HallParkingWorkQueue::PushResult::Full) return false;
     work_condition_.notify_one();
@@ -225,10 +241,16 @@ bool HallParkingService::handleOccupied(
         return false;
     }
     std::int64_t session_id = -1;
+    bool adopted_existing = false;
     try {
-        session_id = database_.createHallSession(
-            event.slotId, event.sensorId,
-            parking_timer::utcString(event.occurredAt));
+        if (const auto existing = database_.findActiveBySlot(event.slotId)) {
+            session_id = existing->id;
+            adopted_existing = true;
+        } else {
+            session_id = database_.createHallSession(
+                event.slotId, event.sensorId,
+                parking_timer::utcString(event.occurredAt));
+        }
     } catch (const std::exception& error) {
         report(::event::SystemEventCode::SensorHandlerFailed,
                ::event::SystemEventSeverity::Error,
@@ -237,8 +259,18 @@ bool HallParkingService::handleOccupied(
         return false;
     }
     event_manager_.publish("SLOT_OCCUPIED", event.slotId, "",
-                           parking_timer::utcNow(), "evidence capture scheduled",
+                           parking_timer::utcNow(),
+                           adopted_existing ? "existing session adopted"
+                                            : "evidence capture scheduled",
                            session_id);
+    if (adopted_existing) {
+        // 이미 시작 증거/타이머가 존재할 수 있으므로 T0를 현재 시각으로 다시
+        // 잡아 촬영을 중복 예약하지 않는다. 이후 VACANT는 같은 ID를 종료한다.
+        util::logLine("HALL_RECOVERY", "active session adopted slot=" +
+                      event.slotId + " session=" +
+                      std::to_string(session_id));
+        return true;
+    }
     if (transition_sink_) {
         auto database_transition = transition;
         database_transition.sessionId = std::to_string(session_id);
@@ -282,6 +314,8 @@ bool HallParkingService::handleVacant(
 
     if (transition_sink_) {
         auto database_transition = transition;
+        database_transition.code =
+            parking::ParkingTransitionCode::SessionCompleted;
         database_transition.sessionId = std::to_string(departed->id);
         transition_sink_(database_transition);
     }

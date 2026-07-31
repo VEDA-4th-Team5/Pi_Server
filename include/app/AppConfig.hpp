@@ -21,6 +21,8 @@ struct IvaAreaConfig {
     double roi_y;
     double roi_width;
     double roi_height;
+    // CV Snapshot OpenAPI의 0-based channel. RTSP channel_id와 별도다.
+    int snapshot_api_channel{0};
 };
 
 struct AppConfig {
@@ -51,6 +53,24 @@ struct AppConfig {
     int capture_response_timeout_ms;
     int capture_retry_interval_ms;
     int capture_max_retries;
+    // 실제 RTSP ROI 30/60초 촬영을 Gemini 재시도 정책에 연결한다.
+    bool hall_capture_ocr_enabled;
+    std::string capture_offsets_sec;
+    int capture_ocr_max_attempts;
+
+    // CV5 cv_snapshot_api에서 original/enhanced JPEG를 생성·다운로드한다.
+    bool camera_snapshot_api_enabled;
+    bool camera_snapshot_api_rtsp_fallback;
+    std::string camera_open_api_base;
+    std::string camera_image_base;
+    std::string camera_api_username;
+    std::string camera_api_password;
+    int camera_image_server_port;
+    int camera_snapshot_connect_timeout_ms;
+    int camera_snapshot_request_timeout_ms;
+    int camera_snapshot_jpeg_timeout_ms;
+    int camera_snapshot_max_retries;
+    int camera_snapshot_retry_delay_ms;
 
     // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
     // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
@@ -59,7 +79,7 @@ struct AppConfig {
     int fire_uart_baud;
     int fire_uart_reopen_delay_ms;
     std::string fire_topic_prefix;
-    std::string fire_sensor_slot_map;
+    std::string fire_sensor_channel_map;
 
     // 홀센서 주차 점유 경로 (STM32 UART -> Pi). 화재 경로와 같은 STM32 UART 링크를
     // 공유하므로 별도 device 설정을 두지 않고 fire_uart_* 를 재사용한다.

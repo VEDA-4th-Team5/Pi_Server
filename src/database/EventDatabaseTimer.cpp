@@ -396,6 +396,104 @@ std::optional<std::string> EventDatabase::findEvidenceImagePath(
     return columnText(statement.get(), 0);
 }
 
+EvidenceInsertResult EventDatabase::insertHallCaptureImage(
+    const std::int64_t session_id,
+    const std::string& original_path,
+    const std::string& enhanced_path,
+    const std::string& enhancement_type,
+    const std::string& captured_at) {
+    if (session_id < 0 || original_path.empty() || captured_at.empty() ||
+        (enhancement_type != "HALL_30S" &&
+         enhancement_type != "HALL_60S")) {
+        throw std::invalid_argument("invalid hall capture image fields");
+    }
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr)
+        throw std::runtime_error("cannot insert hall capture in a closed database");
+
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
+        Statement existing(db_,
+            "SELECT 1 FROM IMAGE_LOG WHERE session_id=? "
+            "AND enhancement_type=? LIMIT 1;");
+        existing.bindInt64(1, session_id);
+        existing.bindText(2, enhancement_type);
+        if (sqlite3_step(existing.get()) == SQLITE_ROW) {
+            executeSqlUnlocked("COMMIT;");
+            return EvidenceInsertResult::Duplicate;
+        }
+
+        Statement active(db_,
+            "SELECT 1 FROM PARKING_SESSION WHERE session_id=? "
+            "AND status IN ('ACTIVE','VIOLATION') AND exit_time IS NULL;");
+        active.bindInt64(1, session_id);
+        if (sqlite3_step(active.get()) != SQLITE_ROW) {
+            executeSqlUnlocked("COMMIT;");
+            return EvidenceInsertResult::InactiveSession;
+        }
+
+        Statement image(db_,
+            "INSERT INTO IMAGE_LOG(session_id,original_image_path,"
+            "enhanced_image_path,enhancement_type,captured_at) "
+            "VALUES(?,?,?,?,?);");
+        image.bindInt64(1, session_id);
+        image.bindText(2, original_path);
+        if (enhanced_path.empty()) {
+            if (sqlite3_bind_null(image.get(), 3) != SQLITE_OK)
+                throw std::runtime_error("SQLite hall enhanced NULL bind failed");
+        } else {
+            image.bindText(3, enhanced_path);
+        }
+        image.bindText(4, enhancement_type);
+        image.bindText(5, captured_at);
+        requireDone(db_, image.get());
+
+        Statement event(db_,
+            "INSERT INTO EVENT_LOG(session_id,slot_id,event_type,message) "
+            "SELECT ?,slot_id,'HALL_CAPTURE_STORED',? "
+            "FROM PARKING_SESSION WHERE session_id=?;");
+        event.bindInt64(1, session_id);
+        event.bindText(2, "type=" + enhancement_type +
+                               " image=" + original_path);
+        event.bindInt64(3, session_id);
+        requireDone(db_, event.get());
+        executeSqlUnlocked("COMMIT;");
+        return EvidenceInsertResult::Inserted;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
+    }
+}
+
+bool EventDatabase::markPlateOcrUnresolved(
+    const std::int64_t session_id,
+    const std::string& slot_id,
+    const int attempts) {
+    if (session_id < 0 || attempts < 1) return false;
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) return false;
+
+    Statement existing(db_,
+        "SELECT 1 FROM EVENT_LOG WHERE session_id=? "
+        "AND event_type='PLATE_OCR_UNRESOLVED' LIMIT 1;");
+    existing.bindInt64(1, session_id);
+    if (sqlite3_step(existing.get()) == SQLITE_ROW) return true;
+
+    Statement event(db_,
+        "INSERT INTO EVENT_LOG(session_id,slot_id,event_type,message) "
+        "VALUES(?,?,'PLATE_OCR_UNRESOLVED',?);");
+    event.bindInt64(1, session_id);
+    if (slot_id.empty()) {
+        if (sqlite3_bind_null(event.get(), 2) != SQLITE_OK) return false;
+    } else {
+        event.bindText(2, slot_id);
+    }
+    event.bindText(3, "ocr_status=FAILED ev_status=UNKNOWN attempts=" +
+                           std::to_string(attempts));
+    requireDone(db_, event.get());
+    return true;
+}
+
 /**
  * @brief 차량번호를 마스터 테이블에서 조회해 EV 분류를 반환한다.
  *

@@ -89,6 +89,24 @@ add_executable(parking-occupancy-confirmation-gate-test
 target_include_directories(parking-occupancy-confirmation-gate-test PRIVATE include)
 target_compile_options(parking-occupancy-confirmation-gate-test PRIVATE -Wall -Wextra)
 
+add_executable(hall-ocr-policy-test
+    tests/unit/HallOcrPolicyTest.cpp
+    src/parking/HallOcrPolicy.cpp)
+target_include_directories(hall-ocr-policy-test PRIVATE include)
+target_compile_options(hall-ocr-policy-test PRIVATE -Wall -Wextra)
+add_test(NAME hall-ocr-policy-test COMMAND hall-ocr-policy-test)
+
+add_executable(hall-capture-coordinator-test
+    tests/unit/HallCaptureCoordinatorTest.cpp
+    src/parking/HallCaptureCoordinator.cpp
+    src/parking/HallOcrPolicy.cpp
+    src/util/Logger.cpp)
+target_include_directories(hall-capture-coordinator-test PRIVATE include)
+target_compile_options(hall-capture-coordinator-test PRIVATE -Wall -Wextra)
+target_link_libraries(hall-capture-coordinator-test PRIVATE Threads::Threads)
+add_test(NAME hall-capture-coordinator-test
+    COMMAND hall-capture-coordinator-test)
+
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
     src/event/FireAlarmManager.cpp
@@ -263,6 +281,34 @@ target_compile_definitions(evidence-capture-worker-test PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 add_test(NAME evidence-capture-worker-test COMMAND evidence-capture-worker-test)
 
+add_executable(hall-capture-pipeline-test
+    tests/integration/HallCapturePipelineTest.cpp
+    src/camera/CameraSnapshotApiClient.cpp
+    src/parking/HallCaptureExecutor.cpp
+    src/parking/HallCaptureCoordinator.cpp
+    src/parking/HallOcrPolicy.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(hall-capture-pipeline-test PRIVATE include)
+target_compile_options(hall-capture-pipeline-test PRIVATE -Wall -Wextra)
+target_link_libraries(hall-capture-pipeline-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV PkgConfig::CURL Threads::Threads)
+target_compile_definitions(hall-capture-pipeline-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME hall-capture-pipeline-test COMMAND hall-capture-pipeline-test)
+
+add_executable(camera-snapshot-api-client-test
+    tests/integration/CameraSnapshotApiClientTest.cpp
+    src/camera/CameraSnapshotApiClient.cpp
+    src/util/Logger.cpp)
+target_include_directories(camera-snapshot-api-client-test PRIVATE include)
+target_compile_options(camera-snapshot-api-client-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(camera-snapshot-api-client-test PRIVATE
+    PkgConfig::CURL PkgConfig::HTTPLIB Threads::Threads)
+add_test(NAME camera-snapshot-api-client-test
+    COMMAND camera-snapshot-api-client-test)
+
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
     src/http/ParkingHttpServer.cpp)
@@ -272,8 +318,15 @@ target_link_libraries(http-api-test PRIVATE
     parking-timer-core PkgConfig::HTTPLIB sqlite3 Threads::Threads)
 add_test(NAME http-api-test COMMAND http-api-test)
 
-# 사람이 관리하는 코드 가이드를 PDF로 생성한다.
+add_executable(code-doc-generator EXCLUDE_FROM_ALL
+    tools/code_doc_generator.cpp)
+target_compile_features(code-doc-generator PRIVATE cxx_std_20)
+target_compile_options(code-doc-generator PRIVATE -Wall -Wextra -Wpedantic)
+
+# 아키텍처 Markdown과 C/C++ 파일·함수 목록을 합쳐 Markdown/PDF를 생성한다.
 add_custom_target(docs
     COMMAND ${CMAKE_SOURCE_DIR}/tools/build_docs.sh
+            $<TARGET_FILE:code-doc-generator>
+    DEPENDS code-doc-generator
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Generating Pi Server code guide PDF")
+    COMMENT "Generating Pi Server Markdown and PDF code guide")

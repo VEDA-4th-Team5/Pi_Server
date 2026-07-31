@@ -126,6 +126,8 @@ int main() {
                     .has_value(),
                 "canceled fixture session was not closed");
 
+        // 재시작 복원: DB에 시작 증거만 남은 ACTIVE 세션은 원래 T0에서
+        // 계산한 남은 시간 뒤 초과 증거만 한 번 예약해야 한다.
         const auto restored_session = database.createHallSession(
             "EV03", "HALL03", "2026-07-27T09:15:00");
         const std::string restored_start_path = storage.saveEvidenceSnapshot(

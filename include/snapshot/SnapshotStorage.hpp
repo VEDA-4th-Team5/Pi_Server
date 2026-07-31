@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace snapshot {
 
@@ -14,6 +15,11 @@ struct NormalizedRoi {
     double y;
     double width;
     double height;
+};
+
+struct StoredImagePair {
+    std::string originalPath;
+    std::string enhancedPath;
 };
 
 class SnapshotStorage {
@@ -44,6 +50,25 @@ public:
         const NormalizedRoi& roi
     );
 
+    /** @brief 30/60초 홀 촬영본을 실제 DB 세션 ID가 포함된 이름으로 저장한다. */
+    std::string saveHallCaptureSnapshot(
+        const std::shared_ptr<camera::CameraChannel>& channel,
+        std::int64_t session_id,
+        const std::string& slot_id,
+        const std::string& capture_stage,
+        const NormalizedRoi& roi
+    );
+
+    /** @brief 카메라 CAP에서 받은 original/enhanced JPEG를 원자적으로 저장한다. */
+    StoredImagePair saveCameraApiHallCapture(
+        const std::string& channel_id,
+        std::int64_t session_id,
+        const std::string& slot_id,
+        const std::string& capture_stage,
+        const std::vector<unsigned char>& original_jpeg,
+        const std::vector<unsigned char>& enhanced_jpeg
+    );
+
 private:
     std::string saveAreaSnapshot(
         const std::shared_ptr<camera::CameraChannel>& channel,
@@ -54,6 +79,7 @@ private:
     std::string snapshot_dir_;
     int snapshot_frame_wait_ms_;
     std::atomic<bool>& running_;
+    std::atomic<std::uint64_t> next_file_sequence_{0};
 };
 
 }

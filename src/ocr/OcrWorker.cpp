@@ -67,7 +67,7 @@ void OcrWorker::enqueue(int session_id, const std::string& slot_id,
         util::logInfo("duplicate OCR image suppressed: " + image_path);
         return;
     }
-    queue_.push({session_id, slot_id, image_path, false, ""});
+    queue_.push({session_id, slot_id, image_path, false, "", false, 0});
     condition_.notify_one();
 }
 
@@ -85,8 +85,40 @@ void OcrWorker::enqueueScene(const std::string& slot_id,
         enhanced_image_path.empty()) return;
     if (queue_.size() >= 32 || !accepted_images_.insert(image_path).second) return;
     // IVA ROI 후보를 별도로 자르지 않고 원본과 이미 생성된 개선본을 함께 보낸다.
-    queue_.push({-1, slot_id, image_path, false, enhanced_image_path});
+    queue_.push({-1, slot_id, image_path, false, enhanced_image_path, false, 0});
     condition_.notify_one();
+}
+
+void OcrWorker::setHallCaptureCallback(HallCaptureCallback callback) {
+    std::lock_guard lock(mutex_);
+    hall_callback_ = std::move(callback);
+}
+
+void OcrWorker::enqueueHallCapture(const HallCaptureTask& request) {
+    HallCaptureCallback rejected;
+    {
+        std::lock_guard lock(mutex_);
+        const bool acceptable = started_ && request.session_id >= 0 &&
+                                !request.image_path.empty() &&
+                                !canceled_session_ids_.contains(
+                                    static_cast<int>(request.session_id));
+        if (acceptable && queue_.size() < 32 &&
+            accepted_images_.insert(request.image_path).second) {
+            queue_.push({static_cast<int>(request.session_id), request.slot_id,
+                         request.image_path, false, request.enhanced_path, true,
+                         request.stage});
+            condition_.notify_one();
+            return;
+        }
+        rejected = hall_callback_;
+    }
+    util::logWarn("hall capture OCR rejected: path=" + request.image_path);
+    if (rejected) {
+        HallCaptureResult result;
+        result.session_id = request.session_id;
+        result.stage = request.stage;
+        rejected(result);
+    }
 }
 
 void OcrWorker::run() {
@@ -104,6 +136,33 @@ void OcrWorker::run() {
             }
         }
 
+        HallCaptureResult hall_result;
+        hall_result.session_id = task.session_id;
+        hall_result.stage = task.hall_stage;
+        process(task, hall_result);
+
+        if (task.hall) {
+            HallCaptureCallback callback;
+            {
+                std::lock_guard lock(mutex_);
+                if (canceled_session_ids_.contains(task.session_id)) continue;
+                callback = hall_callback_;
+            }
+            if (callback) {
+                try {
+                    callback(hall_result);
+                } catch (const std::exception& error) {
+                    util::logError("Hall OCR callback failed: " +
+                                   std::string(error.what()));
+                } catch (...) {
+                    util::logError("Hall OCR callback failed: unknown error");
+                }
+            }
+        }
+    }
+}
+
+void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         PlatePreprocessResult processed;
         std::string ocr_input = task.image_path;
         if (!task.provided_enhanced_path.empty())
@@ -111,14 +170,14 @@ void OcrWorker::run() {
         if (!preprocess_enabled_ && task.detect_candidate) {
             util::logInfo("IVA plate preprocessing disabled; OCR skipped: path=" +
                           task.image_path);
-            continue;
+            return;
         }
         if (preprocess_enabled_ && task.provided_enhanced_path.empty()) {
             processed = preprocessPlateImage(task.image_path, task.detect_candidate);
             if (task.detect_candidate && !processed.candidate_detected) {
                 util::logInfo("No plausible plate candidate in IVA scene: path=" +
                               task.image_path);
-                continue;
+                return;
             }
             if (!processed.enhanced_path.empty()) {
                 database_.attachEnhancedPlateImage(task.image_path,
@@ -136,7 +195,7 @@ void OcrWorker::run() {
                     std::error_code ignored;
                     std::filesystem::remove(processed.enhanced_path, ignored);
                 }
-                continue;
+                return;
             }
         }
 
@@ -159,7 +218,7 @@ void OcrWorker::run() {
         if (!result.success) {
             util::logError("Gemini OCR failed: path=" + task.image_path +
                            " error=" + result.error);
-            continue;
+            return;
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -169,7 +228,7 @@ void OcrWorker::run() {
                     std::error_code ignored;
                     std::filesystem::remove(processed.enhanced_path, ignored);
                 }
-                continue;
+                return;
             }
         }
         std::string plate = normalizePlateNumber(result.plate_number);
@@ -177,7 +236,7 @@ void OcrWorker::run() {
             util::logWarn("Gemini OCR unreadable: path=" + task.image_path);
             database_.applyPlateOcr(task.session_id, task.slot_id,
                                     task.image_path, "", result.confidence);
-            continue;
+            return;
         }
         std::string classification = database_.applyPlateOcr(
             task.session_id, task.slot_id, task.image_path, plate,
@@ -185,7 +244,11 @@ void OcrWorker::run() {
         util::logLine("PLATE_OCR", "slot=" + task.slot_id +
                       " plate=" + plate + " class=" + classification +
                       " confidence=" + std::to_string(result.confidence));
-        if (result_callback_ && task.session_id >= 0) {
+        hall_result.recognized = true;
+        hall_result.plate_number = plate;
+        hall_result.confidence = result.confidence;
+        hall_result.classification = classification;
+        if (!task.hall && result_callback_ && task.session_id >= 0) {
             try {
                 result_callback_({task.session_id, task.slot_id, plate,
                                   classification, result.confidence});
@@ -196,7 +259,6 @@ void OcrWorker::run() {
                 util::logError("OCR result callback failed: unknown error");
             }
         }
-    }
 }
 
 }

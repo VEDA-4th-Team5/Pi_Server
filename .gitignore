@@ -12,6 +12,7 @@ data/db/backups/*.db
 *.sqlite3-wal
 build/
 cmake-build/
+docs/generated/*.tmp
 *.o
 *.d
 # Linux out-of-tree kernel module build products
@@ -23,3 +24,4 @@ cmake-build/
 Module.symvers
 modules.order
 .tmp_versions/
+data/snapshots/

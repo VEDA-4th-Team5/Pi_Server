@@ -25,10 +25,10 @@
 ## Current Camera / Network Context
 
 - Camera model: Hanwha Vision PNO-A9081R
-- Camera IP: 172.20.35.76
+- Camera IP: 172.20.32.99
 - RTSP profile candidate:
-  - `rtsp://<USER>:<PASSWORD>@172.20.35.76:554/profile2/media.smp`
-  - `rtsp://<USER>:<PASSWORD>@172.20.35.76:554/profile1/media.smp`
+  - `rtsp://<USER>:<PASSWORD>@172.20.32.99:554/profile2/media.smp`
+  - `rtsp://<USER>:<PASSWORD>@172.20.32.99:554/profile1/media.smp`
 - 비밀번호는 코드나 Git 저장소에 직접 커밋하지 않는다.
 - 카메라 계정 정보는 환경변수 또는 별도 로컬 설정 파일로 관리한다.
 

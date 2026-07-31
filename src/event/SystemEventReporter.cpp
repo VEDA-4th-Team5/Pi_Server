@@ -49,9 +49,23 @@ std::string toString(const SystemEventSeverity severity) {
     return "ERROR";
 }
 
+std::string systemAlarmKind(const SystemEvent& event) {
+    return event.recovered ? "NONE" : "SENSOR_ERROR";
+}
+
+std::string systemAlarmState(const SystemEvent& event) {
+    return event.recovered ? "RESOLVED" : "OPEN";
+}
+
 std::string serializeSystemEvent(const SystemEvent& event) {
     std::ostringstream output;
-    output << "{\"source\":\"" << util::jsonEscape(toString(event.source))
+    output << "{\"alarm_kind\":\""
+           << util::jsonEscape(systemAlarmKind(event))
+           << "\",\"alarm_state\":\""
+           << util::jsonEscape(systemAlarmState(event))
+           << "\",\"error_code\":\""
+           << util::jsonEscape(toString(event.code))
+           << "\",\"source\":\"" << util::jsonEscape(toString(event.source))
            << "\",\"severity\":\"" << util::jsonEscape(toString(event.severity))
            << "\",\"transport\":\"" << util::jsonEscape(event.transport)
            << "\",\"device\":\"" << util::jsonEscape(event.device)

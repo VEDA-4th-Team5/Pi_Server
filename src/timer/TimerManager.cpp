@@ -200,6 +200,8 @@ void TimerManager::processExpired(TimerItem item) {
                 provider_failed = true;
                 reportError(item, "violation Snapshot failed: unknown error");
             }
+            // Evidence worker와 장기점유 timer가 같은 T0 deadline에서 깨어날 수 있다.
+            // 빈 경로를 즉시 확정하지 않고 최대 5초 동안 비동기 증거 저장을 기다린다.
             if (!provider_failed && image_path.empty() &&
                 item.evidence_retry_count < 10) {
                 if (transition_lock.owns_lock()) transition_lock.unlock();
