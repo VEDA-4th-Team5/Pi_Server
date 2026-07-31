@@ -174,10 +174,13 @@ constexpr std::string_view kLogSelect =
     "CASE s.status WHEN 'ACTIVE' THEN 'PARKED' WHEN 'ENDED' THEN 'DEPARTS' "
     "ELSE s.status END, s.entry_time, s.violation_at, s.exit_time, "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
-    "AND i.enhancement_type IN ('TIMER_ENTRY','HALL_ENTRY','BESTSHOT_VEHICLE') "
+    "AND (i.enhancement_type IN ('TIMER_ENTRY','HALL_ENTRY','BESTSHOT_VEHICLE') "
+    "OR i.evidence_reason='OCCUPANCY_START_EVIDENCE') "
     "ORDER BY i.image_id LIMIT 1), "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
-    "AND i.enhancement_type='TIMER_VIOLATION' ORDER BY i.image_id DESC LIMIT 1), "
+    "AND (i.enhancement_type='TIMER_VIOLATION' "
+    "OR i.evidence_reason='OVERSTAY_EVIDENCE') "
+    "ORDER BY i.image_id DESC LIMIT 1), "
     "CASE WHEN s.exit_time IS NULL THEN 0 ELSE 1 END FROM PARKING_SESSION s ";
 
 bool tableHasColumn(sqlite3* database, const std::string_view table,
@@ -243,6 +246,10 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
         !tableHasColumn(db_, "PARKING_SESSION", "violation_at")) {
         executeSqlUnlocked("ALTER TABLE PARKING_SESSION ADD COLUMN violation_at TEXT;");
     }
+    if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
+        !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+        executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
+    }
     // 스키마는 IF NOT EXISTS로 멱등하며, seed 전체만 별도 원자적 단위로 처리한다.
     executeSqlUnlocked(schema);
     executeSqlUnlocked("BEGIN IMMEDIATE;");
@@ -253,6 +260,140 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
         sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         throw;
     }
+}
+
+void EventDatabase::migrateRuntimeSchema() {
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) {
+        throw std::runtime_error("cannot migrate a closed SQLite database");
+    }
+    if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
+        !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+        executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
+    }
+    if (tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+        executeSqlUnlocked(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_image_evidence_session_reason "
+            "ON IMAGE_LOG(session_id, evidence_reason) "
+            "WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;");
+    }
+}
+
+std::int64_t EventDatabase::createHallSession(
+    const std::string& slot_id,
+    const std::string& source_id,
+    const std::string& entry_time) {
+    if (slot_id.empty() || entry_time.empty()) {
+        throw std::invalid_argument("hall session fields must not be empty");
+    }
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) {
+        throw std::runtime_error("cannot create session in a closed database");
+    }
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
+        Statement slot(db_,
+            "UPDATE PARKING_SLOT SET status='OCCUPIED', updated_at=? "
+            "WHERE slot_id=?;");
+        slot.bindText(1, entry_time);
+        slot.bindText(2, slot_id);
+        requireDone(db_, slot.get());
+        if (sqlite3_changes(db_) != 1) {
+            throw std::runtime_error("hall slot does not exist: " + slot_id);
+        }
+
+        Statement session(db_,
+            "INSERT INTO PARKING_SESSION(vehicle_id,slot_id,plate_number,"
+            "entry_time,status) VALUES(NULL,?,NULL,?,'ACTIVE');");
+        session.bindText(1, slot_id);
+        session.bindText(2, entry_time);
+        requireDone(db_, session.get());
+        const auto session_id = sqlite3_last_insert_rowid(db_);
+
+        Statement event(db_,
+            "INSERT INTO EVENT_LOG(session_id,slot_id,event_type,message) "
+            "VALUES(?,?,'HALL_OCCUPIED',?);");
+        event.bindInt64(1, session_id);
+        event.bindText(2, slot_id);
+        event.bindText(3, "hall sensor=" + source_id);
+        requireDone(db_, event.get());
+        executeSqlUnlocked("COMMIT;");
+        return session_id;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
+    }
+}
+
+EvidenceInsertResult EventDatabase::insertEvidenceImage(
+    const std::int64_t session_id,
+    const std::string& original_path,
+    const std::string& evidence_reason,
+    const std::string& captured_at) {
+    if (session_id < 0 || original_path.empty() || captured_at.empty() ||
+        (evidence_reason != "OCCUPANCY_START_EVIDENCE" &&
+         evidence_reason != "OVERSTAY_EVIDENCE")) {
+        throw std::invalid_argument("invalid evidence image fields");
+    }
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) {
+        throw std::runtime_error("cannot insert evidence in a closed database");
+    }
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
+        Statement existing(db_,
+            "SELECT 1 FROM IMAGE_LOG WHERE session_id=? AND evidence_reason=? "
+            "LIMIT 1;");
+        existing.bindInt64(1, session_id);
+        existing.bindText(2, evidence_reason);
+        if (sqlite3_step(existing.get()) == SQLITE_ROW) {
+            executeSqlUnlocked("COMMIT;");
+            return EvidenceInsertResult::Duplicate;
+        }
+
+        Statement active(db_,
+            "SELECT 1 FROM PARKING_SESSION WHERE session_id=? "
+            "AND status IN ('ACTIVE','VIOLATION') AND exit_time IS NULL;");
+        active.bindInt64(1, session_id);
+        if (sqlite3_step(active.get()) != SQLITE_ROW) {
+            executeSqlUnlocked("COMMIT;");
+            return EvidenceInsertResult::InactiveSession;
+        }
+
+        Statement image(db_,
+            "INSERT INTO IMAGE_LOG(session_id,original_image_path,"
+            "enhancement_type,evidence_reason,captured_at) "
+            "VALUES(?,?,'NONE',?,?);");
+        image.bindInt64(1, session_id);
+        image.bindText(2, original_path);
+        image.bindText(3, evidence_reason);
+        image.bindText(4, captured_at);
+        requireDone(db_, image.get());
+        executeSqlUnlocked("COMMIT;");
+        return EvidenceInsertResult::Inserted;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
+    }
+}
+
+std::optional<std::string> EventDatabase::findEvidenceImagePath(
+    const std::int64_t session_id,
+    const std::string& evidence_reason) const {
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) return std::nullopt;
+    Statement statement(db_,
+        "SELECT original_image_path FROM IMAGE_LOG WHERE session_id=? "
+        "AND evidence_reason=? ORDER BY image_id LIMIT 1;");
+    statement.bindInt64(1, session_id);
+    statement.bindText(2, evidence_reason);
+    const int result = sqlite3_step(statement.get());
+    if (result == SQLITE_DONE) return std::nullopt;
+    if (result != SQLITE_ROW) {
+        throw std::runtime_error("SQLite evidence lookup failed: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    return columnText(statement.get(), 0);
 }
 
 /**
@@ -350,11 +491,19 @@ bool EventDatabase::markViolation(const std::int64_t log_id,
         requireDone(db_, statement.get());
         const bool changed = sqlite3_changes(db_) == 1;
         if (changed && !image_path_2.empty()) {
-            Statement image(db_, "INSERT INTO IMAGE_LOG(session_id, original_image_path, "
-                                 "enhancement_type) VALUES (?, ?, 'TIMER_VIOLATION');");
-            image.bindInt64(1, log_id);
-            image.bindText(2, image_path_2);
-            requireDone(db_, image.get());
+            Statement existing(db_,
+                "SELECT 1 FROM IMAGE_LOG WHERE session_id=? "
+                "AND original_image_path=? LIMIT 1;");
+            existing.bindInt64(1, log_id);
+            existing.bindText(2, image_path_2);
+            if (sqlite3_step(existing.get()) != SQLITE_ROW) {
+                Statement image(db_,
+                    "INSERT INTO IMAGE_LOG(session_id, original_image_path, "
+                    "enhancement_type) VALUES (?, ?, 'TIMER_VIOLATION');");
+                image.bindInt64(1, log_id);
+                image.bindText(2, image_path_2);
+                requireDone(db_, image.get());
+            }
         }
         executeSqlUnlocked("COMMIT;");
         return changed;

@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS IMAGE_LOG (
     original_image_path TEXT,
     enhanced_image_path TEXT,
     enhancement_type TEXT,
+    evidence_reason TEXT CHECK (
+        evidence_reason IS NULL OR evidence_reason IN (
+            'OCCUPANCY_START_EVIDENCE',
+            'OVERSTAY_EVIDENCE'
+        )
+    ),
     ocr_result TEXT,
     captured_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES PARKING_SESSION(session_id)
@@ -66,6 +72,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_parking_session_active_slot
     ON PARKING_SESSION(slot_id)
     WHERE status IN ('ACTIVE', 'VIOLATION') AND exit_time IS NULL;
 CREATE INDEX IF NOT EXISTS idx_image_session ON IMAGE_LOG(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_image_evidence_session_reason
+    ON IMAGE_LOG(session_id, evidence_reason)
+    WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_event_session ON EVENT_LOG(session_id);
 CREATE INDEX IF NOT EXISTS idx_event_slot ON EVENT_LOG(slot_id);
 CREATE INDEX IF NOT EXISTS idx_event_type ON EVENT_LOG(event_type);

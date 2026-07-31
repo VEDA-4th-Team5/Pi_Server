@@ -23,7 +23,17 @@ std::optional<std::chrono::system_clock::time_point> parseUtc(
     if (input.fail()) return std::nullopt;
     const std::time_t timestamp = timegm(&utc);
     if (timestamp == static_cast<std::time_t>(-1)) return std::nullopt;
-    return std::chrono::system_clock::from_time_t(timestamp);
+    auto parsed = std::chrono::system_clock::from_time_t(timestamp);
+    // utcNow()의 .mmmZ 정밀도를 보존해야 짧은 통합 테스트와 재시작 복구 시
+    // 이미 지난 것으로 오판하지 않는다.
+    if (value.size() >= 23 && value[19] == '.') {
+        try {
+            parsed += std::chrono::milliseconds(std::stoi(value.substr(20, 3)));
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+    return parsed;
 }
 
 std::chrono::milliseconds remainingDelay(

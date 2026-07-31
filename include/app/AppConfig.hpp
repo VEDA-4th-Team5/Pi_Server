@@ -66,6 +66,8 @@ struct AppConfig {
     // 슬롯/센서 매핑은 코드가 아니라 아래 JSON 설정 파일에서 읽는다.
     bool parking_hall_enabled;
     std::string parking_slots_config_path;
+    // DB/파일 작업이 센서 입력보다 느릴 때 메모리가 무제한 증가하지 않게 한다.
+    int parking_hall_work_queue_capacity{100};
 
     std::string snapshot_dir;
     std::string db_path;
@@ -89,6 +91,8 @@ struct AppConfig {
 
     bool parking_timer_enabled;
     int parking_timeout_seconds;
+    // 모든 활성 세션의 장기 점유 증거 촬영 지연. 기본 1시간이다.
+    int parking_overstay_evidence_delay_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

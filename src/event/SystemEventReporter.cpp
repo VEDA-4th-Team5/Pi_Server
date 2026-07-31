@@ -28,6 +28,7 @@ std::string toString(const SystemEventCode code) {
     case SystemEventCode::SensorNotMapped: return "SENSOR_NOT_MAPPED";
     case SystemEventCode::SensorSequenceRejected: return "SENSOR_SEQUENCE_REJECTED";
     case SystemEventCode::SensorHandlerFailed: return "SENSOR_HANDLER_FAILED";
+    case SystemEventCode::HallWorkQueueOverflow: return "HALL_WORK_QUEUE_OVERFLOW";
     case SystemEventCode::UartOpenFailed: return "UART_OPEN_FAILED";
     case SystemEventCode::UartReadFailed: return "UART_READ_FAILED";
     case SystemEventCode::UartWriteFailed: return "UART_WRITE_FAILED";

@@ -396,8 +396,9 @@ static void fill_image_row(sqlite3_stmt *stmt, DbImageRow *row)
     copy_column_text(stmt, 2, row->original_path, sizeof(row->original_path));
     copy_column_text(stmt, 3, row->enhanced_path, sizeof(row->enhanced_path));
     copy_column_text(stmt, 4, row->enhancement_type, sizeof(row->enhancement_type));
-    copy_column_text(stmt, 5, row->ocr_result, sizeof(row->ocr_result));
-    copy_column_text(stmt, 6, row->captured_at, sizeof(row->captured_at));
+    copy_column_text(stmt, 5, row->evidence_reason, sizeof(row->evidence_reason));
+    copy_column_text(stmt, 6, row->ocr_result, sizeof(row->ocr_result));
+    copy_column_text(stmt, 7, row->captured_at, sizeof(row->captured_at));
 }
 
 int db_visit_session_images(int session_id, DbImageVisitor visitor, void *context)
@@ -405,7 +406,8 @@ int db_visit_session_images(int session_id, DbImageVisitor visitor, void *contex
     static const char *sql =
         "SELECT image_id,session_id,COALESCE(original_image_path,''),"
         "COALESCE(enhanced_image_path,''),COALESCE(enhancement_type,''),"
-        "COALESCE(ocr_result,''),COALESCE(captured_at,'') FROM IMAGE_LOG "
+        "COALESCE(evidence_reason,''),COALESCE(ocr_result,''),"
+        "COALESCE(captured_at,'') FROM IMAGE_LOG "
         "WHERE session_id=? ORDER BY captured_at,image_id;";
     sqlite3_stmt *stmt = NULL;
     int rc;
@@ -448,7 +450,8 @@ int db_get_image_by_id(int image_id, DbImageRow *row)
     static const char *sql =
         "SELECT image_id,session_id,COALESCE(original_image_path,''),"
         "COALESCE(enhanced_image_path,''),COALESCE(enhancement_type,''),"
-        "COALESCE(ocr_result,''),COALESCE(captured_at,'') FROM IMAGE_LOG "
+        "COALESCE(evidence_reason,''),COALESCE(ocr_result,''),"
+        "COALESCE(captured_at,'') FROM IMAGE_LOG "
         "WHERE image_id=?;";
     sqlite3_stmt *stmt = NULL;
     int rc;

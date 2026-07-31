@@ -4,6 +4,7 @@
 #include "database/EventDatabase.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "parking/ParkingSlotConfig.hpp"
+#include "parking/EvidenceCaptureWorker.hpp"
 #include "parking_timer/EventManager.hpp"
 #include "parking_timer/ParkingSlotManager.hpp"
 #include "sensor/HallParkingService.hpp"
@@ -91,6 +92,30 @@ int main(int argc, char* argv[]) {
         require(argc >= 2, "parking slot fixture path is required");
         auto configs = parking::ParkingSlotConfigLoader::loadFromFile(argv[1]);
 
+        sensor::HallParkingWorkQueue bounded_queue(1);
+        sensor::HallParkingWorkItem occupied;
+        occupied.event.slotId = "EV01";
+        occupied.event.state = parking::ParkingSensorState::Occupied;
+        require(bounded_queue.push(occupied) ==
+                    sensor::HallParkingWorkQueue::PushResult::Added,
+                "first hall work item was not queued");
+        auto vacant = occupied;
+        vacant.event.state = parking::ParkingSensorState::Vacant;
+        require(bounded_queue.push(vacant) ==
+                    sensor::HallParkingWorkQueue::PushResult::Coalesced &&
+                    bounded_queue.size() == 1,
+                "same-slot latest state was not coalesced");
+        auto other_slot = occupied;
+        other_slot.event.slotId = "EV02";
+        require(bounded_queue.push(other_slot) ==
+                    sensor::HallParkingWorkQueue::PushResult::Full &&
+                    bounded_queue.size() == bounded_queue.capacity(),
+                "distinct-slot overflow exceeded bounded capacity");
+        const auto latest = bounded_queue.pop();
+        require(latest && latest->event.state ==
+                              parking::ParkingSensorState::Vacant,
+                "coalesced queue did not retain the latest VACANT state");
+
         database::EventDatabase database(temporary.database);
         const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
         database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
@@ -120,9 +145,11 @@ int main(int argc, char* argv[]) {
         });
         parking_timer::ParkingSlotManager timer_manager(
             database, events, 80ms,
-            [&](std::int64_t, const std::string& slot_id, const std::string&) {
-                return snapshots.saveIvaAreaSnapshot(
-                    channel, slot_id, {0.0, 0.0, 1.0, 1.0});
+            [&](std::int64_t session_id, const std::string&,
+                const std::string&) {
+                return database.findEvidenceImagePath(
+                           session_id, "OVERSTAY_EVIDENCE")
+                    .value_or("");
             });
 
         event::SystemEventReporter::Config reporter_config;
@@ -136,18 +163,40 @@ int main(int argc, char* argv[]) {
                     message);
             }, reporter_config);
         require(system_events.start(), "system event reporter did not start");
+        event::SystemEvent overflow_event;
+        overflow_event.source = event::SystemEventSource::HallSensor;
+        overflow_event.code = event::SystemEventCode::HallWorkQueueOverflow;
+        overflow_event.severity = event::SystemEventSeverity::Error;
+        overflow_event.slot_id = "EV02";
+        overflow_event.transport = "test";
+        overflow_event.message = "bounded hall work queue full";
+        system_events.report(std::move(overflow_event));
+        require(waitUntil([&] {
+                    return countEventType(
+                               temporary.database,
+                               "HALL_WORK_QUEUE_OVERFLOW") == 1;
+                }, 1s),
+                "hall queue overflow was not persisted to EVENT_LOG");
 
         std::atomic<int> enqueued_session{-1};
         std::atomic<int> canceled_session{-1};
         std::mutex transition_mutex;
         std::vector<parking::ParkingTransitionResult> capture_transitions;
+        parking::EvidenceCaptureWorker::Config evidence_config;
+        evidence_config.overstayDelay = 80ms;
+        parking::EvidenceCaptureWorker evidence_worker(
+            snapshots, database, evidence_config,
+            [&](const parking::EvidenceCaptureResult& result) {
+                if (result.stored &&
+                    result.reason == parking::EvidenceReason::OccupancyStart) {
+                    enqueued_session.store(static_cast<int>(result.sessionId));
+                }
+            });
+        require(evidence_worker.start(), "evidence worker did not start");
         sensor::HallParkingService service(
-            std::move(configs), app_config, channels, snapshots, database,
-            [&](int session_id, const std::string&, const std::string&) {
-                enqueued_session.store(session_id);
-            },
+            std::move(configs), app_config, channels, database,
             [&](int session_id) { canceled_session.store(session_id); },
-            timer_manager, events, &system_events,
+            timer_manager, events, evidence_worker, &system_events,
             [&](const parking::ParkingTransitionResult& transition) {
                 std::lock_guard lock(transition_mutex);
                 capture_transitions.push_back(transition);
@@ -176,8 +225,11 @@ int main(int argc, char* argv[]) {
                 }, 1s),
                 "single OCCUPIED was not auto-confirmed after threshold");
         auto first = database.findActiveBySlot("EV01");
-        require(first.has_value() && first->id == enqueued_session.load(),
-                "OCCUPIED did not create/enqueue one database session");
+        require(first.has_value(), "OCCUPIED did not create database session");
+        require(waitUntil([&] {
+                    return first->id == enqueued_session.load();
+                }, 1s),
+                "OCCUPIED evidence was not asynchronously enqueued");
         {
             std::lock_guard lock(transition_mutex);
             require(capture_transitions.size() == 1 &&
@@ -186,10 +238,17 @@ int main(int argc, char* argv[]) {
                     "capture scheduler did not receive SQLite session_id");
         }
         std::vector<database::ImageView> first_images;
-        require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
-                    first_images.size() == 1,
+        require(waitUntil([&] {
+                    first_images.clear();
+                    return database.listSessionImages(
+                               static_cast<int>(first->id), first_images) &&
+                           first_images.size() == 1;
+                }, 1s),
                 "entry Snapshot was not written to IMAGE_LOG");
         const std::string first_path = first_images.front().original_path;
+        require(first_images.front().evidence_reason ==
+                    "OCCUPANCY_START_EVIDENCE",
+                "entry image has wrong evidence_reason");
         require(std::filesystem::exists(first_path),
                 "entry Snapshot file was not created from latest frame");
 
@@ -197,10 +256,21 @@ int main(int argc, char* argv[]) {
                 "duplicate OCCUPIED transport failed");
         require(database.listLogs().size() == 1,
                 "duplicate OCCUPIED created another session");
+        first_images.clear();
+        require(database.listSessionImages(static_cast<int>(first->id),
+                                           first_images) &&
+                    std::count_if(first_images.begin(), first_images.end(),
+                        [](const database::ImageView& image) {
+                            return image.evidence_reason ==
+                                   "OCCUPANCY_START_EVIDENCE";
+                        }) == 1,
+                "duplicate OCCUPIED created duplicate start evidence");
 
         require(service.handleLine("SENSOR:HALL01:VACANT:3"),
                 "early VACANT was rejected");
-        require(canceled_session.load() == first->id,
+        require(waitUntil([&] {
+                    return canceled_session.load() == first->id;
+                }, 1s),
                 "early departure did not cancel pending OCR");
         {
             std::lock_guard lock(transition_mutex);
@@ -217,6 +287,10 @@ int main(int argc, char* argv[]) {
         require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
                     first_images.empty(),
                 "early departure did not remove IMAGE_LOG rows");
+        std::this_thread::sleep_for(100ms);
+        require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
+                    first_images.empty(),
+                "canceled overstay evidence was created after VACANT");
         database::ParkingSlotView slot;
         require(database.getParkingSlot("EV01", slot) &&
                     slot.parking_status == "VACANT",
@@ -231,6 +305,14 @@ int main(int argc, char* argv[]) {
         auto second = database.findActiveBySlot("EV01");
         require(second.has_value() && second->id != first->id,
                 "second parking session was not created");
+        require(waitUntil([&] {
+                    const auto refreshed = database.findLogById(second->id);
+                    if (!refreshed || !refreshed->image_path_1.has_value())
+                        return false;
+                    second = refreshed;
+                    return true;
+                }, 1s),
+                "second start evidence was not ready for OCR");
         require(database.applyPlateOcr(
                     static_cast<int>(second->id), "EV01",
                     second->image_path_1.value_or(""), "123가4567", 0.99) == "EV",
@@ -245,10 +327,26 @@ int main(int argc, char* argv[]) {
                 "timer did not mark the session as VIOLATION");
 
         std::vector<database::ImageView> violation_images;
-        require(database.listSessionImages(
-                    static_cast<int>(second->id), violation_images) &&
-                    violation_images.size() == 2,
+        require(waitUntil([&] {
+                    violation_images.clear();
+                    return database.listSessionImages(
+                               static_cast<int>(second->id), violation_images) &&
+                           violation_images.size() == 2;
+                }, 1s),
                 "violation latest-frame Snapshot was not added to IMAGE_LOG");
+        require(std::count_if(
+                    violation_images.begin(), violation_images.end(),
+                    [](const database::ImageView& image) {
+                        return image.evidence_reason ==
+                               "OCCUPANCY_START_EVIDENCE";
+                    }) == 1 &&
+                    std::count_if(
+                        violation_images.begin(), violation_images.end(),
+                        [](const database::ImageView& image) {
+                            return image.evidence_reason ==
+                                   "OVERSTAY_EVIDENCE";
+                        }) == 1,
+                "evidence reasons are missing or duplicated");
         for (const auto& image : violation_images)
             require(std::filesystem::exists(image.original_path),
                     "violation evidence path does not contain a real file");

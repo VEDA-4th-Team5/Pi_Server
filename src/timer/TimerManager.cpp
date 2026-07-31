@@ -96,7 +96,7 @@ void TimerManager::schedule(const std::int64_t log_id,
 
     // system_clock 보정/NTP 변경에 흔들리지 않도록 deadline은 steady_clock으로만 계산한다.
     TimerItem item{Clock::now() + delay, 0, log_id, std::move(slot_id),
-                   std::move(car_number), 0, {}};
+                   std::move(car_number), 0, 0, {}};
     bool became_earliest{};
     {
         std::lock_guard lock(mutex_);
@@ -188,14 +188,28 @@ void TimerManager::processExpired(TimerItem item) {
         }
         std::string image_path;
         if (evidence_provider_) {
+            bool provider_failed = false;
             try {
                 image_path = evidence_provider_(
                     item.log_id, item.slot_id, item.car_number);
             } catch (const std::exception& error) {
+                provider_failed = true;
                 reportError(item, "violation Snapshot failed: " +
                                   std::string(error.what()));
             } catch (...) {
+                provider_failed = true;
                 reportError(item, "violation Snapshot failed: unknown error");
+            }
+            if (!provider_failed && image_path.empty() &&
+                item.evidence_retry_count < 10) {
+                if (transition_lock.owns_lock()) transition_lock.unlock();
+                retryAfterEvidencePending(std::move(item));
+                return;
+            }
+            if (!provider_failed && image_path.empty()) {
+                reportError(item,
+                    "overstay evidence unavailable after bounded retry; "
+                    "violation continues without image");
             }
         } else {
             // 독립 CLI와 기존 테스트는 카메라가 없으므로 호환용 논리 경로를 사용한다.
@@ -235,6 +249,29 @@ void TimerManager::processExpired(TimerItem item) {
         reportError(item, error.what());
     } catch (...) {
         reportError(item, "unknown timer worker failure");
+    }
+}
+
+void TimerManager::retryAfterEvidencePending(TimerItem item) noexcept {
+    try {
+        if (item.evidence_retry_count == 0) {
+            reportError(item,
+                "overstay evidence pending; timer retry scheduled");
+        }
+        ++item.evidence_retry_count;
+        item.deadline = Clock::now() + std::chrono::milliseconds{500};
+        {
+            std::lock_guard lock(mutex_);
+            if (stopping_) return;
+            item.sequence = next_sequence_++;
+            queue_.push(std::move(item));
+        }
+        cv_.notify_one();
+    } catch (const std::exception& error) {
+        reportError(item, std::string{"failed to requeue evidence wait: "} +
+                              error.what());
+    } catch (...) {
+        reportError(item, "failed to requeue evidence wait: unknown error");
     }
 }
 
