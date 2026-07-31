@@ -25,3 +25,4 @@ Module.symvers
 modules.order
 .tmp_versions/
 data/snapshots/
+data/bestshots/

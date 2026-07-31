@@ -77,7 +77,12 @@ void EventManager::publish(const std::string_view event_type,
         std::lock_guard lock(output_mutex_);
         // 표준출력 JSON은 사람이 보는 용도다. LOG_EVENT_JSON=false 로 꺼도
         // 아래 publisher(MQTT 발행)는 그대로 동작해야 하므로 출력만 건너뛴다.
-        if (util::logEnabled("EVENT_JSON")) {
+        // EXIT_IGNORED는 빈 슬롯이 VACANT를 재전송할 때마다(초당) 찍혀서
+        // 콘솔을 도배하므로 LOG_EXIT_IGNORED로 따로 끌 수 있게 한다
+        // (MQTT 발행은 이 스위치와 무관하게 그대로 나간다).
+        const bool show_event = event_type != "EXIT_IGNORED" ||
+                                util::logEnabled("EXIT_IGNORED");
+        if (show_event && util::logEnabled("EVENT_JSON")) {
             std::cout << "{\"event_type\":\"" << jsonEscape(event_type)
                       << "\",\"slot_id\":\"" << jsonEscape(slot_id)
                       << "\",\"car_number\":\""

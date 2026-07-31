@@ -7,7 +7,9 @@ VALUES
     ('12가3456', 1, 0),
     ('34나5678', 1, 0),
     ('99다8888', 0, 0),
-    ('77라1234', 0, 0);
+    ('77라1234', 0, 0),
+    ('315다8503', 0, 0),
+    ('342가2670', 1, 0);
 
 INSERT OR IGNORE INTO PARKING_SLOT(slot_id, slot_type, status, sensor_type)
 VALUES
