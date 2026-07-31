@@ -1,5 +1,7 @@
 #include "parking_timer/EventManager.hpp"
 
+#include "util/Logger.hpp"
+
 #include <iostream>
 #include <sstream>
 
@@ -73,15 +75,19 @@ void EventManager::publish(const std::string_view event_type,
     Publisher publisher;
     {
         std::lock_guard lock(output_mutex_);
-        std::cout << "{\"event_type\":\"" << jsonEscape(event_type)
-                  << "\",\"slot_id\":\"" << jsonEscape(slot_id)
-                  << "\",\"car_number\":\""
-                  << jsonEscape(car_number) << "\",\"occurred_at\":\""
-                  << jsonEscape(occurred_at) << '"';
-        if (!detail.empty()) {
-            std::cout << ",\"detail\":\"" << jsonEscape(detail) << '"';
+        // 표준출력 JSON은 사람이 보는 용도다. LOG_EVENT_JSON=false 로 꺼도
+        // 아래 publisher(MQTT 발행)는 그대로 동작해야 하므로 출력만 건너뛴다.
+        if (util::logEnabled("EVENT_JSON")) {
+            std::cout << "{\"event_type\":\"" << jsonEscape(event_type)
+                      << "\",\"slot_id\":\"" << jsonEscape(slot_id)
+                      << "\",\"car_number\":\""
+                      << jsonEscape(car_number) << "\",\"occurred_at\":\""
+                      << jsonEscape(occurred_at) << '"';
+            if (!detail.empty()) {
+                std::cout << ",\"detail\":\"" << jsonEscape(detail) << '"';
+            }
+            std::cout << "}" << std::endl;
         }
-        std::cout << "}" << std::endl;
         publisher = publisher_;
     }
     if (publisher) {

@@ -119,7 +119,10 @@ bool HallParkingService::processEventLocked(
                 work_condition_.notify_one();
             }
             confirmation_condition_.notify_all();
-            util::logInfo("Hall sensor event awaiting confirmation: slot=" +
+            // 센서가 1초마다 같은 상태를 보내므로 이 두 줄이 로그의 대부분을
+            // 차지한다. LOG_HALL_SENSOR=false 로 따로 끌 수 있도록 태그를 붙인다.
+            util::logLine("HALL_SENSOR",
+                          "event awaiting confirmation: slot=" +
                           event.slotId + " state=" +
                           (event.state == parking::ParkingSensorState::Occupied
                                ? "OCCUPIED"
@@ -136,7 +139,7 @@ bool HallParkingService::processEventLocked(
             work_queue_.push_back({event, transition});
             work_condition_.notify_one();
         }
-        util::logInfo("Hall sensor event ignored: slot=" + event.slotId +
+        util::logLine("HALL_SENSOR", "event ignored: slot=" + event.slotId +
                       " reason=" + transition.message);
         return true;
     }
