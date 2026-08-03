@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(wsl -e bash -c \"ls /usr/include/mosquitto.h 2>/dev/null || echo mosquitto.h-MISSING; ls /usr/lib/x86_64-linux-gnu/libmosquitto.so 2>/dev/null || echo libmosquitto.so-MISSING; ls /usr/lib/x86_64-linux-gnu/libsqlite3.so 2>/dev/null || echo libsqlite3.so-MISSING; ls /usr/include/curl/curl.h 2>/dev/null || echo curl.h-MISSING\")",
+      "Bash(ctest --test-dir build -N)"
+    ]
+  }
+}
