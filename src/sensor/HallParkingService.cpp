@@ -267,12 +267,14 @@ bool HallParkingService::handleOccupied(
                                             : "evidence capture scheduled",
                            session_id);
     if (adopted_existing) {
-        // 이미 시작 증거/타이머가 존재할 수 있으므로 T0를 현재 시각으로 다시
-        // 잡아 촬영을 중복 예약하지 않는다. 이후 VACANT는 같은 ID를 종료한다.
+        // 재시작 복구 세션은 시작 시점에 evidence_worker_.restoreSession으로
+        // 이미 스케줄돼 있어 아래 scheduleSession 호출이 session_id 기준
+        // no-op이 된다. 반면 BestShot이 홀센서보다 먼저 세션을 만든 경우는
+        // 촬영/OCR이 전혀 예약된 적이 없으므로, 여기서 return하지 않고 아래
+        // 공통 경로를 그대로 태워 예약한다.
         util::logLine("HALL_RECOVERY", "active session adopted slot=" +
                       event.slotId + " session=" +
                       std::to_string(session_id));
-        return true;
     }
     if (transition_sink_) {
         auto database_transition = transition;
