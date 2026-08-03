@@ -2,7 +2,7 @@
 .env.camera.local
 .env.gemini.local
 .env.iva.local
-.env.fire.local
+
 data/db/parking.db
 data/db/test_*.db
 db_backup_*.db
@@ -25,3 +25,5 @@ Module.symvers
 modules.order
 .tmp_versions/
 data/snapshots/
+data/bestshots/
+*.log

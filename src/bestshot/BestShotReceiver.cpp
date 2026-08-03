@@ -281,9 +281,20 @@ void BestShotReceiver::processMetadata(const std::string& channel_id,
 
         if (is_vehicle) {
             // 차량 이미지가 먼저 도착하면 주차면을 점유시키고 새 세션을 생성한다.
+            // 단, 홀센서가 이미 같은 슬롯에 활성 세션을 열어둔 경우 새로 만들면
+            // PARKING_SESSION의 partial unique index(slot당 활성 세션 1개)에
+            // 걸리므로, 그때는 새로 만들지 않고 기존 세션에 이미지만 붙인다.
             int session_id = -1;
-            if (database_.createEntryWithBestShot(slot_id, destination.string(),
-                                                  object_id, &session_id)) {
+            bool entry_ok;
+            if (const auto existing = database_.findActiveBySlot(slot_id)) {
+                session_id = static_cast<int>(existing->id);
+                entry_ok = database_.attachVehicleBestShot(
+                    session_id, destination.string(), object_id);
+            } else {
+                entry_ok = database_.createEntryWithBestShot(
+                    slot_id, destination.string(), object_id, &session_id);
+            }
+            if (entry_ok) {
                 std::optional<PendingPlate> pending_plate;
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);
