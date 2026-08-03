@@ -737,6 +737,7 @@ int main() {
     ocr_worker.start();
     bestshot_receiver.start();
 
+    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
     mqtt::MqttEventBridge mqtt_bridge(
         config,
         channels,
@@ -746,6 +747,11 @@ int main() {
         ocr_worker,
         [&hall_service](const std::string& line) {
             if (hall_service) hall_service->handleLine(line);
+        },
+        [&fire_alarm_manager](const std::string& channel_id,
+                              const std::string& alarm_id) {
+            return fire_alarm_manager &&
+                   fire_alarm_manager->acknowledge(channel_id, alarm_id);
         }
     );
     capture_mqtt_bridge = &mqtt_bridge;
@@ -778,7 +784,6 @@ int main() {
     // MQTT publisher가 준비된 뒤에만 발행 콜백을 걸 수 있으므로 mqtt_bridge
     // 시작 이후에 생성한다. 화재 최종 판단은 하지 않고 후보 이벤트만 올린다
     // (관제실 사람이 확정) — event::FireAlarmManager 계약대로.
-    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
     if (config.fire_alarm_enabled) {
         fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
             config.camera_id,

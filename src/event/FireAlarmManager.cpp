@@ -89,6 +89,17 @@ bool FireAlarmManager::onFireSignal(const FireSignal& signal) {
         return false;
     }
 
+    const FireSensorBinding* binding = findBinding(signal.sensorId);
+    std::string channel_id;
+    if (binding == nullptr) {
+        // 설정 누락으로 화재 신호를 버리지는 않되 임의 채널로 귀속하지 않는다.
+        util::logError(
+            "fire sensor is not mapped to a channel: " + signal.sensorId);
+    } else {
+        channel_id = binding->channelId;
+    }
+
+    std::string alarm_id;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& state = states_[signal.sensorId];
@@ -111,24 +122,31 @@ bool FireAlarmManager::onFireSignal(const FireSignal& signal) {
 
         state.seen = true;
         state.detected = signal.detected;
-    }
-
-    const FireSensorBinding* binding = findBinding(signal.sensorId);
-    std::string channel_id;
-
-    if (binding == nullptr) {
-        // 설정 누락으로 화재 신호를 버리지는 않되 임의 채널로 귀속하지 않는다.
-        util::logError(
-            "fire sensor is not mapped to a channel: " + signal.sensorId);
-    } else {
-        channel_id = binding->channelId;
+        state.channelId = channel_id;
+        if (signal.detected) {
+            state.acknowledged = false;
+            state.activeSignal = signal;
+            state.activeAlarmId =
+                EventPayloadBuilder::buildFireEventId(signal);
+        }
+        alarm_id = state.activeAlarmId;
+        if (!signal.detected) {
+            state.acknowledged = false;
+            state.activeAlarmId.clear();
+        }
     }
 
     const std::string topic =
         topic_prefix_ + "/" +
         (channel_id.empty() ? kUnmappedChannelTopic : channel_id);
+    const std::string event_id =
+        EventPayloadBuilder::buildFireEventId(signal);
+    if (alarm_id.empty()) alarm_id = event_id;
     const std::string payload = EventPayloadBuilder::buildFireJson(
-        camera_id_, channel_id, signal);
+        camera_id_, channel_id, signal,
+        signal.detected ? FireAlarmLifecycle::Open
+                        : FireAlarmLifecycle::Resolved,
+        event_id, alarm_id);
 
     if (!publisher_ || !publisher_(topic, payload)) {
         util::logError("fire alarm publish failed: " + topic);
@@ -144,6 +162,49 @@ bool FireAlarmManager::onFireSignal(const FireSignal& signal) {
             " raw=" + signal.rawPayload);
 
     return true;
+}
+
+bool FireAlarmManager::acknowledge(const std::string& channelId,
+                                   const std::string& alarmId) {
+    if (channelId.empty() || alarmId.empty()) {
+        util::logWarn("fire ACK rejected: channel_id and event_id are required");
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [sensor_id, state] : states_) {
+        if (!state.detected || state.channelId != channelId ||
+            state.activeAlarmId != alarmId) {
+            continue;
+        }
+        if (state.acknowledged) {
+            util::logInfo("duplicate fire ACK ignored: channel=" + channelId +
+                          " alarm_id=" + alarmId);
+            return true;
+        }
+
+        FireSignal ack_signal = state.activeSignal;
+        ack_signal.occurredAt = std::chrono::system_clock::now();
+        const std::string topic = topic_prefix_ + "/" + channelId;
+        const std::string payload = EventPayloadBuilder::buildFireJson(
+            camera_id_, channelId, ack_signal,
+            FireAlarmLifecycle::Acknowledged, alarmId + "-ack", alarmId);
+        if (!publisher_ || !publisher_(topic, payload)) {
+            util::logError("fire ACK publish failed: " + topic);
+            return false;
+        }
+
+        state.acknowledged = true;
+        util::logLine("FIRE_ALARM",
+                      "ACKNOWLEDGED sensor=" + sensor_id +
+                          " channel=" + channelId +
+                          " alarm_id=" + alarmId);
+        return true;
+    }
+
+    util::logWarn("fire ACK rejected: active alarm not found channel=" +
+                  channelId + " event_id=" + alarmId);
+    return false;
 }
 
 }  // namespace event

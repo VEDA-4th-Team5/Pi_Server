@@ -29,6 +29,8 @@ ctest --test-dir cmake-build --output-on-failure
 12. `hall-capture-coordinator-test`: SQLite 세션 ID 유지, 이미지·OCR·타이머 연결
 13. `hall-capture-pipeline-test`: 메모리 RTSP frame → ROI JPEG → IMAGE_LOG,
     30/60초 중복·종료 세션 차단과 MQTT 발행 실패 격리
+14. `fire-alarm-test`: OPEN → ACKNOWLEDGED → RESOLVED 전이, 잘못된·중복 ACK,
+    반복 DETECTED 및 역순 sequence 억제
 
 `hall-timer-integration-test`는 카메라 대신 메모리의 OpenCV frame을 사용하지만 실제
 `SnapshotStorage`와 SQLite를 사용한다. OCCUPIED 중복 방지, VACANT 시 OCR 취소,
@@ -77,4 +79,4 @@ ctest --test-dir cmake-build --output-on-failure
 - 4채널 × EV 슬롯 실제 ROI 검증
 - Qt retained 상태 복구와 HTTP 이미지 표시
 - MQTT broker 단절/재연결 중 이벤트 유실 정책
-- Qt 명령 및 화재 상태 머신(구현 후)
+- 일반 주차 알람 ACK와 Qt `STATUS_REQUEST`

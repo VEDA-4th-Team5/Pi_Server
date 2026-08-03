@@ -7,7 +7,8 @@ parking protocol still needs agreement on event ID, QoS, retain, command topic,
 and error responses. Proposed state payload fields include slot, parking state,
 plate/OCR state, EV state, occupancy timestamps, evidence paths, and timestamp.
 
-Qt commands such as `ALARM_ACK` and `STATUS_REQUEST` are not implemented yet.
+화재 `ALARM_ACK` 명령은 구현됐다. 일반 주차 알람 ACK와 `STATUS_REQUEST`는 아직
+구현되지 않았다.
 
 ## Demo channel fire candidate alarm
 
@@ -24,6 +25,7 @@ The payload uses the same field set as the camera event payload
 | Field | Value |
 |---|---|
 | `event_id` | `fire-<sensor_id>-<sequence>`; timestamp fallback without sequence |
+| `alarm_id` | OPEN에서 생성된 화재 알람 ID; ACK/CLEAR가 같은 알람을 가리킬 때 유지 |
 | `source_type` | `sensor_uart` |
 | `source_id` | STM32/demo input id, e.g. `FLAME01` |
 | `event_type` | `FIRE_SUSPECTED` / `FIRE_CLEARED` |
@@ -49,6 +51,44 @@ never takes an action. Confirmation is the control room operator's decision.
 UART frame (text, draft): `FIRE:<sensor_id>:<DETECTED|CLEARED>[:<sequence>[:<unix_epoch_ms>]]`.
 Repeated identical states and out-of-order sequence numbers are suppressed by
 `FireAlarmManager`.
+
+### Fire alarm acknowledgement
+
+Qt Check command topic:
+
+```text
+parking/v1/commands/fire/{channel_id}
+```
+
+Payload:
+
+```json
+{
+  "command": "ALARM_ACK",
+  "channel_id": "ch01",
+  "alarm_id": "fire-FLAME01-12"
+}
+```
+
+`alarm_id`는 현재 `FIRE_SUSPECTED` OPEN payload에서 받은 값을 그대로 사용한다.
+하위 호환을 위해 `alarm_id` 대신 OPEN의 `event_id`도 허용한다. 토픽 channel과 payload
+channel이 다르거나, 활성 알람이 없거나, ID가 다르면 거부한다.
+
+정상 ACK 상태는 다음 필드를 가진다.
+
+```json
+{
+  "event_type": "FIRE_ACKNOWLEDGED",
+  "alarm_kind": "FIRE_SUSPECTED",
+  "alarm_state": "ACKNOWLEDGED",
+  "ack_state": "acknowledged",
+  "active": true
+}
+```
+
+ACK는 화재 해제가 아니다. 동일 DETECTED는 ACK 상태를 OPEN으로 되돌리지 않으며,
+센서 `FIRE_CLEARED`를 받은 경우에만 `RESOLVED / active=false`가 된다. 동일 ACK 재전송은
+성공으로 간주하되 새 상태 메시지를 만들지 않는다.
 
 ## Post-entry capture request (draft, not finalized — EVDA-135)
 
