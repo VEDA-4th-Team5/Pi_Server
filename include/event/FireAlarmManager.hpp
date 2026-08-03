@@ -44,13 +44,22 @@ public:
     // 상태가 바뀐 경우에만 true 를 돌려준다.
     bool onFireSignal(const FireSignal& signal);
 
+    // Qt의 Check는 화재 해제가 아니라 관제 확인이다. 현재 OPEN인 동일 alarm_id만
+    // ACKNOWLEDGED로 바꾸며 센서 CLEARED 전까지 active 상태는 유지한다.
+    bool acknowledge(const std::string& channelId,
+                     const std::string& alarmId);
+
     [[nodiscard]] std::size_t bindingCount() const;
 
 private:
     struct SensorState {
         bool detected{false};
         bool seen{false};
+        bool acknowledged{false};
         std::optional<std::uint64_t> lastSequence;
+        std::string channelId;
+        std::string activeAlarmId;
+        FireSignal activeSignal;
     };
 
     const FireSensorBinding* findBinding(const std::string& sensorId) const;

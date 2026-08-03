@@ -162,6 +162,8 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("FIRE_UART_REOPEN_DELAY_MS", 2000);
     config.fire_topic_prefix =
         getEnvOrDefault("FIRE_TOPIC_PREFIX", "parking/fire");
+    config.fire_command_topic_prefix = getEnvOrDefault(
+        "FIRE_COMMAND_TOPIC_PREFIX", "parking/v1/commands/fire");
     // "FLAME01=ch01,FLAME02=ch02" 형식의 시연용 채널별 입력 매핑.
     config.fire_sensor_channel_map =
         getEnvOrDefault("FIRE_SENSOR_CHANNEL_MAP", "");

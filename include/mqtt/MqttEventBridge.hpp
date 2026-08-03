@@ -26,6 +26,9 @@ namespace mqtt {
 class MqttEventBridge {
 public:
     using SensorMessageHandler = std::function<void(const std::string&)>;
+    using FireAckHandler =
+        std::function<bool(const std::string& channel_id,
+                           const std::string& alarm_id)>;
 
     MqttEventBridge(
         const app::AppConfig& config,
@@ -34,7 +37,8 @@ public:
         snapshot::SnapshotStorage& snapshot_storage,
         parking::ParkingTriggerCoordinator& trigger_coordinator,
         ocr::OcrWorker& ocr_worker,
-        SensorMessageHandler sensor_message_handler = {}
+        SensorMessageHandler sensor_message_handler = {},
+        FireAckHandler fire_ack_handler = {}
     );
 
     /** @brief Broker 연결, topic 구독과 network loop를 시작한다. */
@@ -83,6 +87,7 @@ private:
     parking::ParkingTriggerCoordinator& trigger_coordinator_;
     ocr::OcrWorker& ocr_worker_;
     SensorMessageHandler sensor_message_handler_;
+    FireAckHandler fire_ack_handler_;
 
     mosquitto* mosq_;
 };

@@ -135,33 +135,64 @@ void testAlarmFlow() {
                      "\"raw_payload\":\"FIRE:F1:DETECTED:1\""),
             "raw frame must travel with the alarm as evidence");
 
+    require(!manager.acknowledge("ch02", "fire-F1-1"),
+            "ACK for another channel must be rejected");
+    require(!manager.acknowledge("ch01", "fire-F1-999"),
+            "ACK for another alarm id must be rejected");
+    require(manager.acknowledge("ch01", "fire-F1-1"),
+            "active fire ACK must be applied");
+    require(published.size() == 2, "ACK must publish one state transition");
+    require(contains(published[1].payload,
+                     "\"event_type\":\"FIRE_ACKNOWLEDGED\""),
+            "ACK event type mismatch");
+    require(contains(published[1].payload,
+                     "\"alarm_id\":\"fire-F1-1\""),
+            "ACK must retain the original alarm identity");
+    require(contains(published[1].payload,
+                     "\"alarm_state\":\"ACKNOWLEDGED\""),
+            "ACK alarm state mismatch");
+    require(contains(published[1].payload,
+                     "\"ack_state\":\"acknowledged\""),
+            "ACK state field mismatch");
+    require(contains(published[1].payload, "\"active\":true"),
+            "ACK must not clear an active fire");
+    require(manager.acknowledge("ch01", "fire-F1-1"),
+            "duplicate ACK must be an idempotent success");
+    require(published.size() == 2,
+            "duplicate ACK must not publish another transition");
+
     auto repeat = parser.parseFire("FIRE:F1:DETECTED:2", now);
     require(!manager.onFireSignal(toSignal(*repeat)),
             "repeated same state must not republish");
-    require(published.size() == 1, "no extra publish for an unchanged state");
+    require(published.size() == 2, "no extra publish for an unchanged state");
 
     auto stale = parser.parseFire("FIRE:F1:CLEARED:1", now);
     require(!manager.onFireSignal(toSignal(*stale)),
             "out-of-order sequence must be dropped");
-    require(published.size() == 1, "stale frame must not publish");
+    require(published.size() == 2, "stale frame must not publish");
 
     auto cleared = parser.parseFire("FIRE:F1:CLEARED:3", now);
     require(manager.onFireSignal(toSignal(*cleared)),
             "state change back to cleared must publish");
-    require(published.size() == 2, "clear must publish once");
-    require(contains(published[1].payload,
+    require(published.size() == 3, "clear must publish once");
+    require(contains(published[2].payload,
                      "\"event_type\":\"FIRE_CLEARED\""),
             "clear event type mismatch");
-    require(contains(published[1].payload,
+    require(contains(published[2].payload,
                      "\"event_id\":\"fire-F1-3\""),
             "clear event must carry its source sequence event id");
-    require(contains(published[1].payload, "\"alarm_kind\":\"NONE\""),
+    require(contains(published[2].payload,
+                     "\"alarm_id\":\"fire-F1-1\""),
+            "clear must identify the alarm it resolves");
+    require(contains(published[2].payload, "\"alarm_kind\":\"NONE\""),
             "cleared fire must remove the Qt alarm kind");
-    require(contains(published[1].payload,
+    require(contains(published[2].payload,
                      "\"alarm_state\":\"RESOLVED\""),
             "cleared fire alarm must be resolved");
-    require(contains(published[1].payload, "\"active\":false"),
+    require(contains(published[2].payload, "\"active\":false"),
             "cleared fire must not be active");
+    require(!manager.acknowledge("ch01", "fire-F1-1"),
+            "resolved fire must not accept ACK");
 }
 
 void testUnmappedSensorStillAlarms() {

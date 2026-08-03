@@ -7,6 +7,12 @@
 
 namespace event {
 
+enum class FireAlarmLifecycle {
+    Open,
+    Acknowledged,
+    Resolved
+};
+
 // Core 계층이 다루는 화재 후보 신호다. 어떤 전송로(UART/LoRa)로 왔는지,
 // 어떤 프레임 규격이었는지는 여기서 알 필요가 없다.
 struct FireSignal {

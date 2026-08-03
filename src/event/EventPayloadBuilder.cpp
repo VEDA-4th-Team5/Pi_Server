@@ -6,9 +6,7 @@
 #include <sstream>
 
 namespace event {
-namespace {
-
-std::string buildFireEventId(const FireSignal& signal) {
+std::string EventPayloadBuilder::buildFireEventId(const FireSignal& signal) {
     std::ostringstream output;
     output << "fire-" << signal.sensorId << '-';
     if (signal.sourceSequence) {
@@ -21,8 +19,6 @@ std::string buildFireEventId(const FireSignal& signal) {
     }
     return output.str();
 }
-
-}  // namespace
 
 std::string EventPayloadBuilder::buildJson(
     const std::string& camera_id,
@@ -60,33 +56,47 @@ std::string EventPayloadBuilder::buildJson(
 std::string EventPayloadBuilder::buildFireJson(
     const std::string& camera_id,
     const std::string& channel_id,
-    const FireSignal& signal
+    const FireSignal& signal,
+    const FireAlarmLifecycle lifecycle,
+    const std::string& event_id,
+    const std::string& alarm_id
 ) {
     std::ostringstream oss;
 
+    const bool active = lifecycle != FireAlarmLifecycle::Resolved;
+    const char* event_type = "FIRE_CLEARED";
+    const char* alarm_state = "RESOLVED";
+    const char* ack_state = "resolved";
+    if (lifecycle == FireAlarmLifecycle::Open) {
+        event_type = "FIRE_SUSPECTED";
+        alarm_state = "OPEN";
+        ack_state = "unacked";
+    } else if (lifecycle == FireAlarmLifecycle::Acknowledged) {
+        event_type = "FIRE_ACKNOWLEDGED";
+        alarm_state = "ACKNOWLEDGED";
+        ack_state = "acknowledged";
+    }
+
     // 시연에서는 FLAME01~04 가짜 입력을 ch01~04 독립 상태로 연결한다.
     oss << "{";
-    oss << "\"event_id\":\""
-        << util::jsonEscape(buildFireEventId(signal)) << "\",";
+    oss << "\"event_id\":\"" << util::jsonEscape(event_id) << "\",";
+    oss << "\"alarm_id\":\"" << util::jsonEscape(alarm_id) << "\",";
     oss << "\"camera_id\":\"" << util::jsonEscape(camera_id) << "\",";
     oss << "\"channel_id\":\"" << util::jsonEscape(channel_id) << "\",";
     oss << "\"event_channel_id\":\"\",";
     oss << "\"source_type\":\"sensor_uart\",";
     oss << "\"source_id\":\"" << util::jsonEscape(signal.sensorId) << "\",";
-    oss << "\"event_type\":\""
-        << (signal.detected ? "FIRE_SUSPECTED" : "FIRE_CLEARED")
-        << "\",";
+    oss << "\"event_type\":\"" << event_type << "\",";
     oss << "\"alarm_kind\":\""
-        << (signal.detected ? "FIRE_SUSPECTED" : "NONE") << "\",";
+        << (active ? "FIRE_SUSPECTED" : "NONE") << "\",";
     // Qt의 기존 alarm 필드와 신규 alarm_kind 필드를 함께 제공한다.
     oss << "\"alarm\":\""
-        << (signal.detected ? "FIRE_SUSPECTED" : "NONE") << "\",";
-    oss << "\"alarm_state\":\""
-        << (signal.detected ? "OPEN" : "RESOLVED") << "\",";
+        << (active ? "FIRE_SUSPECTED" : "NONE") << "\",";
+    oss << "\"alarm_state\":\"" << alarm_state << "\",";
     // 화재는 확정이 아니라 후보다. 확정은 관제실이 한다.
-    oss << "\"severity\":\"" << (signal.detected ? "critical" : "info")
+    oss << "\"severity\":\"" << (active ? "critical" : "info")
         << "\",";
-    oss << "\"active\":" << (signal.detected ? "true" : "false") << ",";
+    oss << "\"active\":" << (active ? "true" : "false") << ",";
     oss << "\"scope\":\"CAMERA_CHANNEL\",";
     oss << "\"zone_id\":\"\",";
     oss << "\"iva_area_id\":\"\",";
@@ -94,8 +104,7 @@ std::string EventPayloadBuilder::buildFireJson(
     oss << "\"snapshot_mode\":\"none\",";
     oss << "\"snapshot_path\":\"\",";
     oss << "\"clip_path\":\"\",";
-    oss << "\"ack_state\":\""
-        << (signal.detected ? "unacked" : "resolved") << "\",";
+    oss << "\"ack_state\":\"" << ack_state << "\",";
     oss << "\"timestamp\":\""
         << util::jsonEscape(util::isoString(signal.occurredAt)) << "\",";
     oss << "\"raw_topic\":\"" << util::jsonEscape(signal.sourceTransport)
