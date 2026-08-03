@@ -32,6 +32,10 @@
 #include "util/StringUtil.hpp"
 #include "util/TimeUtil.hpp"
 
+extern "C" {
+#include <libavutil/log.h>
+}
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -267,6 +271,15 @@ int main() {
         "rtsp_transport;tcp|stimeout;5000000|max_delay;500000",
         0
     );
+
+    // FFmpeg 은 우리 Logger 를 거치지 않고 직접 stderr 로 쓴다("[h264 @ ...]
+    // mmco: unref short failure" 류). 손상 프레임마다 나오므로 실제 로그를
+    // 덮어버린다. LOG_FFMPEG=false 면 libavutil 쪽에서 아예 막는다.
+    // 주의: OpenCV 가 자체 FFmpeg 을 정적 링크한 빌드라면 별도 libavutil 을
+    // 쓰므로 이 설정이 안 먹을 수 있다.
+    if (!util::logEnabled("FFMPEG")) {
+        av_log_set_level(AV_LOG_QUIET);
+    }
 
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);

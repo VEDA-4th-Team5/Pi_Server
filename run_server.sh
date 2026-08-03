@@ -31,6 +31,7 @@ set -a
 [[ -f ./.env.fire.local ]] && source ./.env.fire.local
 [[ -f ./.env.gemini.local ]] && source ./.env.gemini.local
 [[ -f ./.env.iva.local ]] && source ./.env.iva.local
+[[ -f ./.env.log.local ]] && source ./.env.log.local
 set +a
 
 export CAPTURE_SCHED_ENABLED="${CAPTURE_SCHED_ENABLED:-true}"
