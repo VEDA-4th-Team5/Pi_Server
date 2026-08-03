@@ -100,6 +100,10 @@ public:
     bool attachPlateBestShot(int session_id,
                              const std::string& image_path,
                              const std::string& plate_text);
+    /** @brief 이미 활성 세션이 있는 슬롯에 차량 BestShot 이미지만 연결한다(세션/슬롯상태는 건드리지 않음). */
+    bool attachVehicleBestShot(int session_id,
+                               const std::string& image_path,
+                               const std::string& object_id);
     /** @brief 원본 IMAGE_LOG 행에 OpenCV 전처리 파일 경로를 연결한다. */
     bool attachEnhancedPlateImage(const std::string& image_path,
                                   const std::string& enhanced_image_path);

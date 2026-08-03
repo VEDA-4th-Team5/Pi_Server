@@ -129,6 +129,23 @@ bool EventDatabase::createEntryWithBestShot(const std::string& slot_id,
     return true;
 }
 
+bool EventDatabase::attachVehicleBestShot(int session_id,
+                                          const std::string& image_path,
+                                          const std::string& object_id) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!opened_ || session_id < 0 || image_path.empty()) return false;
+    if (db_insert_image_log(session_id, image_path.c_str(), nullptr,
+                            "BESTSHOT_VEHICLE", nullptr) < 0) {
+        util::logError("Vehicle BestShot DB insert failed: session=" +
+                       std::to_string(session_id));
+        return false;
+    }
+    std::string message = "vehicle BestShot object_id=" + object_id +
+                          " image=" + image_path;
+    db_insert_event_log(session_id, nullptr, "VEHICLE_ENTERED", message.c_str());
+    return true;
+}
+
 bool EventDatabase::createEntryWithSnapshot(const std::string& slot_id,
                                             const std::string& image_path,
                                             const std::string& source_id,
