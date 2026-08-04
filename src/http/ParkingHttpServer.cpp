@@ -51,6 +51,7 @@ json imageJson(const database::ImageView& image) {
         {"original_url", image.original_path.empty() ? json(nullptr) : json(base + "/original")},
         {"enhanced_url", image.enhanced_path.empty() ? json(nullptr) : json(base + "/enhanced")},
         {"enhancement_type", optionalText(image.enhancement_type)},
+        {"evidence_reason", optionalText(image.evidence_reason)},
         {"ocr_result", optionalText(image.ocr_result)},
         {"captured_at", optionalText(image.captured_at)}};
 }

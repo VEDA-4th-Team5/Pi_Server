@@ -1,3 +1,4 @@
+/** @file ParkingSlotManager.cpp @brief OCCUPIED/VACANT 이벤트의 주차 세션 상태 전이 구현. */
 #include "parking/ParkingSlotManager.hpp"
 
 #include <atomic>
@@ -100,7 +101,8 @@ ParkingTransitionResult ParkingSlotManager::handle(
             sessionId,
             slot.config.slotId,
             event.sensorId,
-            event.occurredAt);
+            event.occurredAt,
+            event.receivedMonotonic);
 
         auto result = makeResult(
             ParkingTransitionCode::SessionStarted,

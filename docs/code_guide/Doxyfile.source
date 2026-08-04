@@ -1,0 +1,29 @@
+PROJECT_NAME           = "Pi Server Source Reference"
+OUTPUT_DIRECTORY       = $(DOC_BUILD_DIR)/source
+INPUT                  = $(PROJECT_ROOT)/include \
+                         $(PROJECT_ROOT)/src \
+                         $(PROJECT_ROOT)/driver \
+                         $(PROJECT_ROOT)/tools \
+                         $(PROJECT_ROOT)/tests
+FILE_PATTERNS          = *.h *.hpp *.c *.cc *.cpp
+RECURSIVE              = YES
+FULL_PATH_NAMES        = YES
+STRIP_FROM_PATH        = $(PROJECT_ROOT)/
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+SKIP_FUNCTION_MACROS   = YES
+GENERATE_HTML          = NO
+GENERATE_LATEX         = NO
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+XML_PROGRAMLISTING     = NO
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_LOGFILE           = $(DOC_BUILD_DIR)/source-doxygen-warnings.log

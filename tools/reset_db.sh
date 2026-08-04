@@ -14,8 +14,8 @@ if [[ -f "${DB_PATH}" ]]; then
     rm -- "${DB_PATH}"
 fi
 
-sqlite3 -bail "${DB_PATH}" < "${PROJECT_ROOT}/tools/db_init.sql"
-sqlite3 -bail "${DB_PATH}" < "${PROJECT_ROOT}/tools/db_seed.sql"
+sqlite3 -bail "${DB_PATH}" < "${PROJECT_ROOT}/db/schema.sql"
+sqlite3 -bail "${DB_PATH}" < "${PROJECT_ROOT}/db/seed.sql"
 
 echo "DB 초기화 완료: ${DB_PATH}"
 sqlite3 "${DB_PATH}" ".tables"

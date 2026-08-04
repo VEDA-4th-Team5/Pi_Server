@@ -21,6 +21,8 @@ struct IvaAreaConfig {
     double roi_y;
     double roi_width;
     double roi_height;
+    // CV Snapshot OpenAPI의 0-based channel. RTSP channel_id와 별도다.
+    int snapshot_api_channel{0};
 };
 
 struct AppConfig {
@@ -32,6 +34,61 @@ struct AppConfig {
     std::string mqtt_event_sub_topic;
     std::string qt_event_topic_prefix;
     std::string default_channel_id;
+    bool hall_mqtt_input_enabled;
+    std::string hall_mqtt_topic;
+    std::string parking_slot_config_path;
+    std::string sensor_link_mode;
+    std::string sensor_uart_device;
+    int sensor_uart_baud_rate;
+    int sensor_uart_read_timeout_ms;
+    int sensor_uart_reconnect_ms;
+
+    // 홀센서 OCCUPIED가 이 시간 이상 유지되어야 DB 세션을 생성한다.
+    // 0이면 기존처럼 첫 OCCUPIED를 즉시 확정한다.
+    int parking_occupancy_confirm_ms;
+
+    // 확정된 입차 T0를 기준으로 30초/60초 MQTT 촬영 요청을 예약한다.
+    bool capture_sched_enabled;
+    std::string capture_topic_prefix;
+    int capture_response_timeout_ms;
+    int capture_retry_interval_ms;
+    int capture_max_retries;
+    // 실제 RTSP ROI 30/60초 촬영을 Gemini 재시도 정책에 연결한다.
+    bool hall_capture_ocr_enabled;
+    std::string capture_offsets_sec;
+    int capture_ocr_max_attempts;
+
+    // CV5 cv_snapshot_api에서 original/enhanced JPEG를 생성·다운로드한다.
+    bool camera_snapshot_api_enabled;
+    bool camera_snapshot_api_rtsp_fallback;
+    std::string camera_open_api_base;
+    std::string camera_image_base;
+    std::string camera_api_username;
+    std::string camera_api_password;
+    int camera_image_server_port;
+    int camera_snapshot_connect_timeout_ms;
+    int camera_snapshot_request_timeout_ms;
+    int camera_snapshot_jpeg_timeout_ms;
+    int camera_snapshot_max_retries;
+    int camera_snapshot_retry_delay_ms;
+
+    // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
+    // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
+    bool fire_alarm_enabled;
+    std::string fire_uart_device;
+    int fire_uart_baud;
+    int fire_uart_reopen_delay_ms;
+    std::string fire_topic_prefix;
+    std::string fire_command_topic_prefix;
+    std::string fire_sensor_channel_map;
+
+    // 홀센서 주차 점유 경로 (STM32 UART -> Pi). 화재 경로와 같은 STM32 UART 링크를
+    // 공유하므로 별도 device 설정을 두지 않고 fire_uart_* 를 재사용한다.
+    // 슬롯/센서 매핑은 코드가 아니라 아래 JSON 설정 파일에서 읽는다.
+    bool parking_hall_enabled;
+    std::string parking_slots_config_path;
+    // DB/파일 작업이 센서 입력보다 느릴 때 메모리가 무제한 증가하지 않게 한다.
+    int parking_hall_work_queue_capacity{100};
 
     std::string snapshot_dir;
     std::string db_path;
@@ -52,6 +109,11 @@ struct AppConfig {
     int iva_duplicate_suppression_ms;
     int gemini_connect_timeout_sec;
     int gemini_request_timeout_sec;
+
+    bool parking_timer_enabled;
+    int parking_timeout_seconds;
+    // 모든 활성 세션의 장기 점유 증거 촬영 지연. 기본 1시간이다.
+    int parking_overstay_evidence_delay_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

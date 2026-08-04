@@ -6,9 +6,12 @@
 #include "ocr/PlateImageEnhancer.hpp"
 #include "util/Logger.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <utility>
 
 namespace mqtt {
 
@@ -53,7 +56,9 @@ MqttEventBridge::MqttEventBridge(
     database::EventDatabase& database,
     snapshot::SnapshotStorage& snapshot_storage,
     parking::ParkingTriggerCoordinator& trigger_coordinator,
-    ocr::OcrWorker& ocr_worker
+    ocr::OcrWorker& ocr_worker,
+    SensorMessageHandler sensor_message_handler,
+    FireAckHandler fire_ack_handler
 )
     : config_(config),
       channels_(channels),
@@ -61,6 +66,8 @@ MqttEventBridge::MqttEventBridge(
       snapshot_storage_(snapshot_storage),
       trigger_coordinator_(trigger_coordinator),
       ocr_worker_(ocr_worker),
+      sensor_message_handler_(std::move(sensor_message_handler)),
+      fire_ack_handler_(std::move(fire_ack_handler)),
       mosq_(nullptr) {
 }
 
@@ -89,6 +96,28 @@ bool MqttEventBridge::start() {
     if (rc != MOSQ_ERR_SUCCESS) {
         util::logError(std::string("MQTT connect failed: ") + mosquitto_strerror(rc));
         return false;
+    }
+
+    if (config_.hall_mqtt_input_enabled) {
+        rc = mosquitto_subscribe(
+            mosq_, nullptr, config_.hall_mqtt_topic.c_str(), 1);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            util::logError(std::string("Hall MQTT subscribe failed: ") +
+                           mosquitto_strerror(rc));
+            return false;
+        }
+    }
+
+    if (config_.fire_alarm_enabled && fire_ack_handler_) {
+        const std::string command_filter =
+            config_.fire_command_topic_prefix + "/+";
+        rc = mosquitto_subscribe(
+            mosq_, nullptr, command_filter.c_str(), 1);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            util::logError(std::string("Fire ACK MQTT subscribe failed: ") +
+                           mosquitto_strerror(rc));
+            return false;
+        }
     }
 
     rc = mosquitto_subscribe(
@@ -121,6 +150,11 @@ bool MqttEventBridge::start() {
     }
 
     util::logInfo("MQTT subscribed: " + config_.mqtt_event_sub_topic);
+    if (config_.hall_mqtt_input_enabled)
+        util::logInfo("Hall MQTT subscribed: " + config_.hall_mqtt_topic);
+    if (config_.fire_alarm_enabled && fire_ack_handler_)
+        util::logInfo("Fire ACK MQTT subscribed: " +
+                      config_.fire_command_topic_prefix + "/+");
 
     return true;
 }
@@ -163,6 +197,51 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
             static_cast<const char*>(message->payload),
             message->payloadlen
         );
+    }
+
+
+    if (config_.hall_mqtt_input_enabled &&
+        raw_topic == config_.hall_mqtt_topic) {
+        if (sensor_message_handler_) sensor_message_handler_(raw_payload);
+        return;
+    }
+
+    const std::string fire_command_prefix =
+        config_.fire_command_topic_prefix + "/";
+    if (config_.fire_alarm_enabled && fire_ack_handler_ &&
+        raw_topic.rfind(fire_command_prefix, 0) == 0) {
+        const std::string channel_id =
+            raw_topic.substr(fire_command_prefix.size());
+        if (channel_id.empty() || channel_id.find('/') != std::string::npos) {
+            util::logWarn("Fire ACK rejected: invalid command topic " +
+                          raw_topic);
+            return;
+        }
+        try {
+            const auto body = nlohmann::json::parse(raw_payload);
+            if (!body.is_object() ||
+                body.value("command", std::string{}) != "ALARM_ACK") {
+                util::logWarn("Fire ACK rejected: unsupported command");
+                return;
+            }
+            const std::string payload_channel =
+                body.value("channel_id", std::string{});
+            if (!payload_channel.empty() && payload_channel != channel_id) {
+                util::logWarn("Fire ACK rejected: topic/payload channel mismatch");
+                return;
+            }
+            const std::string alarm_id =
+                body.value("alarm_id",
+                           body.value("event_id", std::string{}));
+            if (!fire_ack_handler_(channel_id, alarm_id)) {
+                util::logWarn("Fire ACK was not applied: channel=" + channel_id +
+                              " alarm_id=" + alarm_id);
+            }
+        } catch (const std::exception& error) {
+            util::logWarn("Fire ACK rejected: invalid JSON: " +
+                          std::string(error.what()));
+        }
+        return;
     }
 
     // 카메라마다 다른 raw topic을 서버 내부의 공통 이벤트 형식으로 정규화한다.
@@ -233,7 +312,7 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
 
         std::string qt_topic = config_.qt_event_topic_prefix + "/" +
             config_.camera_id + "/" + channel->channel_id + "/event";
-        publish(qt_topic, payload_json);
+        publish(qt_topic, payload_json, 0, false);
         util::logLine("IVA_SNAPSHOT", "slot=" + area->slot_id +
                       " area=" + area->area_name +
                       " channel=" + area->channel_id +
@@ -251,7 +330,9 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
 
 bool MqttEventBridge::publish(
     const std::string& topic,
-    const std::string& payload
+    const std::string& payload,
+    const int qos,
+    const bool retain
 ) {
     if (!mosq_) {
         return false;
@@ -263,8 +344,8 @@ bool MqttEventBridge::publish(
         topic.c_str(),
         static_cast<int>(payload.size()),
         payload.c_str(),
-        0,
-        false
+        qos,
+        retain
     );
 
     if (rc != MOSQ_ERR_SUCCESS) {
@@ -273,6 +354,20 @@ bool MqttEventBridge::publish(
     }
 
     return true;
+}
+
+bool MqttEventBridge::publishQtEvent(const std::string& topic,
+                                     const std::string& payload,
+                                     const int qos,
+                                     const bool retain) {
+    return publish(topic, payload, qos, retain);
+}
+
+bool MqttEventBridge::publishApplicationEvent(const std::string& topic,
+                                              const std::string& payload,
+                                              const int qos,
+                                              const bool retain) {
+    return publish(topic, payload, qos, retain);
 }
 
 }

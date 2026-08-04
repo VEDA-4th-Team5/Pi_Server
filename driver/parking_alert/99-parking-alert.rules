@@ -1,0 +1,2 @@
+# 운영 계정이 sudo 없이 /dev/parking_alert를 사용할 수 있게 한다.
+KERNEL=="parking_alert", GROUP="dialout", MODE="0660"

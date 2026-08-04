@@ -6,6 +6,11 @@
 
 static sqlite3 *g_db = NULL;
 
+sqlite3 *db_native_handle(void)
+{
+    return g_db;
+}
+
 /* 공개 DB 함수가 연결 없이 호출되는 실수를 공통으로 검사한다. */
 static int require_db(const char *context)
 {
@@ -111,13 +116,15 @@ void db_close(void)
     g_db = NULL;
 }
 
-int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev)
+int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id,
+                            int *is_ev, int *is_phev)
 {
     static const char *sql =
-        "SELECT vehicle_id, is_ev FROM VEHICLE WHERE plate_number = ?;";
+        "SELECT vehicle_id, is_ev, is_phev FROM VEHICLE WHERE plate_number = ?;";
     sqlite3_stmt *stmt = NULL;
     int rc;
-    if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL) return -1;
+    if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL ||
+        is_phev == NULL) return -1;
     if (prepare(&stmt, sql, "차량 조회") < 0) return -2;
     if (sqlite3_bind_text(stmt, 1, plate_number, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
         fprintf(stderr, "[DB] 차량 조회 bind 실패: %s\n", sqlite3_errmsg(g_db));
@@ -137,6 +144,7 @@ int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_e
     }
     *vehicle_id = sqlite3_column_int(stmt, 0);
     *is_ev = sqlite3_column_int(stmt, 1);
+    *is_phev = sqlite3_column_int(stmt, 2);
     sqlite3_finalize(stmt);
     return 0;
 }
@@ -329,7 +337,8 @@ int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
         "COALESCE(p.updated_at,''),s.session_id,COALESCE(s.plate_number,''),"
         "COALESCE(s.entry_time,''),v.is_ev FROM PARKING_SLOT p "
         "LEFT JOIN PARKING_SESSION s ON s.session_id=(SELECT session_id FROM "
-        "PARKING_SESSION WHERE slot_id=p.slot_id AND status='ACTIVE' "
+        "PARKING_SESSION WHERE slot_id=p.slot_id "
+        "AND status IN ('ACTIVE','VIOLATION') "
         "ORDER BY entry_time DESC,session_id DESC LIMIT 1) "
         "LEFT JOIN VEHICLE v ON v.vehicle_id=s.vehicle_id ORDER BY p.slot_id;";
     static const char *sql_one =
@@ -337,7 +346,8 @@ int db_visit_parking_slots(const char *slot_id, DbParkingSlotVisitor visitor,
         "COALESCE(p.updated_at,''),s.session_id,COALESCE(s.plate_number,''),"
         "COALESCE(s.entry_time,''),v.is_ev FROM PARKING_SLOT p "
         "LEFT JOIN PARKING_SESSION s ON s.session_id=(SELECT session_id FROM "
-        "PARKING_SESSION WHERE slot_id=p.slot_id AND status='ACTIVE' "
+        "PARKING_SESSION WHERE slot_id=p.slot_id "
+        "AND status IN ('ACTIVE','VIOLATION') "
         "ORDER BY entry_time DESC,session_id DESC LIMIT 1) "
         "LEFT JOIN VEHICLE v ON v.vehicle_id=s.vehicle_id WHERE p.slot_id=?;";
     sqlite3_stmt *stmt = NULL;
@@ -386,8 +396,9 @@ static void fill_image_row(sqlite3_stmt *stmt, DbImageRow *row)
     copy_column_text(stmt, 2, row->original_path, sizeof(row->original_path));
     copy_column_text(stmt, 3, row->enhanced_path, sizeof(row->enhanced_path));
     copy_column_text(stmt, 4, row->enhancement_type, sizeof(row->enhancement_type));
-    copy_column_text(stmt, 5, row->ocr_result, sizeof(row->ocr_result));
-    copy_column_text(stmt, 6, row->captured_at, sizeof(row->captured_at));
+    copy_column_text(stmt, 5, row->evidence_reason, sizeof(row->evidence_reason));
+    copy_column_text(stmt, 6, row->ocr_result, sizeof(row->ocr_result));
+    copy_column_text(stmt, 7, row->captured_at, sizeof(row->captured_at));
 }
 
 int db_visit_session_images(int session_id, DbImageVisitor visitor, void *context)
@@ -395,7 +406,8 @@ int db_visit_session_images(int session_id, DbImageVisitor visitor, void *contex
     static const char *sql =
         "SELECT image_id,session_id,COALESCE(original_image_path,''),"
         "COALESCE(enhanced_image_path,''),COALESCE(enhancement_type,''),"
-        "COALESCE(ocr_result,''),COALESCE(captured_at,'') FROM IMAGE_LOG "
+        "COALESCE(evidence_reason,''),COALESCE(ocr_result,''),"
+        "COALESCE(captured_at,'') FROM IMAGE_LOG "
         "WHERE session_id=? ORDER BY captured_at,image_id;";
     sqlite3_stmt *stmt = NULL;
     int rc;
@@ -420,12 +432,26 @@ int db_visit_session_images(int session_id, DbImageVisitor visitor, void *contex
     return count;
 }
 
+int db_delete_session_images(int session_id)
+{
+    static const char *sql = "DELETE FROM IMAGE_LOG WHERE session_id=?;";
+    sqlite3_stmt *stmt = NULL;
+    if (session_id < 0) return -1;
+    if (prepare(&stmt, sql, "세션 이미지 로그 삭제") < 0) return -2;
+    if (sqlite3_bind_int(stmt, 1, session_id) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return -3;
+    }
+    return finish_update(stmt, "세션 이미지 로그 삭제", 0);
+}
+
 int db_get_image_by_id(int image_id, DbImageRow *row)
 {
     static const char *sql =
         "SELECT image_id,session_id,COALESCE(original_image_path,''),"
         "COALESCE(enhanced_image_path,''),COALESCE(enhancement_type,''),"
-        "COALESCE(ocr_result,''),COALESCE(captured_at,'') FROM IMAGE_LOG "
+        "COALESCE(evidence_reason,''),COALESCE(ocr_result,''),"
+        "COALESCE(captured_at,'') FROM IMAGE_LOG "
         "WHERE image_id=?;";
     sqlite3_stmt *stmt = NULL;
     int rc;
