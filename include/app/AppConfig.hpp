@@ -111,9 +111,9 @@ struct AppConfig {
     int gemini_request_timeout_sec;
 
     bool parking_timer_enabled;
-    int parking_timeout_seconds;
-    // 모든 활성 세션의 장기 점유 증거 촬영 지연. 기본 1시간이다.
-    int parking_overstay_evidence_delay_seconds;
+    // 위반 판정과 OVERSTAY_EVIDENCE가 함께 사용하는 단일 부트스트랩 값.
+    // 서버 시작 후에는 SQLite SYSTEM_SETTINGS 값이 우선한다.
+    int parking_overstay_threshold_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

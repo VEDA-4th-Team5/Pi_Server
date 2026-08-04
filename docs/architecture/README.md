@@ -160,6 +160,12 @@ CAMERA_IMAGE_SERVER_PORT=8080
 
 ## 4. 조기 출차와 장기 점유
 
+장기 점유 판정과 `OVERSTAY_EVIDENCE` 촬영은 독립된 환경변수가 아니라
+`SYSTEM_SETTINGS.overstay_threshold_seconds` 단일 값을 사용한다. Qt는
+`GET/PUT /api/v1/settings/overstay-threshold`로 시간·분·초 UI의 총 초 값을 조회·변경한다.
+변경 시 `TimerManager`의 이전 generation은 무효화되고 활성 타이머와 증거 작업은 원래
+입차 T0 기준으로 재예약된다.
+
 ### 4.1 1시간 이전 VACANT
 
 ```text

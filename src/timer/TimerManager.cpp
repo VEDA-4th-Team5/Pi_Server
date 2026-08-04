@@ -90,12 +90,26 @@ void TimerManager::schedule(const std::int64_t log_id,
                             std::string slot_id,
                             std::string car_number,
                             const std::chrono::milliseconds delay) {
+    scheduleImpl(log_id, std::move(slot_id), std::move(car_number), delay);
+}
+
+void TimerManager::reschedule(const std::int64_t log_id,
+                              std::string slot_id,
+                              std::string car_number,
+                              const std::chrono::milliseconds delay) {
+    scheduleImpl(log_id, std::move(slot_id), std::move(car_number), delay);
+}
+
+void TimerManager::scheduleImpl(const std::int64_t log_id,
+                                std::string slot_id,
+                                std::string car_number,
+                                const std::chrono::milliseconds delay) {
     if (delay <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("timer delay must be positive");
     }
 
     // system_clock 보정/NTP 변경에 흔들리지 않도록 deadline은 steady_clock으로만 계산한다.
-    TimerItem item{Clock::now() + delay, 0, log_id, std::move(slot_id),
+    TimerItem item{Clock::now() + delay, 0, 0, log_id, std::move(slot_id),
                    std::move(car_number), 0, 0, {}};
     bool became_earliest{};
     {
@@ -104,6 +118,7 @@ void TimerManager::schedule(const std::int64_t log_id,
             throw std::runtime_error("TimerManager is stopping");
         }
         item.sequence = next_sequence_++;
+        item.generation = ++generations_[log_id];
         became_earliest = queue_.empty() || item.deadline < queue_.top().deadline;
         queue_.push(std::move(item));
     }
@@ -120,7 +135,22 @@ void TimerManager::schedule(const std::int64_t log_id,
  */
 std::size_t TimerManager::pendingCount() const {
     std::lock_guard lock(mutex_);
-    return queue_.size();
+    auto copy = queue_;
+    std::size_t count{};
+    while (!copy.empty()) {
+        const auto& item = copy.top();
+        const auto found = generations_.find(item.log_id);
+        if (found != generations_.end() && found->second == item.generation)
+            ++count;
+        copy.pop();
+    }
+    return count;
+}
+
+bool TimerManager::isCurrent(const TimerItem& item) const {
+    std::lock_guard lock(mutex_);
+    const auto found = generations_.find(item.log_id);
+    return found != generations_.end() && found->second == item.generation;
 }
 
 /**
@@ -182,6 +212,9 @@ void TimerManager::processExpired(TimerItem item) {
             transition_lock = std::unique_lock<std::mutex>{*transition_mutex_};
         }
 
+        // 기준시간 변경으로 교체된 이전 generation은 DB와 callback에 도달하지 않는다.
+        if (!isCurrent(item)) return;
+
         // DB 장애로 재시도하더라도 실제 최초 deadline 시각이 복구 시각으로 바뀌지 않게 고정한다.
         if (item.violation_at.empty()) {
             item.violation_at = utcNow();
@@ -241,6 +274,15 @@ void TimerManager::processExpired(TimerItem item) {
         if (!marked) {
             // 출차가 먼저 is_canceled=1로 만들었다면 이것이 의도한 lazy deletion 결과다.
             return;
+        }
+
+        {
+            std::lock_guard lock(mutex_);
+            const auto found = generations_.find(item.log_id);
+            if (found != generations_.end() &&
+                found->second == item.generation) {
+                generations_.erase(found);
+            }
         }
 
         if (callback_) {

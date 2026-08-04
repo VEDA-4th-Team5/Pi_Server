@@ -126,6 +126,32 @@ int main() {
                     .has_value(),
                 "canceled fixture session was not closed");
 
+        require(worker.updateOverstayDelay(400ms) == 0,
+                "empty evidence queue unexpectedly changed");
+        const auto rescheduled_session = database.createHallSession(
+            "EV02", "HALL02", "2026-07-27T09:12:00");
+        require(worker.scheduleSession({rescheduled_session, "EV02", channel,
+                    {0.0, 0.0, 1.0, 1.0},
+                    std::chrono::steady_clock::now()}),
+                "evidence reschedule fixture failed");
+        require(waitUntil([&] {
+                    std::vector<database::ImageView> images;
+                    return database.listSessionImages(
+                               static_cast<int>(rescheduled_session), images) &&
+                           countReason(images,
+                               "OCCUPANCY_START_EVIDENCE") == 1;
+                }, 1s), "reschedule start evidence missing");
+        require(worker.updateOverstayDelay(80ms) == 1,
+                "active overstay evidence deadline was not replaced");
+        require(waitUntil([&] {
+                    std::vector<database::ImageView> images;
+                    return database.listSessionImages(
+                               static_cast<int>(rescheduled_session), images) &&
+                           countReason(images, "OVERSTAY_EVIDENCE") == 1;
+                }, 500ms), "shortened evidence delay did not take effect");
+        require(database.departActiveBySlot("EV02", "2026-07-27T09:13:00")
+                    .has_value(), "reschedule fixture session was not closed");
+
         // 재시작 복원: DB에 시작 증거만 남은 ACTIVE 세션은 원래 T0에서
         // 계산한 남은 시간 뒤 초과 증거만 한 번 예약해야 한다.
         const auto restored_session = database.createHallSession(

@@ -199,13 +199,13 @@ CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false</pre>
 <pre>SessionStarted
 → EvidenceCaptureWorker::scheduleSession()
 ├─ 즉시: OCCUPANCY_START_EVIDENCE 저장 + IMAGE_LOG
-└─ T0 + PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS 예약
+└─ T0 + SYSTEM_SETTINGS.overstay_threshold_seconds 예약
    → 세션이 ACTIVE이면 OVERSTAY_EVIDENCE 저장 + IMAGE_LOG
 
 OCR에서 EV/PHEV 판정
 → parking_timer::ParkingSlotManager::handleRecognizedSession()
 → 기존 SQLite session_id 그대로 TimerManager::schedule()
-→ 1시간 만료 시 DB를 VIOLATION으로 전환
+→ 설정된 기준시간 만료 시 DB를 VIOLATION으로 전환
 → Qt MQTT OVERTIME_VIOLATION 발행
 
 VACANT
@@ -504,7 +504,7 @@ Pi_Server_Code_Guide.pdf</pre>
 <tr><td>MQTT 이벤트 없음</td><td>Mosquitto broker, subscribe topic, 카메라 publication, <code>MqttEventBridge</code> 로그</td></tr>
 <tr><td>IVA 사진 없음</td><td><code>IvaAreaConfig</code>의 channel/slot/ROI, 최신 frame 존재 여부, 저장 권한</td></tr>
 <tr><td>30/60초 촬영 없음</td><td><code>CAPTURE_SCHED_ENABLED</code>, <code>CAPTURE_OFFSETS_SEC</code>, SessionStarted와 <code>HallCaptureExecutor</code> 로그</td></tr>
-<tr><td>시작/장기점유 증거 없음</td><td>실제 SQLite session_id, FrameBuffer, ROI, <code>PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS</code>, Evidence worker 로그</td></tr>
+<tr><td>시작/장기점유 증거 없음</td><td>실제 SQLite session_id, FrameBuffer, ROI, <code>SYSTEM_SETTINGS.overstay_threshold_seconds</code>, Evidence worker 로그</td></tr>
 <tr><td>BestShot 없음</td><td>metadata profile, image URL, object type, <code>BestShotReceiver</code> download 로그</td></tr>
 <tr><td>OCR 실패</td><td>Gemini key/model/timeout, enhanced 이미지, 정규화 전 raw 결과</td></tr>
 <tr><td>EV 판별 오류</td><td><code>VEHICLE</code>의 plate_number/is_ev/is_phev, 정규화된 번호판</td></tr>

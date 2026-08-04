@@ -311,7 +311,8 @@ add_test(NAME camera-snapshot-api-client-test
 
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
-    src/http/ParkingHttpServer.cpp)
+    src/http/ParkingHttpServer.cpp
+    src/settings/OverstayThresholdService.cpp)
 target_include_directories(http-api-test PRIVATE include)
 target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE

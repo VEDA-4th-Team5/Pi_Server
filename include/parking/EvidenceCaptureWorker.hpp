@@ -73,6 +73,8 @@ public:
     bool restoreSession(EvidenceCaptureRequest request);
     /** @brief 타이머가 먼저 만료되면 기존 초과 증거 작업을 즉시 실행 대상으로 만든다. */
     bool expediteOverstay(std::int64_t session_id);
+    /** @brief 모든 활성 세션의 초과 증거 deadline을 같은 T0 기준으로 재계산한다. */
+    std::size_t updateOverstayDelay(std::chrono::milliseconds delay);
     /** @brief VACANT 세션의 아직 실행되지 않은 작업을 취소한다. */
     void cancelSession(std::int64_t session_id);
     [[nodiscard]] std::size_t pendingCount() const;
@@ -82,6 +84,7 @@ private:
     struct Job {
         Clock::time_point deadline;
         std::uint64_t sequence{};
+        std::uint64_t generation{};
         EvidenceCaptureRequest request;
         EvidenceReason reason{EvidenceReason::OccupancyStart};
         bool terminal{};
@@ -111,6 +114,7 @@ private:
     bool running_{};
     bool stopping_{};
     std::uint64_t nextSequence_{};
+    std::uint64_t overstayGeneration_{1};
     std::optional<std::int64_t> inFlightSession_;
     std::optional<EvidenceReason> inFlightReason_;
     std::thread worker_;

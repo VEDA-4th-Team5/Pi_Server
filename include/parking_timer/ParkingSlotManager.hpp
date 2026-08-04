@@ -32,6 +32,10 @@ public:
     /** @brief 서버 재시작 시 DB의 EV/PHEV 활성 세션을 타이머 큐에 복구한다. */
     std::size_t restoreActiveSessions();
 
+    /** @brief 활성 EV/PHEV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다. */
+    std::size_t updateParkingTimeout(std::chrono::milliseconds parking_timeout);
+    [[nodiscard]] std::chrono::milliseconds parkingTimeout() const;
+
     /** @brief 활성 세션을 출차 처리하며 없으면 nullopt를 반환한다. */
     std::optional<LogRecord> handleExit(const std::string& slot_id);
     /** @brief lazy-canceled 항목을 포함한 현재 우선순위 큐 크기를 반환한다. */
@@ -42,7 +46,7 @@ private:
     EventManager& events_;
     std::chrono::milliseconds parking_timeout_;
     // 입차/출차/만료의 DB 변경과 이벤트 발행 순서를 직렬화한다.
-    std::mutex transition_mutex_;
+    mutable std::mutex transition_mutex_;
     std::unordered_set<std::int64_t> scheduled_session_ids_;
     TimerManager timers_;
 };

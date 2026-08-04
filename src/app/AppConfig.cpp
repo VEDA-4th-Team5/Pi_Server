@@ -207,11 +207,12 @@ AppConfig AppConfig::loadFromEnv() {
 
     config.parking_timer_enabled =
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
-    config.parking_timeout_seconds =
-        std::max(1, getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600));
-    config.parking_overstay_evidence_delay_seconds = std::max(
-        1, getEnvIntOrDefault(
-               "PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS", 3600));
+    // 새 단일 설정이 없을 때만 기존 PARKING_TIMEOUT_SECONDS를 시작 기본값으로
+    // 받아 이전 배포 설정과 호환한다. 이후 REST 변경값은 SQLite가 우선한다.
+    config.parking_overstay_threshold_seconds = std::clamp(
+        getEnvIntOrDefault("PARKING_OVERSTAY_THRESHOLD_SECONDS",
+            getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600)),
+        60, 86400);
 
     config.http_api_enabled = getEnvBoolOrDefault("HTTP_API_ENABLED", true);
     config.http_listen_address = getEnvOrDefault("HTTP_LISTEN_ADDRESS", "0.0.0.0");
