@@ -124,6 +124,11 @@ public:
     /** @brief 파일 삭제가 끝난 조기 출차 세션의 IMAGE_LOG 행을 모두 제거한다. */
     bool deleteSessionImageRecords(int session_id);
 
+    /** @brief 런타임 설정 문자열을 조회한다. 키가 없으면 nullopt를 반환한다. */
+    std::optional<std::string> getSystemSetting(const std::string& key) const;
+    /** @brief 런타임 설정을 원자적으로 추가하거나 갱신한다. */
+    bool upsertSystemSetting(const std::string& key, const std::string& value);
+
     /** @brief 서버 시작 시 운영 DB에 안전한 멱등 migration만 적용한다. */
     void migrateRuntimeSchema();
     /** @brief 홀센서 입차의 ACTIVE 세션을 만들고 실제 SQLite ID를 반환한다. */

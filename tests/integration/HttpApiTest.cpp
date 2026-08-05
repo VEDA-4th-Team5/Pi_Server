@@ -1,15 +1,19 @@
 #include "database/EventDatabase.hpp"
 #include "http/ParkingHttpServer.hpp"
+#include "settings/OverstayThresholdService.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
 #include <cstdlib>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <vector>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -61,6 +65,8 @@ int main() {
     // 구형 IMAGE_LOG에서 시작해도 migration이 반복 실행 가능해야 한다.
     database.migrateRuntimeSchema();
     database.migrateRuntimeSchema();
+    settings::OverstayThresholdService overstay_settings(database);
+    if (!overstay_settings.initialize()) return 1;
     const fs::path start_evidence = data / "snapshots" / "start.jpg";
     const fs::path overstay_evidence = data / "snapshots" / "overstay.jpg";
     { std::ofstream output(start_evidence, std::ios::binary); output << "start"; }
@@ -84,7 +90,7 @@ int main() {
         config.tls_certificate_path = tls_cert;
         config.tls_private_key_path = tls_key;
     }
-    http::ParkingHttpServer server(database, config);
+    http::ParkingHttpServer server(database, config, &overstay_settings);
     if (!server.start()) return 1;
     httplib::Client client(std::string(test_tls ? "https://" : "http://") +
                            "127.0.0.1:" + std::to_string(config.port));
@@ -94,6 +100,62 @@ int main() {
     bool success = true;
     auto health = client.Get("/api/v1/health");
     success &= expect(health && health->status == 200, "health endpoint");
+    auto threshold = client.Get("/api/v1/settings/overstay-threshold");
+    success &= expect(threshold && threshold->status == 200 &&
+        nlohmann::json::parse(threshold->body).at("thresholdSeconds") == 3600,
+        "default overstay threshold");
+    auto updated = client.Put("/api/v1/settings/overstay-threshold",
+                              "{\"thresholdSeconds\":1800}",
+                              "application/json");
+    success &= expect(updated && updated->status == 200 &&
+        nlohmann::json::parse(updated->body).at("applyPolicy") ==
+            "ACTIVE_AND_NEW_SESSIONS",
+        "PUT overstay threshold");
+    threshold = client.Get("/api/settings/overstay-threshold");
+    success &= expect(threshold && threshold->status == 200 &&
+        nlohmann::json::parse(threshold->body).at("thresholdSeconds") == 1800,
+        "updated threshold and compatibility route");
+    for (const std::string body : {
+             "{\"thresholdSeconds\":59}",
+             "{\"thresholdSeconds\":86401}",
+             "{\"thresholdSeconds\":\"1800\"}", "not-json"}) {
+        auto invalid = client.Put("/api/v1/settings/overstay-threshold", body,
+                                  "application/json");
+        success &= expect(invalid && invalid->status == 400,
+                          "invalid threshold rejected");
+    }
+    success &= expect(overstay_settings.thresholdSeconds() == 1800,
+                      "invalid PUT did not change setting");
+    std::atomic<bool> concurrent_ok{true};
+    std::vector<std::thread> clients;
+    for (int index = 0; index < 4; ++index) {
+        clients.emplace_back([&, index] {
+            httplib::Client concurrent_client(
+                std::string(test_tls ? "https://" : "http://") +
+                "127.0.0.1:" + std::to_string(config.port));
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            if (test_tls)
+                concurrent_client.enable_server_certificate_verification(false);
+#endif
+            for (int request = 0; request < 5; ++request) {
+                const int seconds = 1800 + ((index + request) % 4) * 60;
+                const auto put = concurrent_client.Put(
+                    "/api/v1/settings/overstay-threshold",
+                    "{\"thresholdSeconds\":" + std::to_string(seconds) + "}",
+                    "application/json");
+                const auto get = concurrent_client.Get(
+                    "/api/v1/settings/overstay-threshold");
+                if (!put || put->status != 200 || !get || get->status != 200)
+                    concurrent_ok.store(false);
+            }
+        });
+    }
+    for (auto& thread : clients) thread.join();
+    success &= expect(concurrent_ok.load(), "concurrent GET/PUT requests");
+    updated = client.Put("/api/v1/settings/overstay-threshold",
+                         "{\"thresholdSeconds\":1800}", "application/json");
+    success &= expect(updated && updated->status == 200,
+                      "deterministic final threshold restore");
     auto slots = client.Get("/api/v1/parking-slots");
     success &= expect(slots && slots->status == 200, "parking slots endpoint");
     if (slots) success &= expect(nlohmann::json::parse(slots->body).at("count") == 2,
@@ -126,7 +188,15 @@ int main() {
     success &= expect(enhanced && enhanced->status == 404,
                       "missing enhanced image is explicit");
     server.stop();
+    settings::OverstayThresholdService reloaded_settings(database);
+    success &= expect(reloaded_settings.initialize() &&
+                      reloaded_settings.thresholdSeconds() == 1800,
+                      "threshold persisted across settings reload");
     database.close();
+    const auto failed_update = overstay_settings.update(2400);
+    success &= expect(!failed_update.success &&
+                      overstay_settings.thresholdSeconds() == 1800,
+                      "DB failure preserved in-memory threshold");
     fs::remove_all(root);
     if (success) std::cout << "HTTP API integration test passed\n";
     return success ? 0 : 1;

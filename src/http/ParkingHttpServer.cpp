@@ -1,6 +1,7 @@
 #include "http/ParkingHttpServer.hpp"
 
 #include "database/EventDatabase.hpp"
+#include "settings/OverstayThresholdService.hpp"
 #include "util/Logger.hpp"
 
 #include <httplib.h>
@@ -82,8 +83,10 @@ bool parsePositiveId(const std::string& value, int& output) {
 
 namespace http {
 ParkingHttpServer::ParkingHttpServer(database::EventDatabase& database,
-                                     ServerConfig config)
-    : database_(database), config_(std::move(config)) {}
+                                     ServerConfig config,
+                                     settings::OverstayThresholdService* overstay_settings)
+    : database_(database), overstay_settings_(overstay_settings),
+      config_(std::move(config)) {}
 ParkingHttpServer::~ParkingHttpServer() { stop(); }
 
 bool ParkingHttpServer::start() {
@@ -139,6 +142,64 @@ void ParkingHttpServer::registerRoutes() {
     server_->Get("/api/v1/health", [](const httplib::Request&, httplib::Response& res) {
         sendJson(res, {{"status", "ok"}, {"service", "pi-server"}});
     });
+    if (overstay_settings_ != nullptr) {
+        const auto get_threshold = [this](const httplib::Request&,
+                                          httplib::Response& res) {
+            const int seconds = overstay_settings_->thresholdSeconds();
+            sendJson(res, {{"thresholdSeconds", seconds},
+                           {"thresholdMinutes", seconds / 60.0},
+                           {"applyPolicy", "ACTIVE_AND_NEW_SESSIONS"}});
+        };
+        const auto put_threshold = [this](const httplib::Request& req,
+                                          httplib::Response& res) {
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (...) {
+                util::logWarn("Overstay threshold PUT rejected: malformed JSON");
+                sendJson(res, {{"success", false},
+                               {"error", "request body must be valid JSON"}}, 400);
+                return;
+            }
+            if (!body.is_object() || !body.contains("thresholdSeconds") ||
+                !body["thresholdSeconds"].is_number_integer()) {
+                util::logWarn("Overstay threshold PUT rejected: integer required");
+                sendJson(res, {{"success", false},
+                               {"error", "thresholdSeconds must be an integer"}}, 400);
+                return;
+            }
+            std::int64_t raw{};
+            try {
+                raw = body["thresholdSeconds"].get<std::int64_t>();
+            } catch (...) {
+                util::logWarn("Overstay threshold PUT rejected: integer overflow");
+                sendJson(res, {{"success", false},
+                               {"error", "thresholdSeconds must be an integer"}}, 400);
+                return;
+            }
+            if (raw < settings::OverstayThresholdService::kMinimumSeconds ||
+                raw > settings::OverstayThresholdService::kMaximumSeconds) {
+                util::logWarn("Overstay threshold PUT rejected: out of range");
+                sendJson(res, {{"success", false},
+                               {"error", "thresholdSeconds must be between 60 and 86400"}}, 400);
+                return;
+            }
+            const auto result = overstay_settings_->update(static_cast<int>(raw));
+            if (!result.success) {
+                sendJson(res, {{"success", false}, {"error", result.error}}, 500);
+                return;
+            }
+            sendJson(res, {{"success", true},
+                           {"thresholdSeconds", result.thresholdSeconds},
+                           {"thresholdMinutes", result.thresholdSeconds / 60.0},
+                           {"applyPolicy", "ACTIVE_AND_NEW_SESSIONS"}});
+        };
+        server_->Get("/api/v1/settings/overstay-threshold", get_threshold);
+        server_->Put("/api/v1/settings/overstay-threshold", put_threshold);
+        // 초기 요청서 경로도 유지해 Qt 배포 버전 간 호환성을 보장한다.
+        server_->Get("/api/settings/overstay-threshold", get_threshold);
+        server_->Put("/api/settings/overstay-threshold", put_threshold);
+    }
     server_->Get("/api/v1/parking-slots", [this](const httplib::Request&, httplib::Response& res) {
         std::vector<database::ParkingSlotView> slots;
         if (!database_.listParkingSlots(slots)) {

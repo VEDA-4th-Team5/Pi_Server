@@ -3,7 +3,7 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 137
+- 분석 파일 수: 139
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
@@ -167,6 +167,12 @@ CAMERA_IMAGE_SERVER_PORT=8080
 결정해야 한다.
 
 ## 4. 조기 출차와 장기 점유
+
+장기 점유 판정과 `OVERSTAY_EVIDENCE` 촬영은 독립된 환경변수가 아니라
+`SYSTEM_SETTINGS.overstay_threshold_seconds` 단일 값을 사용한다. Qt는
+`GET/PUT /api/v1/settings/overstay-threshold`로 시간·분·초 UI의 총 초 값을 조회·변경한다.
+변경 시 `TimerManager`의 이전 generation은 무효화되고 활성 타이머와 증거 작업은 원래
+입차 T0 기준으로 재예약된다.
 
 ### 4.1 1시간 이전 VACANT
 
@@ -469,6 +475,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev/is_phev로 차량 종류를 분류한다.
 - `bool database::EventDatabase::attachEnhancedPlateImage(const std::string &image_path, const std::string &enhanced_image_path)` — 원본 IMAGE_LOG 행에 OpenCV 전처리 파일 경로를 연결한다.
 - `bool database::EventDatabase::attachPlateBestShot(int session_id, const std::string &image_path, const std::string &plate_text)` — 번호판 BestShot과 선택적 카메라 plate text를 기존 세션에 연결한다.
+- `bool database::EventDatabase::attachVehicleBestShot(int session_id, const std::string &image_path, const std::string &object_id)` — 이미 활성 세션이 있는 슬롯에 차량 BestShot 이미지만 연결한다(세션/슬롯상태는 건드리지 않음).
 - `bool database::EventDatabase::cancelUnscheduled(std::int64_t log_id, const std::string &canceled_at)` — DB 생성 뒤 timer enqueue 실패 시 세션을 보상 종료한다.
 - `bool database::EventDatabase::createEntryWithBestShot(const std::string &slot_id, const std::string &image_path, const std::string &object_id, int *session_id)` — Vehicle BestShot을 근거로 OCCUPIED 슬롯과 ACTIVE 세션을 원자적으로 연결한다.
 - `bool database::EventDatabase::createEntryWithSnapshot(const std::string &slot_id, const std::string &image_path, const std::string &source_id, int *session_id)` — 홀센서 입차 Snapshot으로 ACTIVE 세션과 IMAGE/EVENT 로그를 만든다.
@@ -482,6 +489,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool database::EventDatabase::markPlateOcrUnresolved(std::int64_t session_id, const std::string &slot_id, int attempts)` — OCR 시도 소진을 UNKNOWN으로 한 번만 EVENT_LOG에 기록한다.
 - `bool database::EventDatabase::markViolation(std::int64_t log_id, const std::string &violation_at, const std::string &image_path_2)` — 아직 ACTIVE인 세션만 VIOLATION으로 조건부 갱신한다.
 - `bool database::EventDatabase::open(const std::string &db_path)` — SQLite 파일을 열고 FK 검사를 활성화한다.
+- `bool database::EventDatabase::upsertSystemSetting(const std::string &key, const std::string &value)` — 런타임 설정을 원자적으로 추가하거나 갱신한다.
 - `database::EventDatabase::EventDatabase()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `database::EventDatabase::EventDatabase(const std::filesystem::path &database_path)` — SQLite 이벤트 DB를 열고 프로토타입에 필요한 연결 옵션을 설정한다.
 - `database::EventDatabase::~EventDatabase()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -491,6 +499,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::optional< LogRecord > database::EventDatabase::findActiveBySlot(const std::string &slot_id) const` — 주차면의 출차되지 않은 최신 세션을 조회한다.
 - `std::optional< LogRecord > database::EventDatabase::findLogById(std::int64_t log_id) const` — 불변 session ID로 타이머 읽기 모델을 조회한다.
 - `std::optional< std::string > database::EventDatabase::findEvidenceImagePath(std::int64_t session_id, const std::string &evidence_reason) const` — 이미 저장된 세션 증거 이미지 경로를 조회한다.
+- `std::optional< std::string > database::EventDatabase::getSystemSetting(const std::string &key) const` — 런타임 설정 문자열을 조회한다. 키가 없으면 nullopt를 반환한다.
 - `std::string database::EventDatabase::applyPlateOcr(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &plate_number, double confidence)` — OCR 결과를 저장하고 VEHICLE 조회 결과(EV/NON_EV/UNKNOWN)를 반환한다.
 - `std::string database::EventDatabase::readTextFile(const std::filesystem::path &path)` — SQL/config 보조 파일 전체를 문자열로 읽는다.
 - `std::vector< LogRecord > database::EventDatabase::listLogs() const` — 타이머 CLI 표시용 전체 세션을 생성 순서로 반환한다.
@@ -615,7 +624,8 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
-- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const std::string &slot_id, const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireEventId(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const FireSignal &signal, FireAlarmLifecycle lifecycle, const std::string &event_id, const std::string &alarm_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::EventPayloadBuilder::buildJson(const std::string &camera_id, const std::string &channel_id, const CameraEvent &event, const std::string &snapshot_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/event/FireAlarmEvent.hpp
@@ -628,6 +638,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
+- `bool event::FireAlarmManager::acknowledge(const std::string &channelId, const std::string &alarmId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool event::FireAlarmManager::onFireSignal(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const FireSensorBinding * event::FireAlarmManager::findBinding(const std::string &sensorId) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `event::FireAlarmManager::FireAlarmManager(std::string cameraId, std::string defaultChannelId, std::string topicPrefix, std::vector< FireSensorBinding > bindings, Publisher publisher)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -663,7 +674,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool http::ParkingHttpServer::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::usesTls() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::ParkingHttpServer(const ParkingHttpServer &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::~ParkingHttpServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::registerRoutes()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -678,7 +689,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool mqtt::MqttEventBridge::publishApplicationEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — 카메라 촬영 요청 등 서버 application 메시지를 발행한다.
 - `bool mqtt::MqttEventBridge::publishQtEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — Qt 관제 클라이언트용 상태·이벤트를 발행한다.
 - `bool mqtt::MqttEventBridge::start()` — Broker 연결, topic 구독과 network loop를 시작한다.
-- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, SensorMessageHandler sensor_message_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void mqtt::MqttEventBridge::onMessage(mosquitto *mosq, const mosquitto_message *message)` — 수신 메시지를 정규화하고 이벤트별 처리 흐름을 실행한다.
 - `void mqtt::MqttEventBridge::onMessageStatic(mosquitto *mosq, void *userdata, const mosquitto_message *message)` — Mosquitto C callback에서 객체의 메시지 처리 함수로 연결한다.
 - `void mqtt::MqttEventBridge::stop()` — Mosquitto loop와 연결을 종료하고 자원을 해제한다.
@@ -783,6 +794,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(snapshot::SnapshotStorage &storage, database::EventDatabase &database, Config config, Completion completion={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::EvidenceCaptureWorker::~EvidenceCaptureWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t parking::EvidenceCaptureWorker::pendingCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t parking::EvidenceCaptureWorker::updateOverstayDelay(std::chrono::milliseconds delay)` — 모든 활성 세션의 초과 증거 deadline을 같은 T0 기준으로 재계산한다.
 - `void parking::EvidenceCaptureWorker::cancelSession(std::int64_t session_id)` — VACANT 세션의 아직 실행되지 않은 작업을 취소한다.
 - `void parking::EvidenceCaptureWorker::emit(EvidenceCaptureResult result) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void parking::EvidenceCaptureWorker::process(Job job) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -940,9 +952,11 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `EntryResult parking_timer::ParkingSlotManager::handleEntry(const std::string &slot_id, const std::string &car_number, const std::string &image_path_1={})` — EV/PHEV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다.
 - `EntryResult parking_timer::ParkingSlotManager::handleRecognizedSession(std::int64_t session_id, const std::string &slot_id, const std::string &car_number)` — 카메라 흐름이 이미 만든 세션을 중복 INSERT 없이 타이머에 등록한다.
 - `parking_timer::ParkingSlotManager::ParkingSlotManager(EventDatabase &database, EventManager &events, std::chrono::milliseconds parking_timeout, TimerManager::EvidenceProvider evidence_provider={})` — 입·출차 상태 전이와 EV 점유 타이머를 조정하는 관리자를 생성한다.
+- `std::chrono::milliseconds parking_timer::ParkingSlotManager::parkingTimeout() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< LogRecord > parking_timer::ParkingSlotManager::handleExit(const std::string &slot_id)` — 활성 세션을 출차 처리하며 없으면 nullopt를 반환한다.
 - `std::size_t parking_timer::ParkingSlotManager::pendingTimerCount() const` — lazy-canceled 항목을 포함한 현재 우선순위 큐 크기를 반환한다.
 - `std::size_t parking_timer::ParkingSlotManager::restoreActiveSessions()` — 서버 재시작 시 DB의 EV/PHEV 활성 세션을 타이머 큐에 복구한다.
+- `std::size_t parking_timer::ParkingSlotManager::updateParkingTimeout(std::chrono::milliseconds parking_timeout)` — 활성 EV/PHEV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다.
 
 ### include/parking_timer/RuntimeConfig.hpp
 
@@ -957,16 +971,19 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 - `TimerManager & parking_timer::TimerManager::operator=(const TimerManager &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool parking_timer::TimerManager::LaterDeadline::operator()(const TimerItem &left, const TimerItem &right) const noexcept` — priority_queue 에서 더 늦은 항목의 우선순위를 낮추는 비교 연산자.
+- `bool parking_timer::TimerManager::isCurrent(const TimerItem &item) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking_timer::TimerManager::TimerManager(EventDatabase &database, ViolationCallback callback, ErrorCallback error_callback={}, std::mutex *transition_mutex=nullptr, EvidenceProvider evidence_provider={})` — DB와 callback을 연결하고 단일 타이머 worker 스레드를 시작한다.
 - `parking_timer::TimerManager::TimerManager(const TimerManager &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking_timer::TimerManager::~TimerManager()` — worker에 종료를 알리고 스레드가 완전히 끝날 때까지 기다린다.
 - `std::size_t parking_timer::TimerManager::pendingCount() const` — 아직 worker가 소비하지 않은 큐 항목 수를 반환한다.
 - `void parking_timer::TimerManager::processExpired(TimerItem item)` — 만료 노드를 DB 조건부 UPDATE로 검증하고 위반 callback을 발생시킨다.
 - `void parking_timer::TimerManager::reportError(const TimerItem &item, std::string message) noexcept` — 타이머 오류를 등록된 callback 또는 표준 오류 출력으로 안전하게 보고한다.
+- `void parking_timer::TimerManager::reschedule(std::int64_t log_id, std::string slot_id, std::string car_number, std::chrono::milliseconds delay)` — 기존 세션 deadline을 무효화하고 새 기준시간으로 교체한다.
 - `void parking_timer::TimerManager::retryAfterDatabaseError(TimerItem item, std::string message) noexcept` — 일시적인 SQLite 오류가 난 타이머를 지수 backoff로 다시 예약한다.
 - `void parking_timer::TimerManager::retryAfterEvidencePending(TimerItem item) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void parking_timer::TimerManager::run()` — 가장 이른 deadline만 기다리며 만료 노드를 처리하는 worker 루프.
 - `void parking_timer::TimerManager::schedule(std::int64_t log_id, std::string slot_id, std::string car_number, std::chrono::milliseconds delay)` — 불변 session ID의 위반 deadline을 큐에 등록하고 worker를 깨운다.
+- `void parking_timer::TimerManager::scheduleImpl(std::int64_t log_id, std::string slot_id, std::string car_number, std::chrono::milliseconds delay)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/parking_timer/Types.hpp
 
@@ -1044,6 +1061,19 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool sensor::SensorProtocolParser::isFireLine(const std::string &line)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< FireSensorMessage > sensor::SensorProtocolParser::parseFire(const std::string &line, std::chrono::system_clock::time_point receivedAt, std::string *error=nullptr) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< SensorProtocolMessage > sensor::SensorProtocolParser::parse(const std::string &line, std::chrono::system_clock::time_point receivedAt, std::string *error=nullptr) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+## include/settings
+
+### include/settings/OverstayThresholdService.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `ThresholdUpdateResult settings::OverstayThresholdService::update(int seconds)` — DB 저장 성공 후에만 메모리와 런타임 타이머에 새 값을 적용한다.
+- `bool settings::OverstayThresholdService::initialize()` — DB 값을 로드하며 없으면 bootstrap 기본값을 영구 저장한다.
+- `bool settings::OverstayThresholdService::isValid(int seconds) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `int settings::OverstayThresholdService::thresholdSeconds() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `settings::OverstayThresholdService::OverstayThresholdService(database::EventDatabase &database, int bootstrap_seconds=kDefaultSeconds)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void settings::OverstayThresholdService::setApplyCallback(ApplyCallback callback)` — 타이머·증거 worker 재예약 callback을 서버 조립 단계에서 주입한다.
 
 ## include/snapshot
 
@@ -1155,6 +1185,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `bool database::EventDatabase::attachEnhancedPlateImage(const std::string &image_path, const std::string &enhanced_image_path)` — 원본 IMAGE_LOG 행에 OpenCV 전처리 파일 경로를 연결한다.
 - `bool database::EventDatabase::attachPlateBestShot(int session_id, const std::string &image_path, const std::string &plate_text)` — 번호판 BestShot과 선택적 카메라 plate text를 기존 세션에 연결한다.
+- `bool database::EventDatabase::attachVehicleBestShot(int session_id, const std::string &image_path, const std::string &object_id)` — 이미 활성 세션이 있는 슬롯에 차량 BestShot 이미지만 연결한다(세션/슬롯상태는 건드리지 않음).
 - `bool database::EventDatabase::createEntryWithBestShot(const std::string &slot_id, const std::string &image_path, const std::string &object_id, int *session_id)` — Vehicle BestShot을 근거로 OCCUPIED 슬롯과 ACTIVE 세션을 원자적으로 연결한다.
 - `bool database::EventDatabase::createEntryWithSnapshot(const std::string &slot_id, const std::string &image_path, const std::string &source_id, int *session_id)` — 홀센서 입차 Snapshot으로 ACTIVE 세션과 IMAGE/EVENT 로그를 만든다.
 - `bool database::EventDatabase::deleteSessionImageRecords(int session_id)` — 파일 삭제가 끝난 조기 출차 세션의 IMAGE_LOG 행을 모두 제거한다.
@@ -1180,6 +1211,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool database::EventDatabase::cancelUnscheduled(std::int64_t log_id, const std::string &canceled_at)` — DB 생성 뒤 timer enqueue 실패 시 세션을 보상 종료한다.
 - `bool database::EventDatabase::markPlateOcrUnresolved(std::int64_t session_id, const std::string &slot_id, int attempts)` — OCR 시도 소진을 UNKNOWN으로 한 번만 EVENT_LOG에 기록한다.
 - `bool database::EventDatabase::markViolation(std::int64_t log_id, const std::string &violation_at, const std::string &image_path_2)` — 아직 ACTIVE인 세션만 VIOLATION으로 조건부 갱신한다.
+- `bool database::EventDatabase::upsertSystemSetting(const std::string &key, const std::string &value)` — 런타임 설정을 원자적으로 추가하거나 갱신한다.
 - `database::EventDatabase::EventDatabase(const std::filesystem::path &database_path)` — SQLite 이벤트 DB를 열고 프로토타입에 필요한 연결 옵션을 설정한다.
 - `std::int64_t database::EventDatabase::createHallSession(const std::string &slot_id, const std::string &source_id, const std::string &entry_time)` — 홀센서 입차의 ACTIVE 세션을 만들고 실제 SQLite ID를 반환한다.
 - `std::int64_t database::EventDatabase::insertParked(const std::string &car_number, const std::string &slot_id, const std::string &parked_at, const std::string &image_path_1)` — EV/PHEV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다.
@@ -1187,6 +1219,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::optional< LogRecord > database::EventDatabase::findActiveBySlot(const std::string &slot_id) const` — 주차면의 출차되지 않은 최신 세션을 조회한다.
 - `std::optional< LogRecord > database::EventDatabase::findLogById(std::int64_t log_id) const` — 불변 session ID로 타이머 읽기 모델을 조회한다.
 - `std::optional< std::string > database::EventDatabase::findEvidenceImagePath(std::int64_t session_id, const std::string &evidence_reason) const` — 이미 저장된 세션 증거 이미지 경로를 조회한다.
+- `std::optional< std::string > database::EventDatabase::getSystemSetting(const std::string &key) const` — 런타임 설정 문자열을 조회한다. 키가 없으면 nullopt를 반환한다.
 - `std::string database::EventDatabase::readTextFile(const std::filesystem::path &path)` — SQL/config 보조 파일 전체를 문자열로 읽는다.
 - `std::vector< LogRecord > database::EventDatabase::listLogs() const` — 타이머 CLI 표시용 전체 세션을 생성 순서로 반환한다.
 - `std::vector< std::pair< std::string, std::string > > database::EventDatabase::listVehicles() const` — 차량번호와 EV/PHEV/NON_EV 문자열 목록을 반환한다.
@@ -1301,13 +1334,15 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
-- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const std::string &slot_id, const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireEventId(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const FireSignal &signal, FireAlarmLifecycle lifecycle, const std::string &event_id, const std::string &alarm_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::EventPayloadBuilder::buildJson(const std::string &camera_id, const std::string &channel_id, const CameraEvent &event, const std::string &snapshot_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/event/FireAlarmManager.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
+- `bool event::FireAlarmManager::acknowledge(const std::string &channelId, const std::string &alarmId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool event::FireAlarmManager::onFireSignal(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const FireSensorBinding * event::FireAlarmManager::findBinding(const std::string &sensorId) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `event::FireAlarmManager::FireAlarmManager(std::string cameraId, std::string defaultChannelId, std::string topicPrefix, std::vector< FireSensorBinding > bindings, Publisher publisher)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1346,7 +1381,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `bool http::ParkingHttpServer::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::usesTls() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::~ParkingHttpServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::registerRoutes()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1369,7 +1404,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool mqtt::MqttEventBridge::publishApplicationEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — 카메라 촬영 요청 등 서버 application 메시지를 발행한다.
 - `bool mqtt::MqttEventBridge::publishQtEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — Qt 관제 클라이언트용 상태·이벤트를 발행한다.
 - `bool mqtt::MqttEventBridge::start()` — Broker 연결, topic 구독과 network loop를 시작한다.
-- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, SensorMessageHandler sensor_message_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void mqtt::MqttEventBridge::onMessage(mosquitto *mosq, const mosquitto_message *message)` — 수신 메시지를 정규화하고 이벤트별 처리 흐름을 실행한다.
 - `void mqtt::MqttEventBridge::onMessageStatic(mosquitto *mosq, void *userdata, const mosquitto_message *message)` — Mosquitto C callback에서 객체의 메시지 처리 함수로 연결한다.
 - `void mqtt::MqttEventBridge::stop()` — Mosquitto loop와 연결을 종료하고 자원을 해제한다.
@@ -1468,6 +1503,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(snapshot::SnapshotStorage &storage, database::EventDatabase &database, Config config, Completion completion={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::EvidenceCaptureWorker::~EvidenceCaptureWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t parking::EvidenceCaptureWorker::pendingCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t parking::EvidenceCaptureWorker::updateOverstayDelay(std::chrono::milliseconds delay)` — 모든 활성 세션의 초과 증거 deadline을 같은 T0 기준으로 재계산한다.
 - `void parking::EvidenceCaptureWorker::cancelSession(std::int64_t session_id)` — VACANT 세션의 아직 실행되지 않은 작업을 취소한다.
 - `void parking::EvidenceCaptureWorker::emit(EvidenceCaptureResult result) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void parking::EvidenceCaptureWorker::process(Job job) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1645,6 +1681,19 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::optional< FireSensorMessage > sensor::SensorProtocolParser::parseFire(const std::string &line, std::chrono::system_clock::time_point receivedAt, std::string *error=nullptr) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< SensorProtocolMessage > sensor::SensorProtocolParser::parse(const std::string &line, std::chrono::system_clock::time_point receivedAt, std::string *error=nullptr) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+## src/settings
+
+### src/settings/OverstayThresholdService.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `ThresholdUpdateResult settings::OverstayThresholdService::update(int seconds)` — DB 저장 성공 후에만 메모리와 런타임 타이머에 새 값을 적용한다.
+- `bool settings::OverstayThresholdService::initialize()` — DB 값을 로드하며 없으면 bootstrap 기본값을 영구 저장한다.
+- `bool settings::OverstayThresholdService::isValid(int seconds) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `int settings::OverstayThresholdService::thresholdSeconds() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `settings::OverstayThresholdService::OverstayThresholdService(database::EventDatabase &database, int bootstrap_seconds=kDefaultSeconds)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void settings::OverstayThresholdService::setApplyCallback(ApplyCallback callback)` — 타이머·증거 worker 재예약 callback을 서버 조립 단계에서 주입한다.
+
 ## src/snapshot
 
 ### src/snapshot/SnapshotStorage.cpp
@@ -1676,9 +1725,11 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `EntryResult parking_timer::ParkingSlotManager::handleEntry(const std::string &slot_id, const std::string &car_number, const std::string &image_path_1={})` — EV/PHEV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다.
 - `EntryResult parking_timer::ParkingSlotManager::handleRecognizedSession(std::int64_t session_id, const std::string &slot_id, const std::string &car_number)` — 카메라 흐름이 이미 만든 세션을 중복 INSERT 없이 타이머에 등록한다.
 - `parking_timer::ParkingSlotManager::ParkingSlotManager(EventDatabase &database, EventManager &events, std::chrono::milliseconds parking_timeout, TimerManager::EvidenceProvider evidence_provider={})` — 입·출차 상태 전이와 EV 점유 타이머를 조정하는 관리자를 생성한다.
+- `std::chrono::milliseconds parking_timer::ParkingSlotManager::parkingTimeout() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< LogRecord > parking_timer::ParkingSlotManager::handleExit(const std::string &slot_id)` — 활성 세션을 출차 처리하며 없으면 nullopt를 반환한다.
 - `std::size_t parking_timer::ParkingSlotManager::pendingTimerCount() const` — lazy-canceled 항목을 포함한 현재 우선순위 큐 크기를 반환한다.
 - `std::size_t parking_timer::ParkingSlotManager::restoreActiveSessions()` — 서버 재시작 시 DB의 EV/PHEV 활성 세션을 타이머 큐에 복구한다.
+- `std::size_t parking_timer::ParkingSlotManager::updateParkingTimeout(std::chrono::milliseconds parking_timeout)` — 활성 EV/PHEV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다.
 
 ### src/timer/RuntimeConfig.cpp
 
@@ -1692,15 +1743,18 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `bool parking_timer::TimerManager::LaterDeadline::operator()(const TimerItem &left, const TimerItem &right) const noexcept` — priority_queue 에서 더 늦은 항목의 우선순위를 낮추는 비교 연산자.
+- `bool parking_timer::TimerManager::isCurrent(const TimerItem &item) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking_timer::TimerManager::TimerManager(EventDatabase &database, ViolationCallback callback, ErrorCallback error_callback={}, std::mutex *transition_mutex=nullptr, EvidenceProvider evidence_provider={})` — DB와 callback을 연결하고 단일 타이머 worker 스레드를 시작한다.
 - `parking_timer::TimerManager::~TimerManager()` — worker에 종료를 알리고 스레드가 완전히 끝날 때까지 기다린다.
 - `std::size_t parking_timer::TimerManager::pendingCount() const` — 아직 worker가 소비하지 않은 큐 항목 수를 반환한다.
 - `void parking_timer::TimerManager::processExpired(TimerItem item)` — 만료 노드를 DB 조건부 UPDATE로 검증하고 위반 callback을 발생시킨다.
 - `void parking_timer::TimerManager::reportError(const TimerItem &item, std::string message) noexcept` — 타이머 오류를 등록된 callback 또는 표준 오류 출력으로 안전하게 보고한다.
+- `void parking_timer::TimerManager::reschedule(std::int64_t log_id, std::string slot_id, std::string car_number, std::chrono::milliseconds delay)` — 기존 세션 deadline을 무효화하고 새 기준시간으로 교체한다.
 - `void parking_timer::TimerManager::retryAfterDatabaseError(TimerItem item, std::string message) noexcept` — 일시적인 SQLite 오류가 난 타이머를 지수 backoff로 다시 예약한다.
 - `void parking_timer::TimerManager::retryAfterEvidencePending(TimerItem item) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void parking_timer::TimerManager::run()` — 가장 이른 deadline만 기다리며 만료 노드를 처리하는 worker 루프.
 - `void parking_timer::TimerManager::schedule(std::int64_t log_id, std::string slot_id, std::string car_number, std::chrono::milliseconds delay)` — 불변 session ID의 위반 deadline을 큐에 등록하고 worker를 깨운다.
+- `void parking_timer::TimerManager::scheduleImpl(std::int64_t log_id, std::string slot_id, std::string car_number, std::chrono::milliseconds delay)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/timer/Types.cpp
 
@@ -1722,6 +1776,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
+- `bool util::logEnabled(const std::string &tag)` — 해당 태그가 현재 로그 설정에서 켜져 있는지 확인한다.
 - `void util::logError(const std::string &message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void util::logInfo(const std::string &message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void util::logLine(const std::string &level, const std::string &message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.

@@ -267,6 +267,10 @@ void EventDatabase::migrateRuntimeSchema() {
     if (!opened_ || db_ == nullptr) {
         throw std::runtime_error("cannot migrate a closed SQLite database");
     }
+    executeSqlUnlocked(
+        "CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS ("
+        "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
     if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
         !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
         executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
@@ -276,6 +280,41 @@ void EventDatabase::migrateRuntimeSchema() {
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_image_evidence_session_reason "
             "ON IMAGE_LOG(session_id, evidence_reason) "
             "WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;");
+    }
+}
+
+std::optional<std::string> EventDatabase::getSystemSetting(
+    const std::string& key) const {
+    if (key.empty()) return std::nullopt;
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) return std::nullopt;
+    Statement statement(db_,
+        "SELECT value FROM SYSTEM_SETTINGS WHERE key=? LIMIT 1;");
+    statement.bindText(1, key);
+    const int result = sqlite3_step(statement.get());
+    if (result == SQLITE_ROW) return columnText(statement.get(), 0);
+    if (result == SQLITE_DONE) return std::nullopt;
+    throw std::runtime_error("SQLite setting read failed: " +
+                             std::string(sqlite3_errmsg(db_)));
+}
+
+bool EventDatabase::upsertSystemSetting(const std::string& key,
+                                        const std::string& value) {
+    if (key.empty()) return false;
+    std::lock_guard lock(db_mutex_);
+    if (!opened_ || db_ == nullptr) return false;
+    try {
+        Statement statement(db_,
+            "INSERT INTO SYSTEM_SETTINGS(key,value,updated_at) "
+            "VALUES(?,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=CURRENT_TIMESTAMP;");
+        statement.bindText(1, key);
+        statement.bindText(2, value);
+        requireDone(db_, statement.get());
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 

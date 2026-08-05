@@ -128,7 +128,7 @@ bool EvidenceCaptureWorker::scheduleSessionImpl(
     const auto slot_id = request.slotId;
     const auto channel_id = request.channel->channel_id;
     if (include_start) {
-        jobs_.push(Job{now, nextSequence_++, request,
+        jobs_.push(Job{now, nextSequence_++, 0, request,
                        EvidenceReason::OccupancyStart, !include_overstay});
         util::logLine("EVIDENCE_CAPTURE",
             std::string(restored ? "restored start capture" :
@@ -139,7 +139,7 @@ bool EvidenceCaptureWorker::scheduleSessionImpl(
     }
     if (include_overstay) {
         jobs_.push(Job{request.startedAtMonotonic + config_.overstayDelay,
-                       nextSequence_++, std::move(request),
+                       nextSequence_++, overstayGeneration_, std::move(request),
                        EvidenceReason::Overstay, true});
         util::logLine("EVIDENCE_CAPTURE",
             std::string(restored ? "restored overstay capture" :
@@ -206,6 +206,36 @@ bool EvidenceCaptureWorker::expediteOverstay(
     return found;
 }
 
+std::size_t EvidenceCaptureWorker::updateOverstayDelay(
+    const std::chrono::milliseconds delay) {
+    if (delay <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("overstay evidence delay must be positive");
+    }
+    std::lock_guard lock(mutex_);
+    config_.overstayDelay = delay;
+    ++overstayGeneration_;
+    std::size_t updated{};
+    std::vector<Job> rebuilt;
+    rebuilt.reserve(jobs_.size());
+    while (!jobs_.empty()) {
+        Job job = jobs_.top();
+        jobs_.pop();
+        if (job.reason == EvidenceReason::Overstay) {
+            job.deadline = job.request.startedAtMonotonic + delay;
+            job.generation = overstayGeneration_;
+            ++updated;
+        }
+        rebuilt.push_back(std::move(job));
+    }
+    jobs_ = decltype(jobs_){Later{}, std::move(rebuilt)};
+    condition_.notify_all();
+    util::logLine("EVIDENCE_CAPTURE",
+        "active overstay captures rescheduled count=" +
+        std::to_string(updated) + " delay_ms=" +
+        std::to_string(delay.count()));
+    return updated;
+}
+
 std::size_t EvidenceCaptureWorker::pendingCount() const {
     std::lock_guard lock(mutex_);
     return jobs_.size();
@@ -233,6 +263,10 @@ void EvidenceCaptureWorker::run() noexcept {
             if (jobs_.empty() || jobs_.top().deadline > Clock::now()) continue;
             Job job = jobs_.top();
             jobs_.pop();
+            if (job.reason == EvidenceReason::Overstay &&
+                job.generation != overstayGeneration_) {
+                continue;
+            }
             if (canceledSessions_.contains(job.request.sessionId)) {
                 util::logLine("EVIDENCE_CAPTURE",
                     "capture canceled session=" +

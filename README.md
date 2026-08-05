@@ -109,8 +109,7 @@ set +a
 
 ```bash
 export PARKING_TIMER_ENABLED=true
-export PARKING_TIMEOUT_SECONDS=3600
-export PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS=3600
+export PARKING_OVERSTAY_THRESHOLD_SECONDS=3600
 export PARKING_HALL_WORK_QUEUE_CAPACITY=100
 export PARKING_OCCUPANCY_CONFIRM_MS=10000
 export CAPTURE_SCHED_ENABLED=true
@@ -120,8 +119,10 @@ export HALL_CAPTURE_OCR_ENABLED=true
 
 확정된 입차는 최신 RTSP FrameBuffer의 ROI를
 `OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
-`PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더
-저장한다. 테스트에서는 이 값을 5~10초로 낮출 수 있다.
+`overstay_threshold_seconds` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더 저장하고 같은
+시점에 장기 점유 위반을 판정한다. 값은 SQLite `SYSTEM_SETTINGS`에 저장되며 Qt가
+`GET/PUT /api/v1/settings/overstay-threshold`로 60~86400초 범위에서 변경한다.
+변경값은 활성 세션과 이후 신규 세션 모두에 원래 입차시각 T0 기준으로 적용된다.
 
 재시작 시 활성 세션의 원래 T0를 기준으로 아직 없는 증거 작업을 복원한다. 조기 출차는
 대기 중인 Job을 즉시 제거하며, 홀센서 비동기 큐는 같은 슬롯의 최신 상태를 병합하고

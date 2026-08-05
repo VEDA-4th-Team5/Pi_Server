@@ -28,6 +28,7 @@
 #include "sensor/SensorProtocolParser.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 #include "sensor/HallParkingService.hpp"
+#include "settings/OverstayThresholdService.hpp"
 #include "util/Logger.hpp"
 #include "util/StringUtil.hpp"
 #include "util/TimeUtil.hpp"
@@ -174,7 +175,8 @@ std::string buildQtParkingEvent(
     const std::string_view slot_id,
     const std::string_view plate_number,
     const std::string_view timestamp,
-    const std::string_view detail) {
+    const std::string_view detail,
+    const int overstay_threshold_seconds) {
     const auto* area = findArea(config, std::string(slot_id));
     std::string external_type(event_type);
     if (event_type == "VIOLATION_TRIGGERED") external_type = "OVERTIME_VIOLATION";
@@ -207,7 +209,7 @@ std::string buildQtParkingEvent(
            << (plate_number.empty() ? "PENDING" : "RECOGNIZED") << "\","
            << "\"parking_state\":\"" << (vacant ? "VACANT" : "OCCUPIED") << "\","
            << "\"occupied_seconds\":"
-           << (overstay_alarm ? config.parking_timeout_seconds : 0) << ','
+           << (overstay_alarm ? overstay_threshold_seconds : 0) << ','
            << "\"alarm_kind\":\"" << alarm_kind << "\","
            << "\"alarm\":\"" << alarm_kind << "\","
            << "\"alarm_state\":\"" << (alarm ? "OPEN" : "NONE") << "\","
@@ -325,6 +327,13 @@ int main() {
         return 1;
     }
 
+    settings::OverstayThresholdService overstay_settings(
+        database, config.parking_overstay_threshold_seconds);
+    if (!overstay_settings.initialize()) {
+        database.close();
+        return 1;
+    }
+
     // 센서/통신 스레드는 DB/MQTT I/O를 직접 기다리지 않고 bounded reporter queue에
     // 기록한다. MQTT bridge는 뒤에서 생성되므로 atomic pointer로 준비 상태만 공유한다.
     std::atomic<mqtt::MqttEventBridge*> system_event_mqtt_bridge{nullptr};
@@ -357,23 +366,6 @@ int main() {
         util::logError("System event reporter disabled after start failure");
 
     std::unique_ptr<http::ParkingHttpServer> http_server;
-    if (config.http_api_enabled) {
-        http::ServerConfig http_config;
-        http_config.listen_address = config.http_listen_address;
-        http_config.port = config.http_port;
-        http_config.tls_certificate_path = config.http_tls_certificate_path;
-        http_config.tls_private_key_path = config.http_tls_private_key_path;
-        http_config.data_root = config.http_data_root;
-        http_config.max_image_bytes = static_cast<std::size_t>(
-            std::max(1, config.http_max_image_mb)) * 1024U * 1024U;
-        http_server = std::make_unique<http::ParkingHttpServer>(database,
-                                                                http_config);
-        if (!http_server->start()) {
-            system_event_reporter.stop();
-            database.close();
-            return 1;
-        }
-    }
 
     camera::RtspStreamReceiver rtsp_receiver(
         channels,
@@ -451,7 +443,7 @@ int main() {
         timer_events = std::make_unique<parking_timer::EventManager>();
         parking_timer = std::make_unique<parking_timer::ParkingSlotManager>(
             database, *timer_events,
-            std::chrono::seconds(config.parking_timeout_seconds),
+            std::chrono::seconds(overstay_settings.thresholdSeconds()),
             [&database, &evidence_worker_for_timer](
                 std::int64_t session_id, const std::string& slot_id,
                 const std::string&) {
@@ -470,7 +462,7 @@ int main() {
                 return std::string{};
             });
         util::logInfo("parking timer enabled: timeout=" +
-                      std::to_string(config.parking_timeout_seconds) + "s");
+                      std::to_string(overstay_settings.thresholdSeconds()) + "s");
     }
 
     ocr::GeminiOcrClient gemini_client(
@@ -620,7 +612,7 @@ int main() {
 
     parking::EvidenceCaptureWorker::Config evidence_config;
     evidence_config.overstayDelay = std::chrono::seconds(
-        config.parking_overstay_evidence_delay_seconds);
+        overstay_settings.thresholdSeconds());
     auto evidence_worker = std::make_unique<parking::EvidenceCaptureWorker>(
         snapshot_storage, database, evidence_config,
         [&ocr_worker, &timer_events, &config](
@@ -656,8 +648,18 @@ int main() {
     }
     evidence_worker_for_timer = evidence_worker.get();
     util::logInfo("parking evidence worker enabled: overstay_delay=" +
-                  std::to_string(
-                      config.parking_overstay_evidence_delay_seconds) + "s");
+                  std::to_string(overstay_settings.thresholdSeconds()) + "s");
+
+    overstay_settings.setApplyCallback(
+        [&parking_timer, &evidence_worker](const std::chrono::milliseconds delay) {
+            const auto evidence_count = evidence_worker
+                ? evidence_worker->updateOverstayDelay(delay) : 0U;
+            const auto timer_count = parking_timer
+                ? parking_timer->updateParkingTimeout(delay) : 0U;
+            util::logInfo("Overstay runtime policy applied: timers=" +
+                          std::to_string(timer_count) + " evidence_jobs=" +
+                          std::to_string(evidence_count));
+        });
 
     bestshot::BestShotReceiver bestshot_receiver(
         channels, database, trigger_coordinator, ocr_worker, g_running);
@@ -718,7 +720,7 @@ int main() {
             continue;
         }
         const auto fallback_elapsed = std::chrono::seconds(
-            config.parking_overstay_evidence_delay_seconds);
+            overstay_settings.thresholdSeconds());
         if (evidence_worker->restoreSession({
                 record.id, record.slot_id, std::move(channel),
                 {area->roi_x, area->roi_y,
@@ -733,6 +735,32 @@ int main() {
     util::logInfo("parking evidence restored active sessions=" +
                   std::to_string(restored_evidence) + " failed=" +
                   std::to_string(failed_evidence_restore));
+
+    // 설정 변경으로 즉시 만료되는 활성 세션도 실제 FrameBuffer를 사용할 수 있도록
+    // 최초 RTSP frame과 evidence 복원이 준비된 다음 외부 PUT 요청을 받는다.
+    if (config.http_api_enabled) {
+        http::ServerConfig http_config;
+        http_config.listen_address = config.http_listen_address;
+        http_config.port = config.http_port;
+        http_config.tls_certificate_path = config.http_tls_certificate_path;
+        http_config.tls_private_key_path = config.http_tls_private_key_path;
+        http_config.data_root = config.http_data_root;
+        http_config.max_image_bytes = static_cast<std::size_t>(
+            std::max(1, config.http_max_image_mb)) * 1024U * 1024U;
+        http_server = std::make_unique<http::ParkingHttpServer>(
+            database, http_config, &overstay_settings);
+        if (!http_server->start()) {
+            g_running.store(false);
+            rtsp_receiver.stop();
+            hall_service.reset();
+            evidence_worker->stop();
+            parking_timer.reset();
+            timer_events.reset();
+            system_event_reporter.stop();
+            database.close();
+            return 1;
+        }
+    }
 
     ocr_worker.start();
     bestshot_receiver.start();
@@ -860,14 +888,15 @@ int main() {
 
     if (timer_events) {
         timer_events->setPublisher(
-            [&mqtt_bridge, &config, &database](
+            [&mqtt_bridge, &config, &database, &overstay_settings](
                 const std::string_view event_type, const std::int64_t session_id,
                 const std::string_view slot_id, const std::string_view plate,
                 const std::string_view timestamp, const std::string_view detail) {
                 if (slot_id.empty() || session_id < 0) return;
                 const std::string payload = buildQtParkingEvent(
                     config, database, event_type, session_id, slot_id, plate,
-                    timestamp, detail);
+                    timestamp, detail,
+                    overstay_settings.thresholdSeconds());
                 const std::string event_topic =
                     "parking/v1/events/" + std::string(slot_id);
                 const std::string state_topic =

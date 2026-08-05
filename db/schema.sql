@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS EVENT_LOG (
     FOREIGN KEY (slot_id) REFERENCES PARKING_SLOT(slot_id)
 );
 
+-- Qt REST API에서 변경하는 런타임 설정을 서버 재시작 후에도 복원한다.
+CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_vehicle_plate ON VEHICLE(plate_number);
 CREATE INDEX IF NOT EXISTS idx_session_slot ON PARKING_SESSION(slot_id);
 CREATE INDEX IF NOT EXISTS idx_session_vehicle ON PARKING_SESSION(vehicle_id);

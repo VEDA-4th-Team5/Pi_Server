@@ -212,6 +212,41 @@ std::size_t ParkingSlotManager::restoreActiveSessions() {
     return restored;
 }
 
+std::size_t ParkingSlotManager::updateParkingTimeout(
+    const std::chrono::milliseconds parking_timeout) {
+    if (parking_timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("parking timeout must be positive");
+    }
+    std::lock_guard transition_lock(transition_mutex_);
+    parking_timeout_ = parking_timeout;
+    std::size_t rescheduled{};
+    for (const auto& record : database_.listLogs()) {
+        if (record.departed_at.has_value() || record.car_number.empty() ||
+            (record.status != "PARKED" && record.status != "ACTIVE")) {
+            continue;
+        }
+        const auto category = database_.classifyVehicle(record.car_number);
+        if (category != VehicleCategory::Ev &&
+            category != VehicleCategory::Phev) {
+            continue;
+        }
+        timers_.reschedule(record.id, record.slot_id, record.car_number,
+                           remainingDelay(record, parking_timeout_));
+        scheduled_session_ids_.insert(record.id);
+        ++rescheduled;
+    }
+    events_.publish("OVERSTAY_TIMERS_RESCHEDULED", {}, {}, utcNow(),
+                    "active_sessions=" + std::to_string(rescheduled) +
+                    " threshold_ms=" +
+                    std::to_string(parking_timeout_.count()));
+    return rescheduled;
+}
+
+std::chrono::milliseconds ParkingSlotManager::parkingTimeout() const {
+    std::lock_guard transition_lock(transition_mutex_);
+    return parking_timeout_;
+}
+
 /**
  * @brief 홀센서 ON→OFF에 해당하는 출차 이벤트를 처리한다.
  *
