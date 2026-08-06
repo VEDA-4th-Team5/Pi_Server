@@ -3,6 +3,7 @@
 #include "util/Logger.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <utility>
 
@@ -29,11 +30,13 @@ std::shared_ptr<camera::CameraChannel> findChannel(
 HallParkingWorkQueue::HallParkingWorkQueue(const std::size_t capacity)
     : capacity_(std::max<std::size_t>(1, capacity)) {}
 
-bool HallParkingWorkQueue::canAccept(const std::string& slot_id) const {
+bool HallParkingWorkQueue::canAccept(
+    const parking::ParkingSensorEvent& event) const {
     return items_.size() < capacity_ ||
         std::any_of(items_.begin(), items_.end(),
-            [&slot_id](const HallParkingWorkItem& item) {
-                return item.event.slotId == slot_id;
+            [&event](const HallParkingWorkItem& item) {
+                return item.event.slotId == event.slotId &&
+                       item.event.state == event.state;
             });
 }
 
@@ -42,7 +45,8 @@ HallParkingWorkQueue::PushResult HallParkingWorkQueue::push(
     const auto same_slot = std::find_if(
         items_.begin(), items_.end(),
         [&item](const HallParkingWorkItem& queued) {
-            return queued.event.slotId == item.event.slotId;
+            return queued.event.slotId == item.event.slotId &&
+                   queued.event.state == item.event.state;
         });
     if (same_slot != items_.end()) {
         *same_slot = std::move(item);
@@ -100,6 +104,13 @@ HallParkingService::HallParkingService(
             "parking occupancy confirm gate enabled: threshold_ms=" +
             std::to_string(app_config_.parking_occupancy_confirm_ms));
     }
+    if (app_config_.parking_occupancy_source == "CAMERA_IVA") {
+        camera_exit_worker_ =
+            std::thread(&HallParkingService::cameraExitLoop, this);
+        util::logInfo("camera IVA occupancy enabled: exit_confirm_ms=" +
+                      std::to_string(
+                          app_config_.camera_iva_exit_confirm_ms));
+    }
 }
 
 HallParkingService::~HallParkingService() {
@@ -108,14 +119,22 @@ HallParkingService::~HallParkingService() {
         stopping_ = true;
     }
     confirmation_condition_.notify_all();
+    camera_exit_condition_.notify_all();
     work_condition_.notify_all();
     if (confirmation_worker_.joinable()) confirmation_worker_.join();
+    if (camera_exit_worker_.joinable()) camera_exit_worker_.join();
     if (work_worker_.joinable()) work_worker_.join();
 }
 
 bool HallParkingService::handleLine(const std::string& line,
                                     const std::string& transport) {
     std::lock_guard lock(mutex_);
+    if (app_config_.parking_occupancy_source != "HALL") {
+        util::logLine("HALL_SENSOR",
+                      "input ignored because occupancy source is " +
+                          app_config_.parking_occupancy_source);
+        return false;
+    }
     std::string error;
     auto message = parser_.parse(line, std::chrono::system_clock::now(), &error);
     if (!message) {
@@ -144,9 +163,60 @@ bool HallParkingService::handleLine(const std::string& line,
     return processEventLocked(*event, true);
 }
 
+bool HallParkingService::handleCameraOccupancy(
+    const std::string& slot_id, const bool occupied) {
+    std::lock_guard lock(mutex_);
+    if (app_config_.parking_occupancy_source != "CAMERA_IVA") return false;
+
+    const auto slot = std::find_if(
+        slot_configs_.begin(), slot_configs_.end(),
+        [&slot_id](const parking::ParkingSlotConfig& config) {
+            return config.enabled && config.slotId == slot_id;
+        });
+    if (slot == slot_configs_.end()) {
+        util::logWarn("IVA occupancy rejected: unknown/disabled slot=" +
+                      slot_id);
+        return false;
+    }
+
+    parking::ParkingSensorEvent event;
+    event.slotId = slot->slotId;
+    // 기존 상태 머신이 슬롯 설정과 일치 여부를 검증하므로 설정된 안정 ID를
+    // 사용하되 transport는 camera-mqtt로 남겨 입력 출처를 구분한다.
+    event.sensorId = slot->sensorId;
+    event.state = occupied ? parking::ParkingSensorState::Occupied
+                           : parking::ParkingSensorState::Vacant;
+    event.occurredAt = std::chrono::system_clock::now();
+    event.receivedMonotonic = std::chrono::steady_clock::now();
+    event.sourceTransport = "camera-mqtt";
+
+    if (occupied) {
+        const std::size_t canceled = pending_camera_exits_.erase(slot_id);
+        if (canceled != 0) {
+            util::logLine("IVA_EXIT", "canceled by ENTER slot=" + slot_id);
+            camera_exit_condition_.notify_all();
+        }
+        return processEventLocked(event, false);
+    }
+
+    if (pending_camera_exits_.contains(slot_id)) {
+        util::logLine("IVA_EXIT", "duplicate ignored slot=" + slot_id);
+        return true;
+    }
+    const auto delay = std::chrono::milliseconds(
+        app_config_.camera_iva_exit_confirm_ms);
+    pending_camera_exits_.emplace(
+        slot_id, PendingCameraExit{event, event.receivedMonotonic + delay});
+    util::logLine("IVA_EXIT", "pending slot=" + slot_id +
+                  " confirm_ms=" + std::to_string(delay.count()));
+    camera_exit_condition_.notify_all();
+    return true;
+}
+
 bool HallParkingService::processEventLocked(
     const parking::ParkingSensorEvent& event,
-    const bool apply_confirmation_gate) {
+    const bool apply_confirmation_gate,
+    const std::optional<std::int64_t> expected_session_id) {
     if (apply_confirmation_gate && confirmation_gate_) {
         const auto* slot = occupancy_manager_.findSlot(event.slotId);
         const bool already_occupied = slot != nullptr && slot->occupied();
@@ -156,7 +226,8 @@ bool HallParkingService::processEventLocked(
                 parking::ParkingTransitionResult recovery_transition;
                 recovery_transition.slotId = event.slotId;
                 recovery_transition.sessionId.clear();
-                if (!enqueueWorkLocked({event, recovery_transition}))
+                if (!enqueueWorkLocked(
+                        {event, recovery_transition, expected_session_id}))
                     return false;
             }
             confirmation_condition_.notify_all();
@@ -178,18 +249,19 @@ bool HallParkingService::processEventLocked(
         // 재시작 직후 메모리 상태는 VACANT지만 DB에는 이전 ACTIVE가 남을 수
         // 있다. VACANT는 비동기 worker에서 DB와 대조해 stale 세션을 닫는다.
         if (event.state == parking::ParkingSensorState::Vacant) {
-            if (!enqueueWorkLocked({event, transition})) return false;
+            if (!enqueueWorkLocked(
+                    {event, transition, expected_session_id})) return false;
         }
         util::logLine("HALL_SENSOR", "event ignored: slot=" + event.slotId +
                       " reason=" + transition.message);
         return true;
     }
-    return enqueueWorkLocked({event, transition});
+    return enqueueWorkLocked({event, transition, expected_session_id});
 }
 
 bool HallParkingService::canEnqueueWorkLocked(
     const parking::ParkingSensorEvent& event) {
-    if (work_queue_.canAccept(event.slotId)) return true;
+    if (work_queue_.canAccept(event)) return true;
 
     const std::string message =
         "hall work queue full; newest distinct-slot event rejected; size=" +
@@ -287,7 +359,7 @@ bool HallParkingService::handleOccupied(
     if (!evidence_worker_.scheduleSession({
             session_id, event.slotId, channel,
             {area->roi_x, area->roi_y, area->roi_width, area->roi_height},
-            started_monotonic})) {
+            started_monotonic, area->snapshot_api_channel})) {
         report(::event::SystemEventCode::SensorHandlerFailed,
                ::event::SystemEventSeverity::Error,
                "evidence capture scheduling failed", event.sourceTransport,
@@ -308,7 +380,21 @@ bool HallParkingService::handleOccupied(
 
 bool HallParkingService::handleVacant(
     const parking::ParkingSensorEvent& event,
-    const parking::ParkingTransitionResult& transition) {
+    const parking::ParkingTransitionResult& transition,
+    const std::optional<std::int64_t> expected_session_id) {
+    if (expected_session_id) {
+        const auto active = database_.findActiveBySlot(event.slotId);
+        if (!active || active->id != *expected_session_id) {
+            util::logLine(
+                "IVA_EXIT",
+                "stale event ignored slot=" + event.slotId +
+                    " expected_session=" +
+                    std::to_string(*expected_session_id) +
+                    " active_session=" +
+                    (active ? std::to_string(active->id) : "none"));
+            return true;
+        }
+    }
     auto departed = timer_manager_.handleExit(event.slotId);
     if (!departed) return true;
 
@@ -352,7 +438,8 @@ void HallParkingService::workLoop() {
             const bool success =
                 item.event.state == parking::ParkingSensorState::Occupied
                     ? handleOccupied(item.event, item.transition)
-                    : handleVacant(item.event, item.transition);
+                    : handleVacant(item.event, item.transition,
+                                   item.expectedSessionId);
             if (!success) {
                 util::logError("Hall parking async work failed: slot=" +
                                item.event.slotId);
@@ -395,6 +482,71 @@ void HallParkingService::confirmationLoop() {
     }
 }
 
+void HallParkingService::cameraExitLoop() {
+    std::unique_lock lock(mutex_);
+    while (!stopping_) {
+        if (pending_camera_exits_.empty()) {
+            camera_exit_condition_.wait(lock);
+            continue;
+        }
+        auto next = std::min_element(
+            pending_camera_exits_.begin(), pending_camera_exits_.end(),
+            [](const auto& left, const auto& right) {
+                return left.second.deadline < right.second.deadline;
+            });
+        const auto deadline = next->second.deadline;
+        if (camera_exit_condition_.wait_until(lock, deadline) !=
+            std::cv_status::timeout) {
+            continue;
+        }
+        if (stopping_) break;
+
+        const auto now = std::chrono::steady_clock::now();
+        std::vector<parking::ParkingSensorEvent> due;
+        for (auto it = pending_camera_exits_.begin();
+             it != pending_camera_exits_.end();) {
+            if (it->second.deadline > now) {
+                ++it;
+                continue;
+            }
+            auto event = it->second.event;
+            event.occurredAt = std::chrono::system_clock::now();
+            event.receivedMonotonic = now;
+            due.push_back(std::move(event));
+            it = pending_camera_exits_.erase(it);
+        }
+        // DB 조회는 MQTT가 호출하는 public method와 같은 mutex를 잡지 않은
+        // background 구간에서 수행한다.
+        lock.unlock();
+        for (const auto& event : due) {
+            try {
+                util::logLine("IVA_EXIT", "confirmed slot=" + event.slotId);
+                const auto active = database_.findActiveBySlot(event.slotId);
+                if (!active) {
+                    util::logLine("IVA_EXIT",
+                                  "ignored slot=" + event.slotId +
+                                      " reason=no active session");
+                    continue;
+                }
+                std::lock_guard eventLock(mutex_);
+                if (stopping_) continue;
+                if (!processEventLocked(event, false, active->id)) {
+                    util::logError(
+                        "confirmed IVA EXIT processing failed: slot=" +
+                        event.slotId);
+                }
+            } catch (const std::exception& error) {
+                util::logError("IVA EXIT confirmation failed: slot=" +
+                               event.slotId + " error=" + error.what());
+            } catch (...) {
+                util::logError("IVA EXIT confirmation failed: slot=" +
+                               event.slotId + " unknown error");
+            }
+        }
+        lock.lock();
+    }
+}
+
 bool HallParkingService::removeEarlyDepartureImages(const std::int64_t session_id) {
     std::vector<database::ImageView> images;
     if (!database_.listSessionImages(static_cast<int>(session_id), images)) return false;
@@ -422,7 +574,9 @@ void HallParkingService::report(const ::event::SystemEventCode code,
                                 const std::string& slot_id) noexcept {
     if (system_event_reporter_ == nullptr) return;
     system_event_reporter_->report({
-        .source = ::event::SystemEventSource::HallSensor,
+        .source = transport == "camera-mqtt"
+            ? ::event::SystemEventSource::Mqtt
+            : ::event::SystemEventSource::HallSensor,
         .code = code,
         .severity = severity,
         .slot_id = slot_id,

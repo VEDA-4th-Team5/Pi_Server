@@ -82,46 +82,76 @@ camera_id + video_source_token + rule_name
 }
 ```
 
-ROI는 입력 해상도와 무관한 0.0~1.0 정규화 좌표를 사용한다. 결과 이미지는 좌표
-설정과 분리해 다음처럼 저장한다.
+ROI는 입력 해상도와 무관한 0.0~1.0 정규화 좌표를 사용한다. 신규 세션 이미지는
+실제 SQLite `session_id` 아래에 저장한다. 기존 `scene/` 파일은 자동 이동하지 않는다.
 
 ```text
 data/snapshots/ch1/
-├─ EV01/scene/iva_<event_id>_original.jpg
-├─ EV02/scene/iva_<event_id>_original.jpg
-├─ EV03/scene/iva_<event_id>_original.jpg
-└─ EV04/scene/iva_<event_id>_original.jpg
+└─ EV01/
+   └─ session_27/
+      ├─ occupancy_start/
+      ├─ hall_30s/
+      ├─ hall_60s/
+      └─ overstay/
 ```
 
-## Hall 센서 없이 운영하는 목표 상태 머신
+각 촬영 단계의 original/enhanced 파일은 같은 단계 디렉터리에 둔다. 세션에
+연결되지 않은 IVA 진단 이미지만 `EV01/events/iva/`에 격리한다.
 
-`IVA Intrusion`은 경계 진입 순간의 pulse일 수 있으므로 이것만으로는 차량이 계속
-주차 중인지, 출차했는지를 확정할 수 없다. Hall 센서를 사용하지 않으려면 카메라에서
-영역 점유 상태를 나타내는 `ObjectsInside` 또는 동등한 active/clear 이벤트를 함께
-발행해야 한다.
+## Hall 센서 없이 운영하는 상태 머신
+
+점유 판정 주체는 한 실행에서 하나만 선택한다. 기본값은 기존 호환을 위한 `HALL`이며,
+카메라 ENTER/EXIT로 세션을 관리할 때만 `CAMERA_IVA`를 선택한다.
+
+```bash
+export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
+export CAMERA_IVA_EXIT_CONFIRM_MS=10000
+```
 
 ```text
-IVA ENTER/INTRUSION active
-→ 차량 후보 생성 및 Snapshot API 촬영 예약
-
-IVA ObjectsInside=true가 확인 시간 이상 유지
-→ camera-only PARKING_SESSION ACTIVE 생성
+IVA ENTER active=true
+→ 대기 중인 동일 슬롯 EXIT 취소
+→ ACTIVE 세션이 없으면 PARKING_SESSION 생성
 
 동일 active 반복
 → 기존 session 유지, 중복 촬영/세션 생성 금지
 
-IVA ObjectsInside=false가 출차 확인 시간 이상 유지
-→ session 종료
+IVA EXIT active=false
+→ 기본 10초 출차 확인 예약
+→ 확인 중 ENTER가 오면 취소
+→ 확인 만료 후 동일 슬롯 session 종료
 
 BestShot/Plate 이벤트
 → 현재 ACTIVE session에 이미지와 OCR 결과만 attach
 ```
 
-권장 확인 시간은 실제 카메라 이벤트 흔들림을 측정한 뒤 설정한다. 카메라가 명시적인
-clear/empty 이벤트를 제공하지 않는다면 Hall 센서 없이 정확한 출차 판정은 보장할 수
-없으며, 이 경우 IVA는 촬영 트리거로만 사용해야 한다.
+`CAMERA_IVA_EXIT_CONFIRM_MS`는 1000~60000ms 범위이며 기본값은 10000ms다.
+반복 EXIT는 최초 deadline을 뒤로 미루지 않는다. 확인이 끝난 출차는 Hall VACANT와
+동일한 정리 정책을 사용한다. `violation_at IS NULL`이면 예약/OCR/이미지/IMAGE_LOG를
+정리하고, `violation_at IS NOT NULL`이면 위반 증거를 보존한다.
 
-## Snapshot API 기반 목표 촬영 흐름
+## 카메라 Publication 계약
+
+```text
+ENTER topic: cam01/onvif-ej/iva/vs-0/EV01/enter
+EXIT topic:  cam01/onvif-ej/iva/vs-0/EV01/exit
+QoS: 1
+Retain: false
+Default topic prefix: false
+```
+
+```json
+{"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"ENTER","active":true}
+```
+
+```json
+{"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"EXIT","active":false}
+```
+
+Pi는 JSON 필드 타입과 topic/payload/config의 카메라·토큰·슬롯·동작 일치 여부를
+검사한다. 불일치 이벤트는 기본 CH1로 추측하지 않고 거부한다.
+
+## Snapshot API 기반 현재 촬영 흐름
 
 ```text
 IVA MQTT active 수신
@@ -129,13 +159,13 @@ IVA MQTT active 수신
 → bounded capture queue에 작업 등록 후 MQTT callback 즉시 반환
 → CameraSnapshotApiClient /images/generate 호출
 → 해당 API channel의 original/enhanced JPEG 즉시 다운로드
-→ Pi에서 해당 슬롯의 고정 ROI만 crop
-→ data/snapshots/ch1/EVxx/scene 저장
+→ data/snapshots/ch1/EVxx/session_<id>/<stage> 저장
 → IMAGE_LOG / OCR / Qt 이벤트 연결
 ```
 
 MQTT는 촬영 신호와 식별자만 전달하고 JPEG는 Snapshot HTTP API로 내려받는다. Pi는
-카메라 개선본에 CLAHE/Sharpen을 다시 적용하지 않고 crop만 수행한다. 이 방식으로
+카메라 개선본에 CLAHE/Sharpen을 다시 적용하지 않는다. 실제 슬롯 좌표가 아직 확정되지
+않아 현재는 전체 프레임을 저장하며 crop은 구현하지 않았다. 이 방식으로
 Qt의 RTSP 스트리밍과 Pi의 이벤트 촬영을 분리하고 Pi의 연속 영상 디코딩을 제거한다.
 
 Snapshot API가 반환하는 것은 호출 시점의 현재 프레임이다. IVA가 감지된 바로 그
@@ -145,27 +175,29 @@ Snapshot API가 반환하는 것은 호출 시점의 현재 프레임이다. IVA
 
 ## 현재 처리 정책
 
-- IVA ENTER/INTRUSION/OCCUPIED의 활성 이벤트만 차량 탐지 후보로 처리한다.
-- `active=false` 이벤트는 입차 Snapshot을 만들지 않는다.
+- `HALL` 모드에서는 IVA ENTER/INTRUSION을 촬영 후보로만 처리한다.
+- `CAMERA_IVA` 모드에서는 ENTER가 세션을 만들고 EXIT가 확인 후 세션을 닫는다.
+- 선택되지 않은 점유 입력은 무시하여 Hall과 IVA가 동시에 세션을 만들지 않는다.
 - 같은 슬롯의 짧은 반복 이벤트는 `IVA_DUPLICATE_SUPPRESSION_MS` 동안 억제한다.
 - 유효한 IVA 이벤트는 BestShot과 연결할 pending slot을 만든다.
 - 일반 Motion/ObjectDetection 이벤트는 IVA Snapshot 중복을 막기 위해 저장하지 않는다.
 
 ## 현재 제한
 
-현재 IVA Snapshot은 Pi가 유지하는 RTSP 최신 프레임을 사용한다. 카메라 Snapshot
-API 기반 요청형 촬영과 Pi의 연속 RTSP 제거는 후속 작업이다. 또한 카메라 웹 설정의
-실제 Rule 이름이 `parking_slots.json`의 `rule_name`과 정확히 일치해야 한다.
-
-카메라 단독 점유 세션 상태 머신과 ROI를 포함한 `parking_slots.json` schema도 아직
-목표 설계이며 현재 런타임은 Hall 세션 및 `AppConfig::iva_areas`를 사용한다.
+Camera Snapshot API가 활성화되면 시작·30초·60초·장기점유 증거는 카메라의 전체
+original/enhanced JPEG를 사용한다. fallback이 꺼져 있으면 Pi의 RTSP 수신과 최초
+프레임 대기도 생략한다. 카메라 웹 설정의 Publication 값은 `parking_slots.json`의
+camera/token/rule과 일치해야 한다.
 
 ## 빌드와 테스트
 
 ```bash
 cmake -S . -B cmake-build -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake-build --target camera-iva-event-test pi-server -j4
-ctest --test-dir cmake-build -R camera-iva-event-test --output-on-failure
+cmake --build cmake-build --target camera-iva-event-test \
+  camera-iva-occupancy-integration-test pi-server -j4
+ctest --test-dir cmake-build \
+  -R 'camera-iva-event-test|camera-iva-occupancy-integration-test' \
+  --output-on-failure
 ```
 
 테스트는 다음을 검증한다.
@@ -176,3 +208,7 @@ ctest --test-dir cmake-build -R camera-iva-event-test --output-on-failure
 - Rule 이름이 없는 이벤트 거부
 - 비활성 이벤트 판별
 - 모호한 camera/token/rule 설정 거부
+- EXIT 확인 전 세션 유지 및 ENTER 재수신 취소
+- 조기 EXIT의 이미지·IMAGE_LOG 삭제
+- `violation_at`이 있는 EXIT의 증거 보존
+- `session_id` 기반 이미지 디렉터리

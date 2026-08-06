@@ -35,6 +35,14 @@ bool writeBytes(const fs::path& path,
     return output.good();
 }
 
+std::string stageDirectoryName(const std::string& value) {
+    if (value == "OCCUPANCY_START_EVIDENCE") return "occupancy_start";
+    if (value == "OVERSTAY_EVIDENCE") return "overstay";
+    if (value == "HALL_30S") return "hall_30s";
+    if (value == "HALL_60S") return "hall_60s";
+    return "capture";
+}
+
 }
 
 namespace snapshot {
@@ -80,7 +88,7 @@ std::string SnapshotStorage::saveIvaAreaSnapshot(
     const std::string& slot_id,
     const NormalizedRoi& roi
 ) {
-    return saveAreaSnapshot(channel, slot_id, roi, {});
+    return saveAreaSnapshot(channel, slot_id, roi, {}, -1, "iva");
 }
 
 std::string SnapshotStorage::saveEvidenceSnapshot(
@@ -93,7 +101,8 @@ std::string SnapshotStorage::saveEvidenceSnapshot(
     if (session_id < 0 || evidence_reason.empty()) return "";
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + evidence_reason;
-    return saveAreaSnapshot(channel, slot_id, roi, prefix);
+    return saveAreaSnapshot(channel, slot_id, roi, prefix, session_id,
+                            stageDirectoryName(evidence_reason));
 }
 
 std::string SnapshotStorage::saveHallCaptureSnapshot(
@@ -106,7 +115,8 @@ std::string SnapshotStorage::saveHallCaptureSnapshot(
     if (session_id < 0 || capture_stage.empty()) return "";
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + capture_stage;
-    return saveAreaSnapshot(channel, slot_id, roi, prefix);
+    return saveAreaSnapshot(channel, slot_id, roi, prefix, session_id,
+                            stageDirectoryName(capture_stage));
 }
 
 StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
@@ -117,6 +127,8 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
     const std::vector<unsigned char>& original_jpeg,
     const std::vector<unsigned char>& enhanced_jpeg
 ) {
+    // CV Snapshot API에는 현재 슬롯 ROI 입력이 없고 실설치 좌표도 미확정이다.
+    // 따라서 카메라가 생성한 전체 JPEG byte를 변경 없이 보존한다.
     if (channel_id.empty() || session_id < 0 || slot_id.empty() ||
         capture_stage.empty() || original_jpeg.empty() ||
         enhanced_jpeg.empty()) {
@@ -124,11 +136,12 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
         return {};
     }
 
-    const fs::path scene_dir = fs::path(snapshot_dir_) /
-        channelDirectoryName(channel_id) / slot_id / "scene";
-    const fs::path enhanced_dir = scene_dir / "enhanced";
+    const fs::path stage_dir = fs::path(snapshot_dir_) /
+        channelDirectoryName(channel_id) / slot_id /
+        ("session_" + std::to_string(session_id)) /
+        stageDirectoryName(capture_stage);
     std::error_code error;
-    fs::create_directories(enhanced_dir, error);
+    fs::create_directories(stage_dir, error);
     if (error) {
         util::logError("camera API snapshot directory create failed: " +
                        error.message());
@@ -139,8 +152,8 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
         std::to_string(next_file_sequence_.fetch_add(1));
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + capture_stage + "_CAMERA_API_" + unique;
-    const fs::path original_path = scene_dir / (prefix + "_original.jpg");
-    const fs::path enhanced_path = enhanced_dir / (prefix + "_enhanced.jpg");
+    const fs::path original_path = stage_dir / (prefix + "_original.jpg");
+    const fs::path enhanced_path = stage_dir / (prefix + "_enhanced.jpg");
     const fs::path original_temp = original_path.string() + ".tmp";
     const fs::path enhanced_temp = enhanced_path.string() + ".tmp";
 
@@ -179,7 +192,9 @@ std::string SnapshotStorage::saveAreaSnapshot(
     const std::shared_ptr<camera::CameraChannel>& channel,
     const std::string& slot_id,
     const NormalizedRoi& roi,
-    const std::string& filename_prefix
+    const std::string& filename_prefix,
+    const std::int64_t session_id,
+    const std::string& stage_directory
 ) {
     if (!channel || slot_id.empty()) return "";
     if (roi.x < 0.0 || roi.y < 0.0 || roi.width <= 0.0 || roi.height <= 0.0 ||
@@ -208,11 +223,18 @@ std::string SnapshotStorage::saveAreaSnapshot(
     }
 
     cv::Mat cropped = frame(cv::Rect(px, py, pw, ph)).clone();
-    // Snapshot은 물리 카메라 채널을 최상위 기준으로 정리한다.
-    // 현재 IVA 담당 ch01은 snapshots/ch1/EV01~EV04 아래에 ROI 장면을 저장하며,
-    // 향후 ch02~ch04도 같은 규칙을 그대로 사용할 수 있다.
+    // DB session_id가 있는 파일은 한 세션 아래에 모아 조기 출차 시 다른 세션의
+    // 증거를 건드리지 않고 정리할 수 있게 한다. 세션 없는 진단 IVA 이미지는
+    // events/iva에 격리한다.
     fs::path directory = fs::path(snapshot_dir_) /
-        channelDirectoryName(channel->channel_id) / slot_id / "scene";
+        channelDirectoryName(channel->channel_id) / slot_id;
+    if (session_id >= 0) {
+        directory /= "session_" + std::to_string(session_id);
+        directory /= stage_directory.empty() ? "capture" : stage_directory;
+    } else {
+        directory /= "events";
+        directory /= stage_directory.empty() ? "iva" : stage_directory;
+    }
     fs::create_directories(directory);
     std::string filename;
     if (filename_prefix.empty()) {

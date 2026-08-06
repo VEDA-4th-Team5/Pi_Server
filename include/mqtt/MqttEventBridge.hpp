@@ -30,6 +30,8 @@ public:
     using FireAckHandler =
         std::function<bool(const std::string& channel_id,
                            const std::string& alarm_id)>;
+    using IvaOccupancyHandler =
+        std::function<bool(const std::string& slot_id, bool occupied)>;
 
     MqttEventBridge(
         const app::AppConfig& config,
@@ -40,7 +42,8 @@ public:
         ocr::OcrWorker& ocr_worker,
         std::vector<parking::ParkingSlotConfig> parking_slot_configs,
         SensorMessageHandler sensor_message_handler = {},
-        FireAckHandler fire_ack_handler = {}
+        FireAckHandler fire_ack_handler = {},
+        IvaOccupancyHandler iva_occupancy_handler = {}
     );
 
     /** @brief Broker 연결, topic 구독과 network loop를 시작한다. */
@@ -91,6 +94,7 @@ private:
     const std::vector<parking::ParkingSlotConfig> parking_slot_configs_;
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
+    IvaOccupancyHandler iva_occupancy_handler_;
 
     mosquitto* mosq_;
 };

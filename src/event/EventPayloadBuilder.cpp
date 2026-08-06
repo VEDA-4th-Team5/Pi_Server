@@ -35,6 +35,7 @@ std::string EventPayloadBuilder::buildJson(
     oss << "\"video_source_token\":\""
         << util::jsonEscape(event.video_source_token) << "\",";
     oss << "\"rule_name\":\"" << util::jsonEscape(event.rule_name) << "\",";
+    oss << "\"action\":\"" << util::jsonEscape(event.action) << "\",";
     oss << "\"source_type\":\"" << util::jsonEscape(event.source_type) << "\",";
     oss << "\"source_id\":\"" << util::jsonEscape(event.source_id) << "\",";
     oss << "\"event_type\":\"" << util::jsonEscape(event.event_type) << "\",";

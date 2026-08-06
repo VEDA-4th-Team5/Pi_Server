@@ -8,16 +8,17 @@ CV5의 `cv_snapshot_api`가 한 번 캡처한 동일 프레임에서 생성한 `
 `enhanced` JPEG를 Raspberry Pi가 내려받아 기존 홀센서 30/60초 OCR 흐름에 연결한다.
 Pi는 카메라 개선본이 정상 제공되면 OpenCV 화질 개선을 다시 수행하지 않는다.
 
-2026-08-05 목표에는 Hall 예약 촬영뿐 아니라 WiseAI IVA 이벤트 기반 요청형 촬영도
-포함한다. 한 채널의 고정 화면에 `EV01~EV04` 네 영역을 두고, Pi가 이벤트의 Rule
-이름으로 슬롯을 선택한 뒤 카메라 enhanced 전체 프레임에서 해당 ROI만 crop한다.
+2026-08-05 구현은 Hall 예약 촬영뿐 아니라 WiseAI IVA 세션의 시작·장기점유 증거도
+요청형 촬영으로 연결한다. 현재 실제 ROI 좌표가 확정되지 않아 카메라가 반환한 전체
+original/enhanced 프레임을 그대로 세션 디렉터리에 저장한다. crop은 좌표 확정 후
+별도 단계로 추가한다.
 
 ## 런타임 흐름
 
 ```text
-Hall SessionStarted
-→ CaptureSchedulerRuntime (T0+30초 / T0+60초)
-→ HallCaptureExecutor
+SessionStarted / T0+30초 / T0+60초 / Overstay
+→ EvidenceCaptureWorker 또는 CaptureSchedulerRuntime
+→ CameraSnapshotApiClient
 → CameraSnapshotApiClient
    ├─ POST OPEN_API_BASE/startserver          (초기화 시)
    ├─ GET  OPEN_API_BASE/channels             (초기화 시)
@@ -61,10 +62,16 @@ export CAPTURE_OFFSETS_SEC=5,10
 ## 저장 위치
 
 ```text
-data/snapshots/ch1/EV01/scene/
+data/snapshots/ch1/EV01/session_<id>/hall_30s/
 ├─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_original.jpg
-└─ enhanced/
-   └─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_enhanced.jpg
+└─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_enhanced.jpg
+```
+
+동일한 규칙으로 시작·장기점유 증거도 저장한다.
+
+```text
+session_<id>/occupancy_start/*_original.jpg, *_enhanced.jpg
+session_<id>/overstay/*_original.jpg, *_enhanced.jpg
 ```
 
 두 경로는 같은 `IMAGE_LOG` 행의 `original_image_path`와
@@ -84,22 +91,22 @@ data/snapshots/ch1/EV01/scene/
 
 - 제공된 CV API에는 ROI 입력이 없으므로 카메라에서 받은 결과는 채널 전체 프레임이다.
 - API 모드에서는 Pi가 화질 개선이나 ROI crop을 하지 않고 전체 original/enhanced를 Gemini에 전달한다.
+- `CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false`이면 Pi 서버는 RTSP 수신과 최초 프레임
+  대기를 생략한다. API 실패는 해당 촬영 실패로 기록하되 서버 전체를 종료하지 않는다.
 - 현재 실기기는 OpenAPI에 HTTP Digest 인증을 요구하며 계정은 `.env.camera.local`에서만 읽는다.
 - 기본값은 안전을 위해 `CAMERA_SNAPSHOT_API_ENABLED=false`다. CAP 검증 후 운영 환경에서 활성화한다.
 
-### IVA 목표와 현재 구현의 차이
-
-현재 IVA MQTT 경로는 `MqttEventBridge → RTSP latest frame → ROI`이며 Snapshot API를
-사용하지 않는다. 후속 구현 목표는 다음과 같다.
+### IVA 세션 촬영 구현
 
 ```text
 IVA MQTT → 비동기 capture queue → /images/generate
-→ enhanced JPEG 다운로드 → EV01~EV04 고정 ROI crop → OCR/DB
+→ original/enhanced 전체 JPEG 다운로드
+→ session_<id>/<stage> 저장 → OCR/DB
 ```
 
-이 전환이 완료되면 Qt만 RTSP 영상을 직접 수신하고 Pi는 연속 RTSP 디코딩을 하지
-않도록 구성할 수 있다. 단, 정확한 이벤트 프레임 BestShot은 Snapshot API의 현재
-프레임과 다르므로 카메라가 BestShot URL을 제공하면 그 경로를 우선한다.
+API 전용 모드에서는 Qt만 RTSP 영상을 직접 수신하고 Pi는 연속 RTSP 디코딩을 하지
+않는다. 단, 정확한 이벤트 프레임 BestShot은 Snapshot API의 현재 프레임과 다르므로
+카메라가 BestShot URL을 제공하면 그 경로를 우선한다.
 
 ## 2026-07-28 실기기 API 검증
 

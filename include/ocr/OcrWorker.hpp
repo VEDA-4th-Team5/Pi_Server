@@ -60,7 +60,8 @@ public:
     void stop();
     /** @brief BestShot 이미지를 기존 session의 OCR 작업으로 등록한다. */
     void enqueue(int session_id, const std::string& slot_id,
-                 const std::string& image_path);
+                 const std::string& image_path,
+                 const std::string& enhanced_image_path = {});
     /** @brief 세션이 아직 없는 IVA scene을 후보 탐색 OCR 작업으로 등록한다. */
     void enqueueScene(const std::string& slot_id,
                       const std::string& image_path,

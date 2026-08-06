@@ -277,6 +277,26 @@ add_test(NAME hall-timer-integration-test
     COMMAND hall-timer-integration-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
 
+add_executable(camera-iva-occupancy-integration-test
+    tests/integration/CameraIvaOccupancyIntegrationTest.cpp
+    src/sensor/HallParkingService.cpp
+    src/parking/EvidenceCaptureWorker.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/event/SystemEventReporter.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp
+    ${SENSOR_PARKING_SOURCES})
+target_include_directories(camera-iva-occupancy-integration-test PRIVATE include)
+target_compile_options(camera-iva-occupancy-integration-test PRIVATE
+    -Wall -Wextra)
+target_link_libraries(camera-iva-occupancy-integration-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV)
+target_compile_definitions(camera-iva-occupancy-integration-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME camera-iva-occupancy-integration-test
+    COMMAND camera-iva-occupancy-integration-test
+            ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+
 add_executable(evidence-capture-worker-test
     tests/integration/EvidenceCaptureWorkerTest.cpp
     src/parking/EvidenceCaptureWorker.cpp

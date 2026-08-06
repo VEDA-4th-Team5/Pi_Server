@@ -2,6 +2,8 @@
 
 #include "util/TimeUtil.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <cctype>
 #include <iomanip>
 #include <sstream>
@@ -22,6 +24,88 @@ bool parseActiveState(const std::string& payload) {
            value.find("\"active\":false") == std::string::npos &&
            value.find("\"state\":false") == std::string::npos &&
            value.find(">false<") == std::string::npos;
+}
+
+std::string canonicalVideoSourceToken(std::string token) {
+    token = lowerCopy(std::move(token));
+    constexpr const char* longPrefix = "videosourcetoken-";
+    if (token.rfind(longPrefix, 0) == 0)
+        token = "vs-" + token.substr(std::char_traits<char>::length(longPrefix));
+    if (token.rfind("vs-", 0) != 0 || token.size() <= 3) return {};
+    for (std::size_t index = 3; index < token.size(); ++index) {
+        if (!std::isdigit(static_cast<unsigned char>(token[index]))) return {};
+    }
+    return token;
+}
+
+std::string upperCopy(std::string value) {
+    for (char& character : value) {
+        character = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(character)));
+    }
+    return value;
+}
+
+void parseSmartParkingIva(const std::string& payload,
+                          event::CameraEvent& event) {
+    nlohmann::json body;
+    try {
+        body = nlohmann::json::parse(payload);
+    } catch (...) {
+        return;
+    }
+    if (!body.is_object() ||
+        body.value("schema", std::string{}) != "smart-parking-iva-v1") {
+        return;
+    }
+
+    event.is_smart_parking_iva = true;
+    auto reject = [&event](std::string message) {
+        event.protocol_valid = false;
+        event.protocol_error = std::move(message);
+    };
+    for (const auto* key : {"camera_id", "video_source_token", "rule_name",
+                            "slot_id", "event_type", "action"}) {
+        if (!body.contains(key) || !body[key].is_string() ||
+            body[key].get_ref<const std::string&>().empty()) {
+            reject(std::string("missing or invalid ") + key);
+            return;
+        }
+    }
+    if (!body.contains("active") || !body["active"].is_boolean()) {
+        reject("missing or invalid active");
+        return;
+    }
+
+    event.declared_camera_id = body["camera_id"].get<std::string>();
+    event.rule_name = body["rule_name"].get<std::string>();
+    event.slot_id = body["slot_id"].get<std::string>();
+    event.action = upperCopy(body["action"].get<std::string>());
+    event.is_active = body["active"].get<bool>();
+    const std::string declaredToken = canonicalVideoSourceToken(
+        body["video_source_token"].get<std::string>());
+    if (declaredToken.empty()) {
+        reject("invalid video_source_token");
+        return;
+    }
+    if (!event.video_source_token.empty() &&
+        event.video_source_token != declaredToken) {
+        reject("topic/payload video_source_token mismatch");
+        return;
+    }
+    event.video_source_token = declaredToken;
+
+    if (upperCopy(body["event_type"].get<std::string>()) != "IVA_AREA") {
+        reject("unsupported event_type");
+        return;
+    }
+    if (event.action == "ENTER" && event.is_active) {
+        event.event_type = "camera_iva_area_enter";
+    } else if (event.action == "EXIT" && !event.is_active) {
+        event.event_type = "camera_iva_area_exit";
+    } else {
+        reject("action and active are inconsistent");
+    }
 }
 
 }
@@ -47,7 +131,9 @@ CameraEvent CameraEventParser::parse(
 
     event.event_type = parseEventType(raw_topic, raw_payload);
     event.is_active = parseActiveState(raw_payload);
+    parseSmartParkingIva(raw_payload, event);
     event.is_iva_area_event = event.event_type == "camera_iva_area_enter" ||
+                              event.event_type == "camera_iva_area_exit" ||
                               event.event_type == "camera_iva_area_intrusion" ||
                               event.event_type == "camera_iva_area_occupied";
     event.severity = parseSeverity(event.event_type);
@@ -127,6 +213,8 @@ std::string CameraEventParser::parseEventType(const std::string& topic,
                       combined.find("regiondetector") != std::string::npos;
     if (area && combined.find("enter") != std::string::npos)
         return "camera_iva_area_enter";
+    if (area && combined.find("exit") != std::string::npos)
+        return "camera_iva_area_exit";
     if (area && combined.find("intrusion") != std::string::npos)
         return "camera_iva_area_intrusion";
     if (area && (combined.find("objectsinside") != std::string::npos ||

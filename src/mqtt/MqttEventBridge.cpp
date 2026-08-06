@@ -24,6 +24,18 @@ std::shared_ptr<camera::CameraChannel> findChannel(
     return nullptr;
 }
 
+bool hasTopicSegment(const std::string& topic, const std::string& segment) {
+    if (segment.empty()) return false;
+    std::size_t begin{};
+    while (begin <= topic.size()) {
+        const std::size_t end = topic.find('/', begin);
+        if (topic.substr(begin, end - begin) == segment) return true;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return false;
+}
+
 }
 
 MqttEventBridge::MqttEventBridge(
@@ -35,7 +47,8 @@ MqttEventBridge::MqttEventBridge(
     ocr::OcrWorker& ocr_worker,
     std::vector<parking::ParkingSlotConfig> parking_slot_configs,
     SensorMessageHandler sensor_message_handler,
-    FireAckHandler fire_ack_handler
+    FireAckHandler fire_ack_handler,
+    IvaOccupancyHandler iva_occupancy_handler
 )
     : config_(config),
       channels_(channels),
@@ -46,6 +59,7 @@ MqttEventBridge::MqttEventBridge(
       parking_slot_configs_(std::move(parking_slot_configs)),
       sensor_message_handler_(std::move(sensor_message_handler)),
       fire_ack_handler_(std::move(fire_ack_handler)),
+      iva_occupancy_handler_(std::move(iva_occupancy_handler)),
       mosq_(nullptr) {
 }
 
@@ -76,7 +90,8 @@ bool MqttEventBridge::start() {
         return false;
     }
 
-    if (config_.hall_mqtt_input_enabled) {
+    if (config_.hall_mqtt_input_enabled &&
+        config_.parking_occupancy_source == "HALL") {
         rc = mosquitto_subscribe(
             mosq_, nullptr, config_.hall_mqtt_topic.c_str(), 1);
         if (rc != MOSQ_ERR_SUCCESS) {
@@ -232,9 +247,9 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
 
     // IVA Area 이벤트는 모든 채널이 아니라 해당 주차면의 채널/ROI만 증거로 저장한다.
     if (camera_event.is_iva_area_event) {
-        // 동일 topic의 false/off 알림은 영역 해제 이벤트이므로 입차 사진을 만들지 않는다.
-        if (!camera_event.is_active) {
-            util::logInfo("IVA area inactive event ignored: " + raw_topic);
+        if (!camera_event.protocol_valid) {
+            util::logWarn("IVA protocol rejected: " +
+                          camera_event.protocol_error + " topic=" + raw_topic);
             return;
         }
         std::string mapping_error;
@@ -246,6 +261,43 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
                 "IVA area event rejected: " + mapping_error +
                 " token=" + camera_event.video_source_token +
                 " topic=" + raw_topic);
+            return;
+        }
+        if (camera_event.is_smart_parking_iva) {
+            if (camera_event.declared_camera_id != config_.camera_id ||
+                camera_event.source_id != config_.camera_id ||
+                camera_event.slot_id != target->slotId ||
+                !hasTopicSegment(raw_topic, target->slotId) ||
+                !hasTopicSegment(raw_topic,
+                    camera_event.action == "ENTER" ? "enter" : "exit")) {
+                util::logWarn(
+                    "IVA protocol rejected: topic/payload/config mismatch "
+                    "topic=" + raw_topic + " slot=" + target->slotId);
+                return;
+            }
+        }
+
+        const bool exit_event =
+            camera_event.event_type == "camera_iva_area_exit";
+        if (config_.parking_occupancy_source == "CAMERA_IVA") {
+            if (!iva_occupancy_handler_) {
+                util::logError("IVA occupancy handler is not configured");
+                return;
+            }
+            const bool occupied_event =
+                !exit_event && camera_event.is_active;
+            if (!iva_occupancy_handler_(target->slotId, occupied_event)) {
+                util::logWarn("IVA occupancy event was not accepted: slot=" +
+                              target->slotId + " action=" +
+                              (occupied_event ? "ENTER" : "EXIT"));
+            }
+            return;
+        }
+
+        // HALL 모드에서는 IVA가 세션을 종료하지 않고 촬영 후보로만 동작한다.
+        if (exit_event || !camera_event.is_active) {
+            util::logInfo("IVA area inactive/exit event ignored in HALL mode: " +
+                          raw_topic);
             return;
         }
         std::shared_ptr<camera::CameraChannel> channel =

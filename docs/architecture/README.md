@@ -50,15 +50,15 @@ flowchart LR
     Http --> Images
 ```
 
-Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Pi는 자신의 촬영·OCR·
-증거 저장을 위해 최신 프레임을 메모리에 유지한다. Qt의 실시간 영상 표시는
-카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
+Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Snapshot API 전용 모드에서는
+Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 요청한다. Qt의
+실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
 
-EVDA-192의 목표 구조에서는 한 채널에 고정된 `EV01~EV04` IVA 영역을 WiseAI가
-판단하고 Pi는 MQTT 이벤트를 수신한다. Pi의 IVA 사진 획득은 연속 RTSP FrameBuffer가
-아니라 Camera Snapshot API 요청형 촬영으로 전환하며, Pi는 카메라 enhanced JPEG에서
-고정 ROI crop만 담당한다. 이 문단은 목표 구조이고 현재 런타임은 아직 RTSP 최신
-프레임을 사용한다.
+EVDA-192에서는 한 채널에 고정된 `EV01~EV04` IVA 영역을 WiseAI가 판단하고 Pi가
+고정 MQTT Publication을 수신한다. `PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 ENTER가
+세션을 만들고 EXIT는 기본 10초 확인 후 Hall VACANT와 동일한 출차 정리 정책으로
+세션을 닫는다. 신규 이미지는 `ch1/EV01/session_<id>/<stage>/`에 저장한다. Snapshot
+API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 
 ## 2. 프로세스 시작 순서
 
@@ -70,10 +70,9 @@ AppConfig 환경변수 로드
 → SQLite open / runtime migration
 → SystemEventReporter 시작
 → ParkingHttpServer 시작
-→ RTSP, Snapshot, Scheduler, Timer, OCR 객체 구성
+→ 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
-→ RtspStreamReceiver 시작
-→ 최초 RTSP frame 대기
+→ RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
 → OcrWorker / BestShotReceiver 시작
 → MqttEventBridge 연결
 → CaptureSchedulerRuntime 시작
@@ -82,8 +81,8 @@ AppConfig 환경변수 로드
 → SIGINT/SIGTERM 대기
 ```
 
-RTSP URL이 하나도 없거나 설정된 시간 안에 최초 프레임을 받지 못하면
-서버는 실패로 종료한다.
+Snapshot API가 비활성인 경우 RTSP URL이 없거나 최초 프레임을 받지 못하면 실패한다.
+Snapshot API가 활성이고 fallback이 꺼져 있으면 RTSP 없이 서버를 시작한다.
 
 ## 3. 홀센서 입차 및 OCR 흐름
 
@@ -157,7 +156,8 @@ CAMERA_IMAGE_SERVER_PORT=8080
 
 ### 3.3 실제 촬영 의미
 
-`CAMERA_SNAPSHOT_API_ENABLED=true`이면 `HallCaptureExecutor`는 CV5 CAP의
+`CAMERA_SNAPSHOT_API_ENABLED=true`이면 `HallCaptureExecutor`와
+`EvidenceCaptureWorker`는 CV5 CAP의
 `/images/generate`를 호출하고 응답에 포함된 같은 run의 original/enhanced JPEG를 즉시
 다운로드한다. `OcrWorker`는 제공된 enhanced 경로를 사용하므로 Pi OpenCV 화질 개선을
 실행하지 않는다. API가 비활성이면 기존 `CameraChannel::latest_full_frame` ROI 촬영을
@@ -186,7 +186,7 @@ HallParkingService VACANT
 
 ```text
 EvidenceCaptureWorker
-→ RTSP 최신 ROI frame
+→ Camera Snapshot API 전체 original/enhanced frame
 → OVERSTAY_EVIDENCE 파일 / IMAGE_LOG 저장
 
 TimerManager
@@ -264,10 +264,10 @@ BestShot 경로는 홀센서 경로와 별개로 DB 세션을 생성한다. 동�
 ```text
 data/snapshots/
 └── ch1/
-    ├── EV01/scene/
-    ├── EV02/scene/
-    ├── EV03/scene/
-    └── EV04/scene/
+    ├── EV01/session_<id>/<stage>/
+    ├── EV02/session_<id>/<stage>/
+    ├── EV03/session_<id>/<stage>/
+    └── EV04/session_<id>/<stage>/
 
 data/bestshots/
 ├── vehicle/

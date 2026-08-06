@@ -4,6 +4,7 @@
 #include "snapshot/SnapshotStorage.hpp"
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -65,6 +66,14 @@ int main() {
         channel->channel_id = "ch01";
         channel->latest_full_frame = cv::Mat(
             240, 320, CV_8UC3, cv::Scalar(10, 90, 180));
+        std::vector<unsigned char> originalJpeg;
+        std::vector<unsigned char> enhancedJpeg;
+        require(cv::imencode(".jpg", channel->latest_full_frame, originalJpeg),
+                "API fixture original JPEG encode failed");
+        const cv::Mat enhancedFrame(
+            240, 320, CV_8UC3, cv::Scalar(25, 120, 220));
+        require(cv::imencode(".jpg", enhancedFrame, enhancedJpeg),
+                "API fixture enhanced JPEG encode failed");
 
         std::mutex result_mutex;
         std::vector<parking::EvidenceCaptureResult> results;
@@ -76,6 +85,15 @@ int main() {
             [&](const parking::EvidenceCaptureResult& result) {
                 std::lock_guard lock(result_mutex);
                 results.push_back(result);
+            },
+            [&](const parking::EvidenceCaptureRequest& request,
+                const parking::EvidenceReason reason) {
+                if (request.roi.width <= 0.0 || request.roi.height <= 0.0)
+                    return snapshot::StoredImagePair{};
+                return storage.saveCameraApiHallCapture(
+                    request.channel->channel_id, request.sessionId,
+                    request.slotId, parking::toString(reason), originalJpeg,
+                    enhancedJpeg);
             });
         require(worker.start(), "worker did not start");
 
@@ -101,6 +119,21 @@ int main() {
         require(database.listSessionImages(static_cast<int>(session1), images1) &&
                     images1.size() == 2,
                 "duplicate schedule created extra evidence");
+        for (const auto& image : images1) {
+            require(!image.enhanced_path.empty() &&
+                        fs::is_regular_file(image.enhanced_path),
+                    "camera API enhanced evidence was not persisted");
+            const std::string stage = image.evidence_reason ==
+                    "OCCUPANCY_START_EVIDENCE"
+                ? "occupancy_start" : "overstay";
+            require(image.original_path.find(
+                        "/EV01/session_" + std::to_string(session1) + "/" +
+                        stage + "/") != std::string::npos,
+                    "camera API evidence directory layout mismatch");
+            const cv::Mat stored = cv::imread(image.original_path);
+            require(stored.cols == 320 && stored.rows == 240,
+                    "camera API evidence must remain a full frame before ROI setup");
+        }
 
         const auto session2 = database.createHallSession(
             "EV02", "HALL02", "2026-07-27T09:10:00");

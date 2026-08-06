@@ -3,12 +3,15 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 137
+- 분석 파일 수: 141
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
 
-기준일: 2026-07-28
+WiseAI IVA 차량 탐지의 MQTT parsing 및 슬롯 매핑 계약은
+[`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
+
+기준일: 2026-08-05
 
 기준 코드: CV Snapshot API 통합 작업 트리 (base `f6b8ac8`)
 
@@ -55,9 +58,15 @@ flowchart LR
     Http --> Images
 ```
 
-Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Pi는 자신의 촬영·OCR·
-증거 저장을 위해 최신 프레임을 메모리에 유지한다. Qt의 실시간 영상 표시는
-카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
+Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Snapshot API 전용 모드에서는
+Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 요청한다. Qt의
+실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
+
+EVDA-192에서는 한 채널에 고정된 `EV01~EV04` IVA 영역을 WiseAI가 판단하고 Pi가
+고정 MQTT Publication을 수신한다. `PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 ENTER가
+세션을 만들고 EXIT는 기본 10초 확인 후 Hall VACANT와 동일한 출차 정리 정책으로
+세션을 닫는다. 신규 이미지는 `ch1/EV01/session_<id>/<stage>/`에 저장한다. Snapshot
+API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 
 ## 2. 프로세스 시작 순서
 
@@ -69,10 +78,9 @@ AppConfig 환경변수 로드
 → SQLite open / runtime migration
 → SystemEventReporter 시작
 → ParkingHttpServer 시작
-→ RTSP, Snapshot, Scheduler, Timer, OCR 객체 구성
+→ 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
-→ RtspStreamReceiver 시작
-→ 최초 RTSP frame 대기
+→ RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
 → OcrWorker / BestShotReceiver 시작
 → MqttEventBridge 연결
 → CaptureSchedulerRuntime 시작
@@ -81,8 +89,8 @@ AppConfig 환경변수 로드
 → SIGINT/SIGTERM 대기
 ```
 
-RTSP URL이 하나도 없거나 설정된 시간 안에 최초 프레임을 받지 못하면
-서버는 실패로 종료한다.
+Snapshot API가 비활성인 경우 RTSP URL이 없거나 최초 프레임을 받지 못하면 실패한다.
+Snapshot API가 활성이고 fallback이 꺼져 있으면 RTSP 없이 서버를 시작한다.
 
 ## 3. 홀센서 입차 및 OCR 흐름
 
@@ -156,7 +164,8 @@ CAMERA_IMAGE_SERVER_PORT=8080
 
 ### 3.3 실제 촬영 의미
 
-`CAMERA_SNAPSHOT_API_ENABLED=true`이면 `HallCaptureExecutor`는 CV5 CAP의
+`CAMERA_SNAPSHOT_API_ENABLED=true`이면 `HallCaptureExecutor`와
+`EvidenceCaptureWorker`는 CV5 CAP의
 `/images/generate`를 호출하고 응답에 포함된 같은 run의 original/enhanced JPEG를 즉시
 다운로드한다. `OcrWorker`는 제공된 enhanced 경로를 사용하므로 Pi OpenCV 화질 개선을
 실행하지 않는다. API가 비활성이면 기존 `CameraChannel::latest_full_frame` ROI 촬영을
@@ -185,7 +194,7 @@ HallParkingService VACANT
 
 ```text
 EvidenceCaptureWorker
-→ RTSP 최신 ROI frame
+→ Camera Snapshot API 전체 original/enhanced frame
 → OVERSTAY_EVIDENCE 파일 / IMAGE_LOG 저장
 
 TimerManager
@@ -263,10 +272,10 @@ BestShot 경로는 홀센서 경로와 별개로 DB 세션을 생성한다. 동�
 ```text
 data/snapshots/
 └── ch1/
-    ├── EV01/scene/
-    ├── EV02/scene/
-    ├── EV03/scene/
-    └── EV04/scene/
+    ├── EV01/session_<id>/<stage>/
+    ├── EV02/session_<id>/<stage>/
+    ├── EV03/session_<id>/<stage>/
+    └── EV04/session_<id>/<stage>/
 
 data/bestshots/
 ├── vehicle/
@@ -441,6 +450,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool camera::CameraSnapshotApiClient::downloadJpeg(const std::string &path, std::size_t expectedBytes, std::vector< unsigned char > &output)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool camera::CameraSnapshotApiClient::generate(int channel, CameraGeneratedImages &images)` — 같은 카메라 프레임의 original/enhanced JPEG를 생성·다운로드한다.
 - `bool camera::CameraSnapshotApiClient::initialize()` — 이미지 서버 시작과 channels/filters discovery를 수행한다.
+- `bool camera::CameraSnapshotApiClient::initializeUnlocked()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool camera::CameraSnapshotApiClient::startImageServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `camera::CameraSnapshotApiClient::CameraSnapshotApiClient(CameraSnapshotApiConfig config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const std::string & camera::CameraSnapshotApiClient::lastError() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -464,11 +474,12 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
-- `EvidenceInsertResult database::EventDatabase::insertEvidenceImage(std::int64_t session_id, const std::string &original_path, const std::string &evidence_reason, const std::string &captured_at)` — 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다.
+- `EvidenceInsertResult database::EventDatabase::insertEvidenceImage(std::int64_t session_id, const std::string &original_path, const std::string &evidence_reason, const std::string &captured_at, const std::string &enhanced_path={})` — 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다.
 - `EvidenceInsertResult database::EventDatabase::insertHallCaptureImage(std::int64_t session_id, const std::string &original_path, const std::string &enhanced_path, const std::string &enhancement_type, const std::string &captured_at)` — 활성 세션에 30/60초 ROI 촬영본을 단계별 최대 한 장 연결한다.
 - `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev/is_phev로 차량 종류를 분류한다.
 - `bool database::EventDatabase::attachEnhancedPlateImage(const std::string &image_path, const std::string &enhanced_image_path)` — 원본 IMAGE_LOG 행에 OpenCV 전처리 파일 경로를 연결한다.
 - `bool database::EventDatabase::attachPlateBestShot(int session_id, const std::string &image_path, const std::string &plate_text)` — 번호판 BestShot과 선택적 카메라 plate text를 기존 세션에 연결한다.
+- `bool database::EventDatabase::attachVehicleBestShot(int session_id, const std::string &image_path, const std::string &object_id)` — 이미 활성 세션이 있는 슬롯에 차량 BestShot 이미지만 연결한다(세션/슬롯상태는 건드리지 않음).
 - `bool database::EventDatabase::cancelUnscheduled(std::int64_t log_id, const std::string &canceled_at)` — DB 생성 뒤 timer enqueue 실패 시 세션을 보상 종료한다.
 - `bool database::EventDatabase::createEntryWithBestShot(const std::string &slot_id, const std::string &image_path, const std::string &object_id, int *session_id)` — Vehicle BestShot을 근거로 OCCUPIED 슬롯과 ACTIVE 세션을 원자적으로 연결한다.
 - `bool database::EventDatabase::createEntryWithSnapshot(const std::string &slot_id, const std::string &image_path, const std::string &source_id, int *session_id)` — 홀센서 입차 Snapshot으로 ACTIVE 세션과 IMAGE/EVENT 로그를 만든다.
@@ -610,12 +621,14 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::string event::CameraEventParser::parseEventType(const std::string &topic, const std::string &payload)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::CameraEventParser::parseSeverity(const std::string &event_type)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::CameraEventParser::parseSourceId(const std::string &topic)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::CameraEventParser::parseVideoSourceToken(const std::string &topic)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/event/EventPayloadBuilder.hpp
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
-- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const std::string &slot_id, const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireEventId(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const FireSignal &signal, FireAlarmLifecycle lifecycle, const std::string &event_id, const std::string &alarm_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::EventPayloadBuilder::buildJson(const std::string &camera_id, const std::string &channel_id, const CameraEvent &event, const std::string &snapshot_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/event/FireAlarmEvent.hpp
@@ -628,10 +641,17 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
+- `bool event::FireAlarmManager::acknowledge(const std::string &channelId, const std::string &alarmId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool event::FireAlarmManager::onFireSignal(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const FireSensorBinding * event::FireAlarmManager::findBinding(const std::string &sensorId) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `event::FireAlarmManager::FireAlarmManager(std::string cameraId, std::string defaultChannelId, std::string topicPrefix, std::vector< FireSensorBinding > bindings, Publisher publisher)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t event::FireAlarmManager::bindingCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/event/IvaEventResolver.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolve(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/event/SystemEventReporter.hpp
 
@@ -678,7 +698,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool mqtt::MqttEventBridge::publishApplicationEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — 카메라 촬영 요청 등 서버 application 메시지를 발행한다.
 - `bool mqtt::MqttEventBridge::publishQtEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — Qt 관제 클라이언트용 상태·이벤트를 발행한다.
 - `bool mqtt::MqttEventBridge::start()` — Broker 연결, topic 구독과 network loop를 시작한다.
-- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, SensorMessageHandler sensor_message_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::vector< parking::ParkingSlotConfig > parking_slot_configs, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={}, IvaOccupancyHandler iva_occupancy_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void mqtt::MqttEventBridge::onMessage(mosquitto *mosq, const mosquitto_message *message)` — 수신 메시지를 정규화하고 이벤트별 처리 흐름을 실행한다.
 - `void mqtt::MqttEventBridge::onMessageStatic(mosquitto *mosq, void *userdata, const mosquitto_message *message)` — Mosquitto C callback에서 객체의 메시지 처리 함수로 연결한다.
 - `void mqtt::MqttEventBridge::stop()` — Mosquitto loop와 연결을 종료하고 자원을 해제한다.
@@ -702,7 +722,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `ocr::OcrWorker::OcrWorker(GeminiOcrClient client, database::EventDatabase &database, bool preprocess_enabled, ResultCallback result_callback={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `ocr::OcrWorker::~OcrWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::cancelSession(int session_id)` — 조기 출차 세션의 대기/진행 OCR 결과가 DB와 타이머에 반영되지 않게 한다.
-- `void ocr::OcrWorker::enqueue(int session_id, const std::string &slot_id, const std::string &image_path)` — BestShot 이미지를 기존 session의 OCR 작업으로 등록한다.
+- `void ocr::OcrWorker::enqueue(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path={})` — BestShot 이미지를 기존 session의 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueHallCapture(const HallCaptureTask &task)` — 30/60초 홀 촬영본을 전용 결과 callback이 있는 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueScene(const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path)` — 세션이 아직 없는 IVA scene을 후보 탐색 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::process(const Task &task, HallCaptureResult &hall_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -780,7 +800,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool parking::EvidenceCaptureWorker::scheduleSessionImpl(EvidenceCaptureRequest request, bool include_start, bool include_overstay, bool restored)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool parking::EvidenceCaptureWorker::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(const EvidenceCaptureWorker &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(snapshot::SnapshotStorage &storage, database::EventDatabase &database, Config config, Completion completion={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(snapshot::SnapshotStorage &storage, database::EventDatabase &database, Config config, Completion completion={}, Capture capture={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::EvidenceCaptureWorker::~EvidenceCaptureWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t parking::EvidenceCaptureWorker::pendingCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void parking::EvidenceCaptureWorker::cancelSession(std::int64_t session_id)` — VACANT 세션의 아직 실행되지 않은 작업을 취소한다.
@@ -990,12 +1010,13 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `HallParkingWorkQueue::PushResult sensor::HallParkingWorkQueue::push(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::canEnqueueWorkLocked(const parking::ParkingSensorEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::enqueueWorkLocked(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingService::handleCameraOccupancy(const std::string &slot_id, bool occupied)` — 정규화된 IVA ENTER/EXIT를 기존 세션·정리 흐름으로 연결한다.
 - `bool sensor::HallParkingService::handleLine(const std::string &line, const std::string &transport="mqtt-test")` — SENSOR:HALLxx:OCCUPIED/VACANT 메시지 한 줄을 처리한다.
 - `bool sensor::HallParkingService::handleOccupied(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingService::handleVacant(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingService::processEventLocked(const parking::ParkingSensorEvent &event, bool apply_confirmation_gate)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingService::handleVacant(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition, std::optional< std::int64_t > expected_session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingService::processEventLocked(const parking::ParkingSensorEvent &event, bool apply_confirmation_gate, std::optional< std::int64_t > expected_session_id=std::nullopt)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::removeEarlyDepartureImages(std::int64_t session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingWorkQueue::canAccept(const std::string &slot_id) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingWorkQueue::canAccept(const parking::ParkingSensorEvent &event) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingWorkQueue::empty() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `sensor::HallParkingService::HallParkingService(const HallParkingService &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `sensor::HallParkingService::HallParkingService(std::vector< parking::ParkingSlotConfig > slot_configs, const app::AppConfig &app_config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, OcrCancel ocr_cancel, parking_timer::ParkingSlotManager &timer_manager, parking_timer::EventManager &event_manager, parking::EvidenceCaptureWorker &evidence_worker, event::SystemEventReporter *system_event_reporter=nullptr, TransitionSink transition_sink={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1004,6 +1025,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::optional< HallParkingWorkItem > sensor::HallParkingWorkQueue::pop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t sensor::HallParkingWorkQueue::capacity() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t sensor::HallParkingWorkQueue::size() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void sensor::HallParkingService::cameraExitLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void sensor::HallParkingService::confirmationLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void sensor::HallParkingService::report(event::SystemEventCode code, event::SystemEventSeverity severity, const std::string &message, const std::string &transport, const std::string &slot_id={}) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void sensor::HallParkingService::workLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1051,10 +1073,10 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
-- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP에서 받은 original/enhanced JPEG를 원자적으로 저장한다.
+- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP 전체 original/enhanced JPEG를 세션·단계별로 저장한다.
 - `cv::Mat snapshot::SnapshotStorage::waitForFullFrame(const std::shared_ptr< camera::CameraChannel > &channel)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `snapshot::SnapshotStorage::SnapshotStorage(const std::string &snapshot_dir, int snapshot_frame_wait_ms, std::atomic< bool > &running)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `std::string snapshot::SnapshotStorage::saveAreaSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, const std::string &slot_id, const NormalizedRoi &roi, const std::string &filename_prefix)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string snapshot::SnapshotStorage::saveAreaSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, const std::string &slot_id, const NormalizedRoi &roi, const std::string &filename_prefix, std::int64_t session_id=-1, const std::string &stage_directory={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string snapshot::SnapshotStorage::saveEvidenceSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, std::int64_t session_id, const std::string &slot_id, const std::string &evidence_reason, const NormalizedRoi &roi)` — 세션·증거 종류가 포함된 이름으로 최신 ROI 원본을 저장한다.
 - `std::string snapshot::SnapshotStorage::saveFullSizeSnapshot(const std::shared_ptr< camera::CameraChannel > &channel)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string snapshot::SnapshotStorage::saveHallCaptureSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const NormalizedRoi &roi)` — 30/60초 홀 촬영본을 실제 DB 세션 ID가 포함된 이름으로 저장한다.
@@ -1130,6 +1152,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool camera::CameraSnapshotApiClient::downloadJpeg(const std::string &path, std::size_t expectedBytes, std::vector< unsigned char > &output)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool camera::CameraSnapshotApiClient::generate(int channel, CameraGeneratedImages &images)` — 같은 카메라 프레임의 original/enhanced JPEG를 생성·다운로드한다.
 - `bool camera::CameraSnapshotApiClient::initialize()` — 이미지 서버 시작과 channels/filters discovery를 수행한다.
+- `bool camera::CameraSnapshotApiClient::initializeUnlocked()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool camera::CameraSnapshotApiClient::startImageServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `camera::CameraSnapshotApiClient::CameraSnapshotApiClient(CameraSnapshotApiConfig config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const std::string & camera::CameraSnapshotApiClient::lastError() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1155,6 +1178,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `bool database::EventDatabase::attachEnhancedPlateImage(const std::string &image_path, const std::string &enhanced_image_path)` — 원본 IMAGE_LOG 행에 OpenCV 전처리 파일 경로를 연결한다.
 - `bool database::EventDatabase::attachPlateBestShot(int session_id, const std::string &image_path, const std::string &plate_text)` — 번호판 BestShot과 선택적 카메라 plate text를 기존 세션에 연결한다.
+- `bool database::EventDatabase::attachVehicleBestShot(int session_id, const std::string &image_path, const std::string &object_id)` — 이미 활성 세션이 있는 슬롯에 차량 BestShot 이미지만 연결한다(세션/슬롯상태는 건드리지 않음).
 - `bool database::EventDatabase::createEntryWithBestShot(const std::string &slot_id, const std::string &image_path, const std::string &object_id, int *session_id)` — Vehicle BestShot을 근거로 OCCUPIED 슬롯과 ACTIVE 세션을 원자적으로 연결한다.
 - `bool database::EventDatabase::createEntryWithSnapshot(const std::string &slot_id, const std::string &image_path, const std::string &source_id, int *session_id)` — 홀센서 입차 Snapshot으로 ACTIVE 세션과 IMAGE/EVENT 로그를 만든다.
 - `bool database::EventDatabase::deleteSessionImageRecords(int session_id)` — 파일 삭제가 끝난 조기 출차 세션의 IMAGE_LOG 행을 모두 제거한다.
@@ -1174,7 +1198,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
-- `EvidenceInsertResult database::EventDatabase::insertEvidenceImage(std::int64_t session_id, const std::string &original_path, const std::string &evidence_reason, const std::string &captured_at)` — 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다.
+- `EvidenceInsertResult database::EventDatabase::insertEvidenceImage(std::int64_t session_id, const std::string &original_path, const std::string &evidence_reason, const std::string &captured_at, const std::string &enhanced_path={})` — 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다.
 - `EvidenceInsertResult database::EventDatabase::insertHallCaptureImage(std::int64_t session_id, const std::string &original_path, const std::string &enhanced_path, const std::string &enhancement_type, const std::string &captured_at)` — 활성 세션에 30/60초 ROI 촬영본을 단계별 최대 한 장 연결한다.
 - `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev/is_phev로 차량 종류를 분류한다.
 - `bool database::EventDatabase::cancelUnscheduled(std::int64_t log_id, const std::string &canceled_at)` — DB 생성 뒤 timer enqueue 실패 시 세션을 보상 종료한다.
@@ -1296,23 +1320,32 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::string event::CameraEventParser::parseEventType(const std::string &topic, const std::string &payload)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::CameraEventParser::parseSeverity(const std::string &event_type)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::CameraEventParser::parseSourceId(const std::string &topic)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::CameraEventParser::parseVideoSourceToken(const std::string &topic)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/event/EventPayloadBuilder.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
-- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const std::string &slot_id, const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireEventId(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string event::EventPayloadBuilder::buildFireJson(const std::string &camera_id, const std::string &channel_id, const FireSignal &signal, FireAlarmLifecycle lifecycle, const std::string &event_id, const std::string &alarm_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::EventPayloadBuilder::buildJson(const std::string &camera_id, const std::string &channel_id, const CameraEvent &event, const std::string &snapshot_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/event/FireAlarmManager.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
+- `bool event::FireAlarmManager::acknowledge(const std::string &channelId, const std::string &alarmId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool event::FireAlarmManager::onFireSignal(const FireSignal &signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const FireSensorBinding * event::FireAlarmManager::findBinding(const std::string &sensorId) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `event::FireAlarmManager::FireAlarmManager(std::string cameraId, std::string defaultChannelId, std::string topicPrefix, std::vector< FireSensorBinding > bindings, Publisher publisher)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t event::FireAlarmManager::bindingCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< FireSensorBinding > event::parseFireSensorBindings(const std::string &spec)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/event/IvaEventResolver.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolve(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/event/SystemEventReporter.cpp
 
@@ -1369,7 +1402,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool mqtt::MqttEventBridge::publishApplicationEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — 카메라 촬영 요청 등 서버 application 메시지를 발행한다.
 - `bool mqtt::MqttEventBridge::publishQtEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — Qt 관제 클라이언트용 상태·이벤트를 발행한다.
 - `bool mqtt::MqttEventBridge::start()` — Broker 연결, topic 구독과 network loop를 시작한다.
-- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, SensorMessageHandler sensor_message_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::vector< parking::ParkingSlotConfig > parking_slot_configs, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={}, IvaOccupancyHandler iva_occupancy_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void mqtt::MqttEventBridge::onMessage(mosquitto *mosq, const mosquitto_message *message)` — 수신 메시지를 정규화하고 이벤트별 처리 흐름을 실행한다.
 - `void mqtt::MqttEventBridge::onMessageStatic(mosquitto *mosq, void *userdata, const mosquitto_message *message)` — Mosquitto C callback에서 객체의 메시지 처리 함수로 연결한다.
 - `void mqtt::MqttEventBridge::stop()` — Mosquitto loop와 연결을 종료하고 자원을 해제한다.
@@ -1393,7 +1426,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `ocr::OcrWorker::OcrWorker(GeminiOcrClient client, database::EventDatabase &database, bool preprocess_enabled, ResultCallback result_callback={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `ocr::OcrWorker::~OcrWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::cancelSession(int session_id)` — 조기 출차 세션의 대기/진행 OCR 결과가 DB와 타이머에 반영되지 않게 한다.
-- `void ocr::OcrWorker::enqueue(int session_id, const std::string &slot_id, const std::string &image_path)` — BestShot 이미지를 기존 session의 OCR 작업으로 등록한다.
+- `void ocr::OcrWorker::enqueue(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path={})` — BestShot 이미지를 기존 session의 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueHallCapture(const HallCaptureTask &task)` — 30/60초 홀 촬영본을 전용 결과 callback이 있는 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueScene(const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path)` — 세션이 아직 없는 IVA scene을 후보 탐색 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::process(const Task &task, HallCaptureResult &hall_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1465,7 +1498,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool parking::EvidenceCaptureWorker::scheduleSessionImpl(EvidenceCaptureRequest request, bool include_start, bool include_overstay, bool restored)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool parking::EvidenceCaptureWorker::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const char * parking::toString(EvidenceReason reason) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(snapshot::SnapshotStorage &storage, database::EventDatabase &database, Config config, Completion completion={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `parking::EvidenceCaptureWorker::EvidenceCaptureWorker(snapshot::SnapshotStorage &storage, database::EventDatabase &database, Config config, Completion completion={}, Capture capture={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::EvidenceCaptureWorker::~EvidenceCaptureWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t parking::EvidenceCaptureWorker::pendingCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void parking::EvidenceCaptureWorker::cancelSession(std::int64_t session_id)` — VACANT 세션의 아직 실행되지 않은 작업을 취소한다.
@@ -1600,18 +1633,20 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `HallParkingWorkQueue::PushResult sensor::HallParkingWorkQueue::push(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::canEnqueueWorkLocked(const parking::ParkingSensorEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::enqueueWorkLocked(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingService::handleCameraOccupancy(const std::string &slot_id, bool occupied)` — 정규화된 IVA ENTER/EXIT를 기존 세션·정리 흐름으로 연결한다.
 - `bool sensor::HallParkingService::handleLine(const std::string &line, const std::string &transport="mqtt-test")` — SENSOR:HALLxx:OCCUPIED/VACANT 메시지 한 줄을 처리한다.
 - `bool sensor::HallParkingService::handleOccupied(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingService::handleVacant(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingService::processEventLocked(const parking::ParkingSensorEvent &event, bool apply_confirmation_gate)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingService::handleVacant(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition, std::optional< std::int64_t > expected_session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingService::processEventLocked(const parking::ParkingSensorEvent &event, bool apply_confirmation_gate, std::optional< std::int64_t > expected_session_id=std::nullopt)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::removeEarlyDepartureImages(std::int64_t session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingWorkQueue::canAccept(const std::string &slot_id) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool sensor::HallParkingWorkQueue::canAccept(const parking::ParkingSensorEvent &event) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingWorkQueue::empty() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `sensor::HallParkingService::~HallParkingService()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `sensor::HallParkingWorkQueue::HallParkingWorkQueue(std::size_t capacity)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< HallParkingWorkItem > sensor::HallParkingWorkQueue::pop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t sensor::HallParkingWorkQueue::capacity() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t sensor::HallParkingWorkQueue::size() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void sensor::HallParkingService::cameraExitLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void sensor::HallParkingService::confirmationLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void sensor::HallParkingService::report(event::SystemEventCode code, event::SystemEventSeverity severity, const std::string &message, const std::string &transport, const std::string &slot_id={}) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void sensor::HallParkingService::workLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1651,10 +1686,10 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
-- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP에서 받은 original/enhanced JPEG를 원자적으로 저장한다.
+- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP 전체 original/enhanced JPEG를 세션·단계별로 저장한다.
 - `cv::Mat snapshot::SnapshotStorage::waitForFullFrame(const std::shared_ptr< camera::CameraChannel > &channel)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `snapshot::SnapshotStorage::SnapshotStorage(const std::string &snapshot_dir, int snapshot_frame_wait_ms, std::atomic< bool > &running)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `std::string snapshot::SnapshotStorage::saveAreaSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, const std::string &slot_id, const NormalizedRoi &roi, const std::string &filename_prefix)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string snapshot::SnapshotStorage::saveAreaSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, const std::string &slot_id, const NormalizedRoi &roi, const std::string &filename_prefix, std::int64_t session_id=-1, const std::string &stage_directory={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string snapshot::SnapshotStorage::saveEvidenceSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, std::int64_t session_id, const std::string &slot_id, const std::string &evidence_reason, const NormalizedRoi &roi)` — 세션·증거 종류가 포함된 이름으로 최신 ROI 원본을 저장한다.
 - `std::string snapshot::SnapshotStorage::saveFullSizeSnapshot(const std::shared_ptr< camera::CameraChannel > &channel)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string snapshot::SnapshotStorage::saveHallCaptureSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const NormalizedRoi &roi)` — 30/60초 홀 촬영본을 실제 DB 세션 ID가 포함된 이름으로 저장한다.
@@ -1722,6 +1757,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
+- `bool util::logEnabled(const std::string &tag)` — 해당 태그가 현재 로그 설정에서 켜져 있는지 확인한다.
 - `void util::logError(const std::string &message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void util::logInfo(const std::string &message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void util::logLine(const std::string &level, const std::string &message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1748,6 +1784,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::string util::hideUrlForLog(const std::string &url)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ## tests/integration
+
+### tests/integration/CameraIvaOccupancyIntegrationTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main(int argc, char *argv[])` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tests/integration/CameraSnapshotApiClientTest.cpp
 
@@ -1813,6 +1855,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `int main()` — 모든 타이머 단위/통합 테스트를 실행한다.
 
 ## tests/unit
+
+### tests/unit/CameraIvaEventTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tests/unit/CaptureSchedulerTest.cpp
 

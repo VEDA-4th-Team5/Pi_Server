@@ -47,6 +47,12 @@ struct AppConfig {
     // 0이면 기존처럼 첫 OCCUPIED를 즉시 확정한다.
     int parking_occupancy_confirm_ms;
 
+    // 주차 점유 상태를 확정하는 입력 주체. HALL 또는 CAMERA_IVA를 사용한다.
+    // 두 입력이 동시에 세션을 만들지 않도록 한 실행에서는 하나만 선택한다.
+    std::string parking_occupancy_source;
+    // CAMERA_IVA 모드에서 EXIT를 즉시 확정하지 않고 ENTER 재수신을 기다리는 시간.
+    int camera_iva_exit_confirm_ms;
+
     // 확정된 입차 T0를 기준으로 30초/60초 MQTT 촬영 요청을 예약한다.
     bool capture_sched_enabled;
     std::string capture_topic_prefix;
@@ -58,7 +64,8 @@ struct AppConfig {
     std::string capture_offsets_sec;
     int capture_ocr_max_attempts;
 
-    // CV5 cv_snapshot_api에서 original/enhanced JPEG를 생성·다운로드한다.
+    // CV5 cv_snapshot_api에서 세션 증거와 30/60초 original/enhanced JPEG를
+    // 생성·다운로드한다. fallback=false이면 Pi RTSP 수신을 시작하지 않는다.
     bool camera_snapshot_api_enabled;
     bool camera_snapshot_api_rtsp_fallback;
     std::string camera_open_api_base;

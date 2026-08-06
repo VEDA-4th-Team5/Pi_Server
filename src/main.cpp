@@ -75,6 +75,23 @@ std::vector<std::shared_ptr<camera::CameraChannel>> createCameraChannels(
         channels.push_back(channel);
     }
 
+    // Snapshot API 전용 모드에서도 slot/channel 매핑에 사용할 논리 채널은
+    // 필요하다. RTSP URL이 없는 채널은 수신 스레드에 넘기지 않는다.
+    if (config.camera_snapshot_api_enabled) {
+        for (const auto& area : config.iva_areas) {
+            const bool exists = std::any_of(
+                channels.begin(), channels.end(),
+                [&area](const auto& channel) {
+                    return channel && channel->channel_id == area.channel_id;
+                });
+            if (exists) continue;
+            auto channel = std::make_shared<camera::CameraChannel>();
+            channel->camera_id = config.camera_id;
+            channel->channel_id = area.channel_id;
+            channels.push_back(std::move(channel));
+        }
+    }
+
     return channels;
 }
 
@@ -314,14 +331,27 @@ int main() {
     util::logInfo("preview mode: " + std::to_string(config.preview_width) + "x" + std::to_string(config.preview_height) + " internal frame");
 
     if (channels.empty()) {
-        util::logError("No RTSP URL configured");
-        util::logError("HINT: export CAMERA_RTSP='rtsp://USER:PASSWORD@CAMERA_IP:554/profile2/media.smp'");
-        util::logError("HINT: or set CAMERA_RTSP_CH1~CAMERA_RTSP_CH4");
+        util::logError("No camera acquisition channel configured");
+        util::logError("HINT: configure Camera Snapshot API or an RTSP URL");
         return 1;
     }
 
-    // 초기화 순서: DB -> RTSP -> 최초 프레임 -> BestShot -> MQTT.
-    // 최초 프레임 전에 MQTT를 받으면 저장할 영상이 없기 때문에 이 순서가 중요하다.
+    std::vector<std::shared_ptr<camera::CameraChannel>> rtsp_channels;
+    for (const auto& channel : channels) {
+        if (channel && !channel->rtsp_url.empty())
+            rtsp_channels.push_back(channel);
+    }
+    const bool rtsp_capture_enabled =
+        !rtsp_channels.empty() &&
+        (!config.camera_snapshot_api_enabled ||
+         config.camera_snapshot_api_rtsp_fallback);
+    if (!config.camera_snapshot_api_enabled && !rtsp_capture_enabled) {
+        util::logError("Camera Snapshot API and RTSP capture are both disabled");
+        return 1;
+    }
+
+    // 초기화 순서: DB -> 선택적 RTSP -> BestShot -> MQTT. Snapshot API 전용
+    // 모드는 RTSP 최초 프레임을 기다리지 않는다.
     database::EventDatabase database;
 
     if (!database.open(config.db_path)) {
@@ -387,7 +417,7 @@ int main() {
     }
 
     camera::RtspStreamReceiver rtsp_receiver(
-        channels,
+        rtsp_channels,
         config.preview_width,
         config.preview_height,
         config.rtsp_retry_delay_ms,
@@ -644,7 +674,8 @@ int main() {
                 if (!(config.hall_capture_ocr_enabled &&
                       config.capture_sched_enabled)) {
                     ocr_worker.enqueue(static_cast<int>(result.sessionId),
-                                       result.slotId, result.imagePath);
+                                       result.slotId, result.imagePath,
+                                       result.enhancedImagePath);
                 }
                 if (timer_events) {
                     timer_events->publish(
@@ -658,7 +689,52 @@ int main() {
                     parking_timer::utcNow(), result.imagePath,
                     result.sessionId);
             }
-        });
+        },
+        camera_snapshot_api
+            ? parking::EvidenceCaptureWorker::Capture{
+                [&camera_snapshot_api, &snapshot_storage, &config](
+                    const parking::EvidenceCaptureRequest& request,
+                    const parking::EvidenceReason reason) {
+                    camera::CameraGeneratedImages generated;
+                    if (camera_snapshot_api->generate(
+                            request.snapshotApiChannel, generated)) {
+                        auto paths = snapshot_storage.saveCameraApiHallCapture(
+                            request.channel ? request.channel->channel_id : "",
+                            request.sessionId, request.slotId,
+                            parking::toString(reason), generated.originalJpeg,
+                            generated.enhancedJpeg);
+                        if (!paths.originalPath.empty() &&
+                            !paths.enhancedPath.empty()) {
+                            util::logLine(
+                                "CAMERA_SNAPSHOT_API",
+                                "evidence stored session=" +
+                                    std::to_string(request.sessionId) +
+                                    " slot=" + request.slotId + " reason=" +
+                                    parking::toString(reason) + " run_id=" +
+                                    generated.runId);
+                        }
+                        return paths;
+                    }
+                    util::logError(
+                        "camera snapshot API evidence failed session=" +
+                        std::to_string(request.sessionId) + " slot=" +
+                        request.slotId + " reason=" +
+                        parking::toString(reason) + " error=" +
+                        camera_snapshot_api->lastError());
+                    if (!config.camera_snapshot_api_rtsp_fallback) {
+                        return snapshot::StoredImagePair{};
+                    }
+                    util::logWarn(
+                        "falling back to RTSP evidence capture session=" +
+                        std::to_string(request.sessionId) + " slot=" +
+                        request.slotId);
+                    return snapshot::StoredImagePair{
+                        snapshot_storage.saveEvidenceSnapshot(
+                            request.channel, request.sessionId, request.slotId,
+                            parking::toString(reason), request.roi),
+                        {}};
+                }}
+            : parking::EvidenceCaptureWorker::Capture{});
     if (!evidence_worker->start()) {
         if (http_server) http_server->stop();
         system_event_reporter.stop();
@@ -677,7 +753,8 @@ int main() {
         device::SensorLinkManager::parseMode(config.sensor_link_mode);
     std::unique_ptr<sensor::HallParkingService> hall_service;
     if (parking_timer && (config.hall_mqtt_input_enabled ||
-                          sensor_link_mode != device::SensorLinkMode::Disabled)) {
+                          sensor_link_mode != device::SensorLinkMode::Disabled ||
+                          config.parking_occupancy_source == "CAMERA_IVA")) {
         hall_service = std::make_unique<sensor::HallParkingService>(
             parking_slot_configs, config, channels, database,
             [&ocr_worker](int session_id) {
@@ -693,9 +770,10 @@ int main() {
             });
     }
 
-    rtsp_receiver.start();
+    if (rtsp_capture_enabled) rtsp_receiver.start();
 
-    if (!rtsp_receiver.waitForInitialFrames(config.initial_frame_timeout_sec)) {
+    if (rtsp_capture_enabled &&
+        !rtsp_receiver.waitForInitialFrames(config.initial_frame_timeout_sec)) {
         g_running.store(false);
         rtsp_receiver.stop();
         if (http_server) http_server->stop();
@@ -706,6 +784,10 @@ int main() {
         system_event_reporter.stop();
         database.close();
         return 1;
+    }
+    if (!rtsp_capture_enabled) {
+        util::logInfo(
+            "RTSP capture disabled: Camera Snapshot API is the image source");
     }
 
     // 재시작 전에 생성된 ACTIVE 세션은 메모리 evidence queue가 사라졌으므로
@@ -733,7 +815,8 @@ int main() {
                 {area->roi_x, area->roi_y,
                  area->roi_width, area->roi_height},
                 restoreMonotonicStart(record.parked_at,
-                                      fallback_elapsed)})) {
+                                      fallback_elapsed),
+                area->snapshot_api_channel})) {
             ++restored_evidence;
         } else {
             ++failed_evidence_restore;
@@ -762,6 +845,10 @@ int main() {
                               const std::string& alarm_id) {
             return fire_alarm_manager &&
                    fire_alarm_manager->acknowledge(channel_id, alarm_id);
+        },
+        [&hall_service](const std::string& slot_id, const bool occupied) {
+            return hall_service &&
+                   hall_service->handleCameraOccupancy(slot_id, occupied);
         }
     );
     capture_mqtt_bridge = &mqtt_bridge;
@@ -843,7 +930,7 @@ int main() {
         sensor_config.reconnect_delay_ms = config.sensor_uart_reconnect_ms;
         sensor_link = std::make_unique<device::SensorLinkManager>(
             std::move(sensor_config),
-            [&hall_service, &fire_alarm_manager, &fire_line_parser](
+            [&hall_service, &fire_alarm_manager, &fire_line_parser, &config](
                 const std::string& line, const std::string& transport) {
                 if (sensor::SensorProtocolParser::isFireLine(line)) {
                     if (!fire_alarm_manager) return;
@@ -860,7 +947,10 @@ int main() {
                     fire_alarm_manager->onFireSignal(toFireSignal(*message));
                     return;
                 }
-                if (hall_service) hall_service->handleLine(line, transport);
+                if (hall_service &&
+                    config.parking_occupancy_source == "HALL") {
+                    hall_service->handleLine(line, transport);
+                }
             }, system_event_sink);
         if (!sensor_link->start()) {
             util::logError("Sensor UART/LoRa link could not be started");

@@ -34,7 +34,7 @@ public:
         const std::shared_ptr<camera::CameraChannel>& channel
     );
 
-    // 최신 원본 프레임에서 IVA ROI를 잘라 snapshots/<channel>/<slot>/scene에 저장한다.
+    // 세션 없는 IVA 진단 ROI를 snapshots/<channel>/<slot>/events/iva에 저장한다.
     std::string saveIvaAreaSnapshot(
         const std::shared_ptr<camera::CameraChannel>& channel,
         const std::string& slot_id,
@@ -59,7 +59,10 @@ public:
         const NormalizedRoi& roi
     );
 
-    /** @brief 카메라 CAP에서 받은 original/enhanced JPEG를 원자적으로 저장한다. */
+    /**
+     * @brief 카메라 CAP 전체 original/enhanced JPEG를 세션·단계별로 저장한다.
+     * @note 실제 슬롯 좌표가 확정되기 전에는 ROI crop을 수행하지 않는다.
+     */
     StoredImagePair saveCameraApiHallCapture(
         const std::string& channel_id,
         std::int64_t session_id,
@@ -74,7 +77,9 @@ private:
         const std::shared_ptr<camera::CameraChannel>& channel,
         const std::string& slot_id,
         const NormalizedRoi& roi,
-        const std::string& filename_prefix);
+        const std::string& filename_prefix,
+        std::int64_t session_id = -1,
+        const std::string& stage_directory = {});
     cv::Mat waitForFullFrame(const std::shared_ptr<camera::CameraChannel>& channel);
     std::string snapshot_dir_;
     int snapshot_frame_wait_ms_;

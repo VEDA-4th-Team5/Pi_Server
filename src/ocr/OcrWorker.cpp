@@ -55,7 +55,8 @@ void OcrWorker::stop() {
 }
 
 void OcrWorker::enqueue(int session_id, const std::string& slot_id,
-                        const std::string& image_path) {
+                        const std::string& image_path,
+                        const std::string& enhanced_image_path) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!started_ || session_id < 0 || image_path.empty()) return;
     if (canceled_session_ids_.contains(session_id)) return;
@@ -67,7 +68,8 @@ void OcrWorker::enqueue(int session_id, const std::string& slot_id,
         util::logInfo("duplicate OCR image suppressed: " + image_path);
         return;
     }
-    queue_.push({session_id, slot_id, image_path, false, "", false, 0});
+    queue_.push({session_id, slot_id, image_path, false,
+                 enhanced_image_path, false, 0});
     condition_.notify_one();
 }
 
@@ -164,6 +166,7 @@ void OcrWorker::run() {
 
 void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         PlatePreprocessResult processed;
+        bool owns_processed_enhanced = false;
         std::string ocr_input = task.image_path;
         if (!task.provided_enhanced_path.empty())
             processed.enhanced_path = task.provided_enhanced_path;
@@ -174,6 +177,7 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         }
         if (preprocess_enabled_ && task.provided_enhanced_path.empty()) {
             processed = preprocessPlateImage(task.image_path, task.detect_candidate);
+            owns_processed_enhanced = !processed.enhanced_path.empty();
             if (task.detect_candidate && !processed.candidate_detected) {
                 util::logInfo("No plausible plate candidate in IVA scene: path=" +
                               task.image_path);
@@ -187,23 +191,37 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
             }
         }
 
-        {
+        const auto session_canceled = [this, &task] {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (task.session_id >= 0 &&
-                canceled_session_ids_.contains(task.session_id)) {
-                if (!processed.enhanced_path.empty()) {
-                    std::error_code ignored;
-                    std::filesystem::remove(processed.enhanced_path, ignored);
-                }
+            return task.session_id >= 0 &&
+                   canceled_session_ids_.contains(task.session_id);
+        };
+        const auto remove_owned_enhanced = [&processed,
+                                             &owns_processed_enhanced] {
+            if (!owns_processed_enhanced || processed.enhanced_path.empty())
                 return;
-            }
+            std::error_code ignored;
+            std::filesystem::remove(processed.enhanced_path, ignored);
+        };
+        if (session_canceled()) {
+            remove_owned_enhanced();
+            return;
         }
 
         OcrResult result;
         for (int attempt = 1; attempt <= 3; ++attempt) {
+            if (session_canceled()) {
+                remove_owned_enhanced();
+                return;
+            }
             result = client_.recognizePlate(
                 ocr_input, processed.enhanced_path);
             if (result.success) break;
+            // VACANT 처리 중 파일이 정리된 세션은 실패 재시도를 하지 않는다.
+            if (session_canceled()) {
+                remove_owned_enhanced();
+                return;
+            }
             // 잘못된 키/요청처럼 재시도로 회복되지 않는 4xx는 즉시 중단한다.
             const bool permanent_client_error =
                 result.error.find("Gemini HTTP status 4") != std::string::npos &&
@@ -220,16 +238,9 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
                            " error=" + result.error);
             return;
         }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (task.session_id >= 0 &&
-                canceled_session_ids_.contains(task.session_id)) {
-                if (!processed.enhanced_path.empty()) {
-                    std::error_code ignored;
-                    std::filesystem::remove(processed.enhanced_path, ignored);
-                }
-                return;
-            }
+        if (session_canceled()) {
+            remove_owned_enhanced();
+            return;
         }
         std::string plate = normalizePlateNumber(result.plate_number);
         if (!result.readable || !isPlausibleKoreanPlate(plate)) {

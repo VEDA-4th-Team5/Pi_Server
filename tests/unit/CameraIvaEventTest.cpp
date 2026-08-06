@@ -97,6 +97,41 @@ int main() {
                           multiDigit.event_channel_id == "ch11",
                       "multi-digit token must be parsed completely");
 
+    auto customEnter = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-0/EV01/enter",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"ENTER","active":true})",
+        "ch01");
+    success &= expect(customEnter.is_smart_parking_iva &&
+                          customEnter.protocol_valid &&
+                          customEnter.event_type == "camera_iva_area_enter" &&
+                          customEnter.is_active && customEnter.action == "ENTER",
+                      "custom ENTER publication must be parsed");
+
+    auto customExit = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-0/EV01/exit",
+        R"({ "schema": "smart-parking-iva-v1", "camera_id": "cam01", "video_source_token": "vs-0", "rule_name": "EV01", "slot_id": "EV01", "event_type": "IVA_AREA", "action": "EXIT", "active": false })",
+        "ch01");
+    success &= expect(customExit.is_smart_parking_iva &&
+                          customExit.protocol_valid &&
+                          customExit.event_type == "camera_iva_area_exit" &&
+                          !customExit.is_active && customExit.action == "EXIT",
+                      "custom EXIT publication with whitespace must be parsed");
+
+    auto tokenMismatch = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-0/EV01/enter",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-1","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"ENTER","active":true})",
+        "ch01");
+    success &= expect(tokenMismatch.is_smart_parking_iva &&
+                          !tokenMismatch.protocol_valid,
+                      "topic/payload token mismatch must be rejected");
+
+    auto inconsistentExit = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-0/EV01/exit",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"EXIT","active":true})",
+        "ch01");
+    success &= expect(!inconsistentExit.protocol_valid,
+                      "EXIT active=true must be rejected");
+
     auto ambiguousSlots = slots;
     ambiguousSlots.push_back(slot("EV03", "vs-0", "name1"));
     auto ambiguousAreas = areas;

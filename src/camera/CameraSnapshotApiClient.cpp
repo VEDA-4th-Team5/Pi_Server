@@ -90,6 +90,11 @@ void CameraSnapshotApiClient::setError(std::string message) {
 }
 
 bool CameraSnapshotApiClient::initialize() {
+    std::lock_guard lock(requestMutex_);
+    return initializeUnlocked();
+}
+
+bool CameraSnapshotApiClient::initializeUnlocked() {
     initialized_ = false;
     channels_.clear();
     filters_.clear();
@@ -186,9 +191,10 @@ bool CameraSnapshotApiClient::discoverFilters() {
 
 bool CameraSnapshotApiClient::generate(const int channel,
                                        CameraGeneratedImages& images) {
+    std::lock_guard lock(requestMutex_);
     images = {};
     lastError_.clear();
-    if (!initialized_ && !initialize()) return false;
+    if (!initialized_ && !initializeUnlocked()) return false;
     if (std::find(channels_.begin(), channels_.end(), channel) ==
         channels_.end()) {
         setError("requested channel is not advertised: " +

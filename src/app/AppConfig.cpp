@@ -1,6 +1,7 @@
 #include "app/AppConfig.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -114,6 +115,21 @@ AppConfig AppConfig::loadFromEnv() {
         std::max(1, getEnvIntOrDefault("SENSOR_UART_RECONNECT_MS", 1000));
     config.parking_occupancy_confirm_ms =
         std::max(0, getEnvIntOrDefault("PARKING_OCCUPANCY_CONFIRM_MS", 0));
+    config.parking_occupancy_source =
+        getEnvOrDefault("PARKING_OCCUPANCY_SOURCE", "HALL");
+    std::transform(config.parking_occupancy_source.begin(),
+                   config.parking_occupancy_source.end(),
+                   config.parking_occupancy_source.begin(),
+                   [](const unsigned char value) {
+                       return static_cast<char>(std::toupper(value));
+                   });
+    if (config.parking_occupancy_source != "HALL" &&
+        config.parking_occupancy_source != "CAMERA_IVA") {
+        config.parking_occupancy_source = "HALL";
+    }
+    config.camera_iva_exit_confirm_ms = std::clamp(
+        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 10000),
+        1000, 60000);
     config.capture_sched_enabled =
         getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);
     config.capture_topic_prefix =

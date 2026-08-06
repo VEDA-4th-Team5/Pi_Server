@@ -26,11 +26,13 @@ EvidenceCaptureWorker::EvidenceCaptureWorker(
     snapshot::SnapshotStorage& storage,
     database::EventDatabase& database,
     Config config,
-    Completion completion)
+    Completion completion,
+    Capture capture)
     : storage_(storage),
       database_(database),
       config_(std::move(config)),
-      completion_(std::move(completion)) {
+      completion_(std::move(completion)),
+      capture_(std::move(capture)) {
     if (config_.overstayDelay <= std::chrono::seconds::zero() ||
         config_.maxPendingJobs < 2) {
         throw std::invalid_argument("invalid evidence capture worker config");
@@ -274,23 +276,37 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
     const std::string channel_id = job.request.channel
         ? job.request.channel->channel_id : std::string{};
     EvidenceCaptureResult result{session_id, job.request.slotId, channel_id,
-                                 job.reason, {}, false, false, {}};
+                                 job.reason, {}, {}, false, false, {}};
     if (canceled(session_id)) return;
 
     try {
-        const std::string path = storage_.saveEvidenceSnapshot(
-            job.request.channel, session_id, job.request.slotId, reason,
-            job.request.roi);
-        result.imagePath = path;
+        snapshot::StoredImagePair paths;
+        if (capture_) {
+            paths = capture_(job.request, job.reason);
+        } else {
+            paths.originalPath = storage_.saveEvidenceSnapshot(
+                job.request.channel, session_id, job.request.slotId, reason,
+                job.request.roi);
+        }
+        result.imagePath = paths.originalPath;
+        result.enhancedImagePath = paths.enhancedPath;
         std::error_code file_error;
-        if (path.empty() ||
-            !std::filesystem::is_regular_file(path, file_error) || file_error) {
-            if (!path.empty()) {
+        const bool original_valid = !paths.originalPath.empty() &&
+            std::filesystem::is_regular_file(paths.originalPath, file_error) &&
+            !file_error;
+        file_error.clear();
+        const bool enhanced_valid = paths.enhancedPath.empty() ||
+            (std::filesystem::is_regular_file(paths.enhancedPath, file_error) &&
+             !file_error);
+        if (!original_valid || !enhanced_valid) {
+            for (const auto* path : {&paths.originalPath, &paths.enhancedPath}) {
+                if (path->empty()) continue;
                 std::error_code ignored;
-                std::filesystem::remove(path, ignored);
+                std::filesystem::remove(*path, ignored);
             }
             result.imagePath.clear();
-            result.message = "FrameBuffer/ROI/image file save failed";
+            result.enhancedImagePath.clear();
+            result.message = "camera API/FrameBuffer image file save failed";
             util::logError("Evidence capture failed: session=" +
                 std::to_string(session_id) + " slot=" + job.request.slotId +
                 " channel=" + channel_id + " reason=" + reason +
@@ -299,11 +315,16 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
             return;
         }
         const auto inserted = database_.insertEvidenceImage(
-            session_id, path, reason, parking_timer::utcNow());
+            session_id, paths.originalPath, reason, parking_timer::utcNow(),
+            paths.enhancedPath);
         if (inserted != database::EvidenceInsertResult::Inserted) {
-            std::error_code ignored;
-            std::filesystem::remove(path, ignored);
+            for (const auto* path : {&paths.originalPath, &paths.enhancedPath}) {
+                if (path->empty()) continue;
+                std::error_code ignored;
+                std::filesystem::remove(*path, ignored);
+            }
             result.imagePath.clear();
+            result.enhancedImagePath.clear();
             result.duplicate =
                 inserted == database::EvidenceInsertResult::Duplicate;
             result.message = result.duplicate
@@ -321,14 +342,18 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
         util::logLine("EVIDENCE_CAPTURE",
             "capture success session=" + std::to_string(session_id) +
             " slot=" + job.request.slotId + " channel=" + channel_id +
-            " reason=" + reason + " path=" + path);
+            " reason=" + reason + " path=" + paths.originalPath +
+            " enhanced=" + paths.enhancedPath);
         emit(std::move(result));
     } catch (const std::exception& error) {
-        if (!result.imagePath.empty()) {
+        for (const auto* path : {&result.imagePath,
+                                 &result.enhancedImagePath}) {
+            if (path->empty()) continue;
             std::error_code ignored;
-            std::filesystem::remove(result.imagePath, ignored);
+            std::filesystem::remove(*path, ignored);
         }
         result.imagePath.clear();
+        result.enhancedImagePath.clear();
         result.message = error.what();
         util::logError("Evidence DB/save failed: session=" +
             std::to_string(session_id) + " slot=" + job.request.slotId +
