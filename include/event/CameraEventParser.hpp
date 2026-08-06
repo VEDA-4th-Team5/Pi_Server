@@ -16,6 +16,7 @@ public:
 
 private:
     static std::string parseSourceId(const std::string& topic);
+    static std::string parseVideoSourceToken(const std::string& topic);
     static std::string parseEventChannelId(const std::string& topic, const std::string& default_channel_id);
     static std::string parseEventType(const std::string& topic, const std::string& payload);
     static std::string parseSeverity(const std::string& event_type);

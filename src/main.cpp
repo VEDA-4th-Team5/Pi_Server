@@ -286,6 +286,17 @@ int main() {
 
     app::AppConfig config = app::AppConfig::loadFromEnv();
 
+    std::vector<parking::ParkingSlotConfig> parking_slot_configs;
+    try {
+        parking_slot_configs =
+            parking::ParkingSlotConfigLoader::loadFromFile(
+                config.parking_slot_config_path);
+    } catch (const std::exception& error) {
+        util::logError("Parking slot config load failed: " +
+                       std::string(error.what()));
+        return 1;
+    }
+
     util::logInfo("pi-server started");
     util::logInfo("camera_id=" + config.camera_id);
 
@@ -667,10 +678,8 @@ int main() {
     std::unique_ptr<sensor::HallParkingService> hall_service;
     if (parking_timer && (config.hall_mqtt_input_enabled ||
                           sensor_link_mode != device::SensorLinkMode::Disabled)) {
-        auto slot_configs = parking::ParkingSlotConfigLoader::loadFromFile(
-            config.parking_slot_config_path);
         hall_service = std::make_unique<sensor::HallParkingService>(
-            std::move(slot_configs), config, channels, database,
+            parking_slot_configs, config, channels, database,
             [&ocr_worker](int session_id) {
                 ocr_worker.cancelSession(session_id);
             },
@@ -745,6 +754,7 @@ int main() {
         snapshot_storage,
         trigger_coordinator,
         ocr_worker,
+        parking_slot_configs,
         [&hall_service](const std::string& line) {
             if (hall_service) hall_service->handleLine(line);
         },

@@ -4,6 +4,7 @@
 #include "camera/CameraChannel.hpp"
 #include "database/EventDatabase.hpp"
 #include "ocr/OcrWorker.hpp"
+#include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 
@@ -37,6 +38,7 @@ public:
         snapshot::SnapshotStorage& snapshot_storage,
         parking::ParkingTriggerCoordinator& trigger_coordinator,
         ocr::OcrWorker& ocr_worker,
+        std::vector<parking::ParkingSlotConfig> parking_slot_configs,
         SensorMessageHandler sensor_message_handler = {},
         FireAckHandler fire_ack_handler = {}
     );
@@ -86,6 +88,7 @@ private:
     snapshot::SnapshotStorage& snapshot_storage_;
     parking::ParkingTriggerCoordinator& trigger_coordinator_;
     ocr::OcrWorker& ocr_worker_;
+    const std::vector<parking::ParkingSlotConfig> parking_slot_configs_;
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
 

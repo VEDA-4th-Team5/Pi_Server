@@ -1,6 +1,9 @@
 # Pi Server Architecture
 
-기준일: 2026-07-28
+WiseAI IVA 차량 탐지의 MQTT parsing 및 슬롯 매핑 계약은
+[`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
+
+기준일: 2026-08-05
 
 기준 코드: CV Snapshot API 통합 작업 트리 (base `f6b8ac8`)
 
@@ -50,6 +53,12 @@ flowchart LR
 Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Pi는 자신의 촬영·OCR·
 증거 저장을 위해 최신 프레임을 메모리에 유지한다. Qt의 실시간 영상 표시는
 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
+
+EVDA-192의 목표 구조에서는 한 채널에 고정된 `EV01~EV04` IVA 영역을 WiseAI가
+판단하고 Pi는 MQTT 이벤트를 수신한다. Pi의 IVA 사진 획득은 연속 RTSP FrameBuffer가
+아니라 Camera Snapshot API 요청형 촬영으로 전환하며, Pi는 카메라 enhanced JPEG에서
+고정 ROI crop만 담당한다. 이 문단은 목표 구조이고 현재 런타임은 아직 RTSP 최신
+프레임을 사용한다.
 
 ## 2. 프로세스 시작 순서
 

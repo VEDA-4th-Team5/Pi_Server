@@ -1,0 +1,114 @@
+#include "app/AppConfig.hpp"
+#include "event/CameraEventParser.hpp"
+#include "event/IvaEventResolver.hpp"
+#include "parking/ParkingSlotConfig.hpp"
+
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <vector>
+
+namespace {
+
+bool expect(const bool condition, const std::string& message) {
+    if (condition) return true;
+    std::cerr << "FAIL: " << message << '\n';
+    return false;
+}
+
+parking::ParkingSlotConfig slot(
+    std::string slotId, std::string token, std::string rule,
+    std::string cameraId = "cam01") {
+    parking::ParkingSlotConfig result;
+    result.slotId = std::move(slotId);
+    result.enabled = true;
+    result.sensorId = "HALL-" + result.slotId;
+    result.cameraBindings.push_back(
+        {std::move(cameraId), std::move(token), std::move(rule), true, 100});
+    return result;
+}
+
+app::IvaAreaConfig area(std::string slotId, std::string channelId) {
+    return {slotId, slotId, std::move(channelId), 0.1, 0.2, 0.3, 0.4, 0};
+}
+
+}  // namespace
+
+int main() {
+    bool success = true;
+    const std::vector<parking::ParkingSlotConfig> slots{
+        slot("EV01", "vs-0", "name1"),
+        slot("EV02", "VideoSourceToken-1", "name1")};
+    const std::vector<app::IvaAreaConfig> areas{
+        area("EV01", "ch01"), area("EV02", "ch02")};
+
+    auto first = event::CameraEventParser::parse(
+        "mac/onvif-ej/IvaArea/name1/&VideoSourceToken-0", "{\"active\":true}",
+        "ch01");
+    success &= expect(first.is_iva_area_event, "IvaArea must be classified");
+    success &= expect(first.video_source_token == "vs-0",
+                      "long token must normalize to vs-0");
+    success &= expect(first.event_channel_id == "ch01",
+                      "VideoSourceToken-0 must map to ch01");
+    std::string error;
+    auto firstTarget = event::IvaEventResolver::resolve(
+        "cam01", first, slots, areas, &error);
+    success &= expect(firstTarget && firstTarget->slotId == "EV01",
+                      "token 0/name1 must resolve EV01: " + error);
+
+    auto second = event::CameraEventParser::parse(
+        "mac/onvif-ej/IvaArea/name1/&vs-1", "{\"active\":true}", "ch01");
+    success &= expect(second.video_source_token == "vs-1",
+                      "short token must remain canonical");
+    success &= expect(second.event_channel_id == "ch02",
+                      "vs-1 must map to ch02");
+    error.clear();
+    auto secondTarget = event::IvaEventResolver::resolve(
+        "cam01", second, slots, areas, &error);
+    success &= expect(secondTarget && secondTarget->slotId == "EV02",
+                      "same rule on another token must resolve EV02: " + error);
+
+    auto invalid = event::CameraEventParser::parse(
+        "mac/onvif-ej/IvaArea/name1/&VideoSourceToken-x", "true", "ch01");
+    success &= expect(invalid.video_source_token.empty(),
+                      "malformed token must not be accepted");
+    error.clear();
+    success &= expect(!event::IvaEventResolver::resolve(
+                          "cam01", invalid, slots, areas, &error),
+                      "malformed token must not fall back to EV01");
+
+    auto missingRule = event::CameraEventParser::parse(
+        "mac/onvif-ej/IvaArea/&VideoSourceToken-0", "{\"active\":true}",
+        "ch01");
+    error.clear();
+    success &= expect(!event::IvaEventResolver::resolve(
+                          "cam01", missingRule, slots, areas, &error),
+                      "missing rule must not map by channel alone");
+
+    auto inactive = event::CameraEventParser::parse(
+        "mac/onvif-ej/IvaArea/name1/&VideoSourceToken-0",
+        "{\"active\":false}", "ch01");
+    success &= expect(!inactive.is_active,
+                      "active=false must be recognized as inactive");
+
+    auto multiDigit = event::CameraEventParser::parse(
+        "mac/onvif-ej/IvaArea/name1/&VideoSourceToken-10", "true", "ch01");
+    success &= expect(multiDigit.video_source_token == "vs-10" &&
+                          multiDigit.event_channel_id == "ch11",
+                      "multi-digit token must be parsed completely");
+
+    auto ambiguousSlots = slots;
+    ambiguousSlots.push_back(slot("EV03", "vs-0", "name1"));
+    auto ambiguousAreas = areas;
+    ambiguousAreas.push_back(area("EV03", "ch03"));
+    error.clear();
+    success &= expect(!event::IvaEventResolver::resolve(
+                          "cam01", first, ambiguousSlots, ambiguousAreas,
+                          &error) &&
+                          error.find("ambiguous") != std::string::npos,
+                      "ambiguous mapping must be rejected");
+
+    if (!success) return EXIT_FAILURE;
+    std::cout << "camera IVA event tests passed\n";
+    return EXIT_SUCCESS;
+}

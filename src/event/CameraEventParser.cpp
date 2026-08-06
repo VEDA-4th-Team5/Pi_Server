@@ -40,6 +40,7 @@ CameraEvent CameraEventParser::parse(
     event.timestamp = util::nowIsoString();
 
     // payload보다 ONVIF topic 경로에 이벤트 종류와 채널 정보가 들어 있다.
+    event.video_source_token = parseVideoSourceToken(raw_topic);
     event.event_channel_id = parseEventChannelId(raw_topic, default_channel_id);
     event.source_type = "camera_mqtt";
     event.source_id = parseSourceId(raw_topic);
@@ -52,6 +53,33 @@ CameraEvent CameraEventParser::parse(
     event.severity = parseSeverity(event.event_type);
 
     return event;
+}
+
+std::string CameraEventParser::parseVideoSourceToken(
+    const std::string& topic) {
+    const std::string lower = lowerCopy(topic);
+    const std::string longKey = "videosourcetoken-";
+    const std::string shortKey = "vs-";
+    std::size_t position = lower.find(longKey);
+    std::size_t indexPosition{};
+    if (position != std::string::npos) {
+        indexPosition = position + longKey.size();
+    } else {
+        position = lower.find(shortKey);
+        if (position == std::string::npos) return {};
+        indexPosition = position + shortKey.size();
+    }
+
+    if (indexPosition >= lower.size() ||
+        !std::isdigit(static_cast<unsigned char>(lower[indexPosition]))) {
+        return {};
+    }
+    std::size_t end = indexPosition;
+    while (end < lower.size() &&
+           std::isdigit(static_cast<unsigned char>(lower[end]))) {
+        ++end;
+    }
+    return "vs-" + lower.substr(indexPosition, end - indexPosition);
 }
 
 std::string CameraEventParser::parseSourceId(const std::string& topic) {
@@ -68,21 +96,16 @@ std::string CameraEventParser::parseEventChannelId(
     const std::string& topic,
     const std::string& default_channel_id
 ) {
-    std::string key = "VideoSourceToken-";
-    std::size_t pos = topic.find(key);
-
-    if (pos == std::string::npos) {
-        return default_channel_id;
-    }
-
-    std::size_t idx_pos = pos + key.size();
-
-    if (idx_pos >= topic.size() || !std::isdigit(static_cast<unsigned char>(topic[idx_pos]))) {
-        return default_channel_id;
-    }
+    const std::string token = parseVideoSourceToken(topic);
+    if (token.empty()) return default_channel_id;
 
     // ONVIF token은 0부터, 서버 채널 표기는 1부터 시작한다(0 -> ch01).
-    int token_index = topic[idx_pos] - '0';
+    int token_index{};
+    try {
+        token_index = std::stoi(token.substr(3));
+    } catch (...) {
+        return default_channel_id;
+    }
     int channel_number = token_index + 1;
 
     std::ostringstream oss;

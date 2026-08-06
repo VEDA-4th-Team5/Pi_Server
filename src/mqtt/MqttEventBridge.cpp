@@ -3,42 +3,18 @@
 #include "database/EventDatabase.hpp"
 #include "event/CameraEventParser.hpp"
 #include "event/EventPayloadBuilder.hpp"
+#include "event/IvaEventResolver.hpp"
 #include "ocr/PlateImageEnhancer.hpp"
 #include "util/Logger.hpp"
 
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
-#include <cctype>
 #include <sstream>
 #include <utility>
 
 namespace mqtt {
 
 namespace {
-
-std::string lowerCopy(std::string value) {
-    for (char& c : value)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return value;
-}
-
-const app::IvaAreaConfig* findIvaArea(const app::AppConfig& config,
-                                      const event::CameraEvent& camera_event) {
-    const std::string raw = lowerCopy(camera_event.raw_topic + "\n" +
-                                      camera_event.raw_payload);
-    // 먼저 카메라가 보낸 Area/Rule 이름으로 정확한 주차면을 찾는다.
-    for (const auto& area : config.iva_areas) {
-        if (!area.area_name.empty() &&
-            raw.find(lowerCopy(area.area_name)) != std::string::npos)
-            return &area;
-    }
-    // Firmware가 영역명을 생략하면 ONVIF VideoSourceToken 채널을 fallback으로 사용한다.
-    for (const auto& area : config.iva_areas) {
-        if (area.channel_id == camera_event.event_channel_id) return &area;
-    }
-    return nullptr;
-}
 
 std::shared_ptr<camera::CameraChannel> findChannel(
     const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
@@ -57,6 +33,7 @@ MqttEventBridge::MqttEventBridge(
     snapshot::SnapshotStorage& snapshot_storage,
     parking::ParkingTriggerCoordinator& trigger_coordinator,
     ocr::OcrWorker& ocr_worker,
+    std::vector<parking::ParkingSlotConfig> parking_slot_configs,
     SensorMessageHandler sensor_message_handler,
     FireAckHandler fire_ack_handler
 )
@@ -66,6 +43,7 @@ MqttEventBridge::MqttEventBridge(
       snapshot_storage_(snapshot_storage),
       trigger_coordinator_(trigger_coordinator),
       ocr_worker_(ocr_worker),
+      parking_slot_configs_(std::move(parking_slot_configs)),
       sensor_message_handler_(std::move(sensor_message_handler)),
       fire_ack_handler_(std::move(fire_ack_handler)),
       mosq_(nullptr) {
@@ -259,28 +237,36 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
             util::logInfo("IVA area inactive event ignored: " + raw_topic);
             return;
         }
-        const app::IvaAreaConfig* area = findIvaArea(config_, camera_event);
-        if (area == nullptr) {
-            util::logWarn("IVA area event received but no area mapping matched");
+        std::string mapping_error;
+        const auto target = event::IvaEventResolver::resolve(
+            config_.camera_id, camera_event, parking_slot_configs_,
+            config_.iva_areas, &mapping_error);
+        if (!target) {
+            util::logWarn(
+                "IVA area event rejected: " + mapping_error +
+                " token=" + camera_event.video_source_token +
+                " topic=" + raw_topic);
             return;
         }
         std::shared_ptr<camera::CameraChannel> channel =
-            findChannel(channels_, area->channel_id);
+            findChannel(channels_, target->channelId);
         if (!channel) {
             util::logError("IVA mapped RTSP channel is not configured: " +
-                           area->channel_id);
+                           target->channelId);
             return;
         }
 
-        camera_event.iva_area_id = area->area_name;
-        camera_event.slot_id = area->slot_id;
+        camera_event.rule_name = target->ruleName;
+        camera_event.iva_area_id = target->areaName;
+        camera_event.slot_id = target->slotId;
         // BestShot metadata가 뒤이어 도착하면 같은 주차면으로 연결할 pending을 만든다.
-        if (!trigger_coordinator_.recordCameraIva(area->slot_id, area->channel_id))
+        if (!trigger_coordinator_.recordCameraIva(target->slotId,
+                                                  target->channelId))
             return;
-        snapshot::NormalizedRoi roi{area->roi_x, area->roi_y,
-                                    area->roi_width, area->roi_height};
+        snapshot::NormalizedRoi roi{target->roiX, target->roiY,
+                                    target->roiWidth, target->roiHeight};
         std::string snapshot_path = snapshot_storage_.saveIvaAreaSnapshot(
-            channel, area->slot_id, roi);
+            channel, target->slotId, roi);
         std::string enhanced_path;
         if (!snapshot_path.empty())
             enhanced_path = ocr::enhanceIvaSceneImage(snapshot_path);
@@ -290,7 +276,7 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         database::EventRecord record;
         record.camera_id = config_.camera_id;
         record.channel_id = channel->channel_id;
-        record.slot_id = area->slot_id;
+        record.slot_id = target->slotId;
         record.source_type = camera_event.source_type;
         record.source_id = camera_event.source_id;
         record.event_type = camera_event.event_type;
@@ -304,7 +290,7 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         database_.insertEvent(record);
         if (!enhanced_path.empty()) {
             database_.attachEnhancedPlateImage(snapshot_path, enhanced_path);
-            ocr_worker_.enqueueScene(area->slot_id, snapshot_path, enhanced_path);
+            ocr_worker_.enqueueScene(target->slotId, snapshot_path, enhanced_path);
         }
         // IVA snapshot은 입차 구역 증빙과 BestShot 연결에 사용한다.
         // Gemini에는 ROI 원본과 개선본을 함께 보내며, 이후 Plate BestShot OCR이
@@ -313,9 +299,11 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         std::string qt_topic = config_.qt_event_topic_prefix + "/" +
             config_.camera_id + "/" + channel->channel_id + "/event";
         publish(qt_topic, payload_json, 0, false);
-        util::logLine("IVA_SNAPSHOT", "slot=" + area->slot_id +
-                      " area=" + area->area_name +
-                      " channel=" + area->channel_id +
+        util::logLine("IVA_SNAPSHOT", "slot=" + target->slotId +
+                      " area=" + target->areaName +
+                      " rule=" + target->ruleName +
+                      " token=" + camera_event.video_source_token +
+                      " channel=" + target->channelId +
                       " snapshot=" + snapshot_path +
                       " enhanced=" + enhanced_path);
         return;

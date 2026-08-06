@@ -107,6 +107,15 @@ target_link_libraries(hall-capture-coordinator-test PRIVATE Threads::Threads)
 add_test(NAME hall-capture-coordinator-test
     COMMAND hall-capture-coordinator-test)
 
+add_executable(camera-iva-event-test
+    tests/unit/CameraIvaEventTest.cpp
+    src/event/CameraEventParser.cpp
+    src/event/IvaEventResolver.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(camera-iva-event-test PRIVATE include)
+target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME camera-iva-event-test COMMAND camera-iva-event-test)
+
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
     src/event/FireAlarmManager.cpp
