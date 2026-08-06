@@ -65,7 +65,8 @@ Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 
 EVDA-192에서는 한 채널에 고정된 `EV01~EV04` IVA 영역을 WiseAI가 판단하고 Pi가
 고정 MQTT Publication을 수신한다. `PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 ENTER가
 세션을 만들고 EXIT는 기본 10초 확인 후 Hall VACANT와 동일한 출차 정리 정책으로
-세션을 닫는다. 신규 이미지는 `ch1/EV01/session_<id>/<stage>/`에 저장한다. Snapshot
+세션을 닫는다. 신규 이미지는 `ch1/EV01/<stage>/`에 저장하고 파일명과 DB에
+`session_id`를 보존한다. Snapshot
 API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 
 ## 2. 프로세스 시작 순서
@@ -272,17 +273,20 @@ BestShot 경로는 홀센서 경로와 별개로 DB 세션을 생성한다. 동�
 ```text
 data/snapshots/
 └── ch1/
-    ├── EV01/session_<id>/<stage>/
-    ├── EV02/session_<id>/<stage>/
-    ├── EV03/session_<id>/<stage>/
-    └── EV04/session_<id>/<stage>/
+    ├── EV01/{occupancy_start,hall_30s,hall_60s,overstay}/
+    ├── EV02/{occupancy_start,hall_30s,hall_60s,overstay}/
+    ├── EV03/{occupancy_start,hall_30s,hall_60s,overstay}/
+    └── EV04/{occupancy_start,hall_30s,hall_60s,overstay}/
 
 data/bestshots/
 ├── vehicle/
 └── plate/
 ```
 
-DB에는 이미지 BLOB이 아니라 파일 경로와 메타데이터를 저장한다.
+DB에는 이미지 BLOB이 아니라 파일 경로와 메타데이터를 저장한다. 네 단계
+디렉터리는 미리 생성되며 세션 구분은 파일명의 `session_<id>`와 DB FK로 유지한다.
+`violation_at` 미설정 조기 출차에서는 해당 세션의 DB 경로만 조회해 파일을 삭제하므로,
+같은 단계 폴더의 다른 세션 증거는 영향을 받지 않는다.
 
 ## 7. Qt 관제 연동
 

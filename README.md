@@ -230,14 +230,19 @@ data/
 │   └── plate/
 │       └── enhanced/
 ├── snapshots/
-│   └── ch1/EV01~EV04/session_<id>/<stage>/
+│   └── ch1/
+│       └── EV01~EV04/
+│           ├── occupancy_start/
+│           ├── hall_30s/
+│           ├── hall_60s/
+│           └── overstay/
 └── db/
     └── parking.db
 ```
 
-신규 세션 이미지는 실제 SQLite `session_id`별로 묶이며, 단계는
-`occupancy_start`, `hall_30s`, `hall_60s`, `overstay`로 구분됩니다. 기존 `scene/`
-파일은 호환성과 증거 보존을 위해 자동 이동하거나 삭제하지 않습니다.
+슬롯별 네 단계 디렉터리는 미리 생성해 둔다. 세션 구분은 파일명의
+`session_<id>`와 `IMAGE_LOG.session_id`로 유지한다. `violation_at`이 없는 조기 출차는
+해당 세션의 파일과 `IMAGE_LOG`를 삭제하고, 위반 세션의 증거는 보존한다.
 
 SQLite 주요 테이블:
 

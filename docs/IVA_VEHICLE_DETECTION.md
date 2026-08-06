@@ -82,17 +82,17 @@ camera_id + video_source_token + rule_name
 }
 ```
 
-ROI는 입력 해상도와 무관한 0.0~1.0 정규화 좌표를 사용한다. 신규 세션 이미지는
-실제 SQLite `session_id` 아래에 저장한다. 기존 `scene/` 파일은 자동 이동하지 않는다.
+ROI는 입력 해상도와 무관한 0.0~1.0 정규화 좌표를 사용한다. 이미지는
+슬롯별 고정 촬영 단계 디렉터리에 저장하고, 파일명과 `IMAGE_LOG.session_id`로
+세션을 구분한다.
 
 ```text
 data/snapshots/ch1/
 └─ EV01/
-   └─ session_27/
-      ├─ occupancy_start/
-      ├─ hall_30s/
-      ├─ hall_60s/
-      └─ overstay/
+   ├─ occupancy_start/
+   ├─ hall_30s/
+   ├─ hall_60s/
+   └─ overstay/
 ```
 
 각 촬영 단계의 original/enhanced 파일은 같은 단계 디렉터리에 둔다. 세션에
@@ -159,7 +159,7 @@ IVA MQTT active 수신
 → bounded capture queue에 작업 등록 후 MQTT callback 즉시 반환
 → CameraSnapshotApiClient /images/generate 호출
 → 해당 API channel의 original/enhanced JPEG 즉시 다운로드
-→ data/snapshots/ch1/EVxx/session_<id>/<stage> 저장
+→ data/snapshots/ch1/EVxx/<stage> 저장
 → IMAGE_LOG / OCR / Qt 이벤트 연결
 ```
 

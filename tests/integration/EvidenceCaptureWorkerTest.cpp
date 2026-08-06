@@ -127,9 +127,12 @@ int main() {
                     "OCCUPANCY_START_EVIDENCE"
                 ? "occupancy_start" : "overstay";
             require(image.original_path.find(
-                        "/EV01/session_" + std::to_string(session1) + "/" +
-                        stage + "/") != std::string::npos,
+                        "/EV01/" + stage + "/") != std::string::npos,
                     "camera API evidence directory layout mismatch");
+            require(image.original_path.find(
+                        "session_" + std::to_string(session1) +
+                        "_slot_EV01_") != std::string::npos,
+                    "camera API evidence filename lost session id");
             const cv::Mat stored = cv::imread(image.original_path);
             require(stored.cols == 320 && stored.rows == 240,
                     "camera API evidence must remain a full frame before ROI setup");

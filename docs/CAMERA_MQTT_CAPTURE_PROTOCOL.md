@@ -198,7 +198,7 @@ Camera full Snapshot
 권장 저장 구조:
 
 ```text
-data/snapshots/ch1/EV01/session_<id>/
+data/snapshots/ch1/EV01/
 ├── hall_30s/
 │   ├── ..._HALL_30S_original.jpg
 │   └── ..._HALL_30S_enhanced.jpg

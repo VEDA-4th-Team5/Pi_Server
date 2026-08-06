@@ -138,7 +138,6 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
 
     const fs::path stage_dir = fs::path(snapshot_dir_) /
         channelDirectoryName(channel_id) / slot_id /
-        ("session_" + std::to_string(session_id)) /
         stageDirectoryName(capture_stage);
     std::error_code error;
     fs::create_directories(stage_dir, error);
@@ -223,13 +222,12 @@ std::string SnapshotStorage::saveAreaSnapshot(
     }
 
     cv::Mat cropped = frame(cv::Rect(px, py, pw, ph)).clone();
-    // DB session_id가 있는 파일은 한 세션 아래에 모아 조기 출차 시 다른 세션의
-    // 증거를 건드리지 않고 정리할 수 있게 한다. 세션 없는 진단 IVA 이미지는
-    // events/iva에 격리한다.
+    // 슬롯별 고정 촬영 단계 디렉터리를 사용한다. 세션 구분은 파일명의
+    // session_<id>와 IMAGE_LOG.session_id로 유지하므로 조기 출차 시 해당 세션 파일만
+    // 안전하게 정리할 수 있다. 세션 없는 진단 IVA 이미지는 events/iva에 격리한다.
     fs::path directory = fs::path(snapshot_dir_) /
         channelDirectoryName(channel->channel_id) / slot_id;
     if (session_id >= 0) {
-        directory /= "session_" + std::to_string(session_id);
         directory /= stage_directory.empty() ? "capture" : stage_directory;
     } else {
         directory /= "events";

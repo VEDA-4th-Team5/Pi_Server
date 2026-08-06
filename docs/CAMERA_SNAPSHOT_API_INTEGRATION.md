@@ -62,7 +62,7 @@ export CAPTURE_OFFSETS_SEC=5,10
 ## 저장 위치
 
 ```text
-data/snapshots/ch1/EV01/session_<id>/hall_30s/
+data/snapshots/ch1/EV01/hall_30s/
 ├─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_original.jpg
 └─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_enhanced.jpg
 ```
@@ -70,8 +70,8 @@ data/snapshots/ch1/EV01/session_<id>/hall_30s/
 동일한 규칙으로 시작·장기점유 증거도 저장한다.
 
 ```text
-session_<id>/occupancy_start/*_original.jpg, *_enhanced.jpg
-session_<id>/overstay/*_original.jpg, *_enhanced.jpg
+occupancy_start/session_<id>_*_original.jpg, *_enhanced.jpg
+overstay/session_<id>_*_original.jpg, *_enhanced.jpg
 ```
 
 두 경로는 같은 `IMAGE_LOG` 행의 `original_image_path`와
@@ -101,7 +101,7 @@ session_<id>/overstay/*_original.jpg, *_enhanced.jpg
 ```text
 IVA MQTT → 비동기 capture queue → /images/generate
 → original/enhanced 전체 JPEG 다운로드
-→ session_<id>/<stage> 저장 → OCR/DB
+→ EVxx/<stage> 저장(파일명에 session_<id> 포함) → OCR/DB
 ```
 
 API 전용 모드에서는 Qt만 RTSP 영상을 직접 수신하고 Pi는 연속 RTSP 디코딩을 하지

@@ -127,10 +127,12 @@ int main(int argc, char* argv[]) {
                     "IVA ENTER did not store start evidence");
             const std::string firstPath = images.front().original_path;
             const std::string expectedDirectory =
-                "/EV01/session_" + std::to_string(first->id) +
-                "/occupancy_start/";
+                "/EV01/occupancy_start/";
             require(firstPath.find(expectedDirectory) != std::string::npos,
-                    "start evidence did not use the session directory");
+                    "start evidence did not use the fixed stage directory");
+            require(firstPath.find("session_" + std::to_string(first->id) +
+                                   "_slot_EV01_") != std::string::npos,
+                    "start evidence filename did not preserve session id");
 
             require(service.handleCameraOccupancy("EV01", true),
                     "duplicate IVA ENTER was rejected");
