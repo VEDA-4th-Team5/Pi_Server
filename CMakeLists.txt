@@ -96,6 +96,17 @@ target_include_directories(hall-ocr-policy-test PRIVATE include)
 target_compile_options(hall-ocr-policy-test PRIVATE -Wall -Wextra)
 add_test(NAME hall-ocr-policy-test COMMAND hall-ocr-policy-test)
 
+# 야간 번호판 조명 LED 점등 정책 단위 테스트. UART/LoRa 전송은 주입한 sender로
+# 대체하므로 실제 링크 없이 검증한다.
+add_executable(plate-illuminator-test
+    tests/unit/PlateIlluminatorTest.cpp
+    src/parking/PlateIlluminator.cpp
+    src/util/Logger.cpp)
+target_include_directories(plate-illuminator-test PRIVATE include)
+target_compile_options(plate-illuminator-test PRIVATE -Wall -Wextra)
+target_link_libraries(plate-illuminator-test PRIVATE Threads::Threads)
+add_test(NAME plate-illuminator-test COMMAND plate-illuminator-test)
+
 add_executable(hall-capture-coordinator-test
     tests/unit/HallCaptureCoordinatorTest.cpp
     src/parking/HallCaptureCoordinator.cpp
@@ -287,6 +298,7 @@ add_executable(hall-capture-pipeline-test
     src/parking/HallCaptureExecutor.cpp
     src/parking/HallCaptureCoordinator.cpp
     src/parking/HallOcrPolicy.cpp
+    src/parking/PlateIlluminator.cpp
     src/snapshot/SnapshotStorage.cpp
     src/util/TimeUtil.cpp)
 target_include_directories(hall-capture-pipeline-test PRIVATE include)

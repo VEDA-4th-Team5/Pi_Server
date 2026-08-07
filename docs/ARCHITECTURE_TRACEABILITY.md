@@ -1,6 +1,6 @@
 # Architecture Traceability
 
-기준일: 2026-07-26
+기준일: 2026-08-06
 
 | Interface | 실제 코드 대응 | 상태 |
 |---|---|---|
@@ -19,6 +19,7 @@
 | I-13 LoRa 무선 구간 | 투명 UART 모뎀 전제; 무선 칩 설정은 하드웨어 미확정 | 부분 구현: frame/CRC만 구현 |
 | I-14 LoRa 수신 → Pi | `UartDriver` → `LoRaDriver` → `SensorLinkManager` → `HallParkingService`; 알림 상태 경계는 `parking_alert.ko`/`LinuxDriverAdapter` | 구현: `/dev/parking_alert` 실기기 read/write/ioctl/poll 검증, LoRa 실물 검증 필요 |
 | I-15 Pi → Qt 화재 근거/Alarm ACK | 화재 상태 머신 및 Qt ACK 처리 없음 | 미구현 |
+| I-16 Pi → STM32 번호판 조명 LED | `PlateIlluminator` → `SensorLinkManager::sendAlertCommand`, payload 규격은 `docs/UART_LORA_PROTOCOL.md` | 부분 구현: Pi 송신부와 점등 정책 구현, STM32 수신·GPIO·페일세이프 타이머 미구현 |
 
 ## 현재 홀센서 대체 입력 흐름
 

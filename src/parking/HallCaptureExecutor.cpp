@@ -24,10 +24,17 @@ HallCaptureExecutor::HallCaptureExecutor(
     HallCaptureCoordinator& coordinator,
     DraftPublisher draftPublisher,
     camera::CameraSnapshotApiClient* snapshotApiClient,
-    const bool rtspFallback)
+    const bool rtspFallback, PlateIlluminator* illuminator)
     : channels_(channels), storage_(storage), coordinator_(coordinator),
       draftPublisher_(std::move(draftPublisher)),
-      snapshotApiClient_(snapshotApiClient), rtspFallback_(rtspFallback) {}
+      snapshotApiClient_(snapshotApiClient), rtspFallback_(rtspFallback),
+      illuminator_(illuminator) {}
+
+PlateIlluminator::Scope HallCaptureExecutor::illuminate(
+    const CaptureRequest& request) {
+    if (illuminator_ == nullptr) return {};
+    return illuminator_->illuminate(request);
+}
 
 bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
     try {
@@ -48,8 +55,15 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
 
         if (snapshotApiClient_ != nullptr) {
             camera::CameraGeneratedImages generated;
-            if (snapshotApiClient_->generate(request.target.snapshotApiChannel,
-                                              generated)) {
+            bool captured = false;
+            {
+                // 저장·DB 기록은 조명이 필요없고, 길어지면 STM32 페일세이프
+                // 타이머보다 점등이 오래 걸린다. 노출 호출만 감싼다.
+                const auto lamp = illuminate(request);
+                captured = snapshotApiClient_->generate(
+                    request.target.snapshotApiChannel, generated);
+            }
+            if (captured) {
                 const auto paths = storage_.saveCameraApiHallCapture(
                     request.target.channelId, sessionId, request.slotId,
                     toEnhancementType(stage), generated.originalJpeg,
@@ -97,8 +111,13 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
         const snapshot::NormalizedRoi roi{
             request.target.roiX, request.target.roiY,
             request.target.roiWidth, request.target.roiHeight};
-        std::string path = storage_.saveHallCaptureSnapshot(
-            channel, sessionId, request.slotId, toEnhancementType(stage), roi);
+        std::string path;
+        {
+            const auto lamp = illuminate(request);
+            path = storage_.saveHallCaptureSnapshot(
+                channel, sessionId, request.slotId, toEnhancementType(stage),
+                roi);
+        }
         if (path.empty()) return false;
 
         const auto result = coordinator_.onCaptureImage(

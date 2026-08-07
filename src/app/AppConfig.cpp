@@ -130,6 +130,14 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvOrDefault("CAPTURE_OFFSETS_SEC", "30,60");
     config.capture_ocr_max_attempts =
         std::clamp(getEnvIntOrDefault("CAPTURE_OCR_MAX_ATTEMPTS", 2), 1, 2);
+    config.plate_led_enabled =
+        getEnvBoolOrDefault("PLATE_LED_ENABLED", false);
+    config.plate_led_night_start_hour =
+        std::clamp(getEnvIntOrDefault("PLATE_LED_NIGHT_START_HOUR", 19), 0, 23);
+    config.plate_led_night_end_hour =
+        std::clamp(getEnvIntOrDefault("PLATE_LED_NIGHT_END_HOUR", 6), 0, 23);
+    config.plate_led_settle_ms =
+        std::clamp(getEnvIntOrDefault("PLATE_LED_SETTLE_MS", 200), 0, 2000);
     config.camera_snapshot_api_enabled =
         getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_ENABLED", false);
     config.camera_snapshot_api_rtsp_fallback =
