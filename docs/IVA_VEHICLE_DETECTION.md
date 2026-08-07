@@ -20,15 +20,13 @@ Hanwha WiseAI IVA Area
 
 ## 2026-08-05 배치 기준
 
-현재 목표 배치는 한 카메라 채널의 고정 화면 안에 전기차 주차면 네 개가 있는
-구조다. 카메라 WiseAI에는 주차면과 같은 이름의 IVA Rule을 만든다.
+현재 실기기 배치는 한 카메라 채널의 고정 화면 안에서 여러 WiseAI 영역을 실제
+주차면 하나로 묶는 구조다. 영역 상태는 슬롯별 OR 조건으로 집계한다.
 
 | 서버 채널 | Video source token | IVA Rule | 전역 slot_id | Snapshot API channel |
 |---|---|---|---|---:|
-| `ch01` | `vs-0` | `EV01` | `EV01` | 0 |
-| `ch01` | `vs-0` | `EV02` | `EV02` | 0 |
-| `ch01` | `vs-0` | `EV03` | `EV03` | 0 |
-| `ch01` | `vs-0` | `EV04` | `EV04` | 0 |
+| `ch01` | `vs-0` | `name1` | `EV01` | 0 |
+| `ch01` | `vs-0` | `name3`, `name4` | `EV04` | 0 |
 
 네 슬롯은 같은 전체 프레임을 공유하지만 ROI가 서로 다르다. 실제 좌표는 카메라
 설치 후 캡처한 기준 프레임에서 측정하며 문서가 임의 값을 확정하지 않는다.
@@ -45,13 +43,13 @@ IVA 이벤트는 `config/parking_slots.json`의 다음 세 값을 모두 만족�
 camera_id + video_source_token + rule_name
 ```
 
-예시는 다음과 같다.
+예시는 다음과 같다. EV01은 통합 IVA 영역 `name1` 하나에 바인딩한다.
 
 ```json
 {
   "camera_id": "cam01",
   "video_source_token": "vs-0",
-  "rule_name": "EV01"
+  "rule_name": "name1"
 }
 ```
 
@@ -101,7 +99,7 @@ data/snapshots/ch1/
 ## Hall 센서 없이 운영하는 상태 머신
 
 점유 판정 주체는 한 실행에서 하나만 선택한다. 기본값은 기존 호환을 위한 `HALL`이며,
-카메라 ENTER/EXIT로 세션을 관리할 때만 `CAMERA_IVA`를 선택한다.
+카메라 네이티브 IvaArea 상태로 세션을 관리할 때만 `CAMERA_IVA`를 선택한다.
 
 ```bash
 export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
@@ -109,14 +107,14 @@ export CAMERA_IVA_EXIT_CONFIRM_MS=10000
 ```
 
 ```text
-IVA ENTER active=true
+name1 active=true
 → 대기 중인 동일 슬롯 EXIT 취소
 → ACTIVE 세션이 없으면 PARKING_SESSION 생성
 
 동일 active 반복
 → 기존 session 유지, 중복 촬영/세션 생성 금지
 
-IVA EXIT active=false
+name1 active=false
 → 기본 10초 출차 확인 예약
 → 확인 중 ENTER가 오면 취소
 → 확인 만료 후 동일 슬롯 session 종료
@@ -130,11 +128,27 @@ BestShot/Plate 이벤트
 동일한 정리 정책을 사용한다. `violation_at IS NULL`이면 예약/OCR/이미지/IMAGE_LOG를
 정리하고, `violation_at IS NOT NULL`이면 위반 증거를 보존한다.
 
-## 카메라 Publication 계약
+## 카메라 MQTT 계약
+
+운영 점유 판정은 카메라가 자동 발행하는 네이티브 IvaArea 상태를 사용한다.
 
 ```text
-ENTER topic: cam01/onvif-ej/iva/vs-0/EV01/enter
-EXIT topic:  cam01/onvif-ej/iva/vs-0/EV01/exit
+.../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name1
+.../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name3
+.../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name4
+```
+
+`name1`은 EV01, `name3 || name4`는 EV04다. 한 영역의 비활성
+이벤트만으로 출차시키지 않고 같은 슬롯의 모든 영역이 비활성일 때만 VACANT를
+전달한다.
+
+아래 고정 Publication은 카메라 설정 진단용으로만 보존하며 운영 점유 입력으로
+사용하지 않는다. 같은 Intrusion Event Rule에 연결하면 ENTER와 EXIT가 동시에
+발행될 수 있기 때문이다.
+
+```text
+ENTER diagnostic topic: test/disabled/EV01/enter
+EXIT diagnostic topic:  test/disabled/EV01/exit
 QoS: 1
 Retain: false
 Default topic prefix: false
@@ -148,8 +162,8 @@ Default topic prefix: false
 {"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"EXIT","active":false}
 ```
 
-Pi는 JSON 필드 타입과 topic/payload/config의 카메라·토큰·슬롯·동작 일치 여부를
-검사한다. 불일치 이벤트는 기본 CH1로 추측하지 않고 거부한다.
+커스텀 JSON 파서는 이전 프로토콜 호환을 위해 유지한다. 네이티브 운영 경로는
+`camera_id + video_source_token + rule_name`과 슬롯별 OR 집계 결과를 사용한다.
 
 ## Snapshot API 기반 현재 촬영 흐름
 
@@ -176,7 +190,8 @@ Snapshot API가 반환하는 것은 호출 시점의 현재 프레임이다. IVA
 ## 현재 처리 정책
 
 - `HALL` 모드에서는 IVA ENTER/INTRUSION을 촬영 후보로만 처리한다.
-- `CAMERA_IVA` 모드에서는 ENTER가 세션을 만들고 EXIT가 확인 후 세션을 닫는다.
+- `CAMERA_IVA` 모드에서는 영역 OR 결과가 true면 세션을 만들고 모든 영역이
+  false일 때 EXIT 확인 후 세션을 닫는다.
 - 선택되지 않은 점유 입력은 무시하여 Hall과 IVA가 동시에 세션을 만들지 않는다.
 - 같은 슬롯의 짧은 반복 이벤트는 `IVA_DUPLICATE_SUPPRESSION_MS` 동안 억제한다.
 - 유효한 IVA 이벤트는 BestShot과 연결할 pending slot을 만든다.
@@ -208,6 +223,7 @@ ctest --test-dir cmake-build \
 - Rule 이름이 없는 이벤트 거부
 - 비활성 이벤트 판별
 - 모호한 camera/token/rule 설정 거부
+- `name1 → EV01`, `name3 || name4 → EV04` 점유 집계
 - EXIT 확인 전 세션 유지 및 ENTER 재수신 취소
 - 조기 EXIT의 이미지·IMAGE_LOG 삭제
 - `violation_at`이 있는 EXIT의 증거 보존

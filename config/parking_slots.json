@@ -11,7 +11,7 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "EV01",
+            "rule_name": "name1",
             "enabled": true,
             "priority": 100
           }
@@ -22,30 +22,14 @@
         "enabled": true,
         "zone_type": "ev_charging",
         "sensor_id": "HALL02",
-        "camera_bindings": [
-          {
-            "camera_id": "cam01",
-            "video_source_token": "vs-0",
-            "rule_name": "EV02",
-            "enabled": true,
-            "priority": 100
-          }
-        ]
+        "camera_bindings": []
       },
       {
         "slot_id": "EV03",
         "enabled": true,
         "zone_type": "ev_charging",
         "sensor_id": "HALL03",
-        "camera_bindings": [
-          {
-            "camera_id": "cam01",
-            "video_source_token": "vs-0",
-            "rule_name": "EV03",
-            "enabled": true,
-            "priority": 100
-          }
-        ]
+        "camera_bindings": []
       },
       {
         "slot_id": "EV04",
@@ -56,9 +40,16 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "EV04",
+            "rule_name": "name3",
             "enabled": true,
             "priority": 100
+          },
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-0",
+            "rule_name": "name4",
+            "enabled": true,
+            "priority": 90
           }
         ]
       }

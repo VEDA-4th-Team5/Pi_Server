@@ -1,6 +1,7 @@
 #include "app/AppConfig.hpp"
 #include "event/CameraEventParser.hpp"
 #include "event/IvaEventResolver.hpp"
+#include "event/IvaSlotOccupancyAggregator.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 
 #include <cstdlib>
@@ -107,6 +108,18 @@ int main() {
                           customEnter.is_active && customEnter.action == "ENTER",
                       "custom ENTER publication must be parsed");
 
+    auto customIntrusion = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-0/EV01/intrusion",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"name1","slot_id":"EV01","event_type":"IVA_AREA","action":"INTRUSION","active":true})",
+        "ch01");
+    success &= expect(
+        customIntrusion.is_smart_parking_iva &&
+            customIntrusion.protocol_valid &&
+            customIntrusion.event_type == "camera_iva_area_intrusion" &&
+            customIntrusion.is_active &&
+            customIntrusion.action == "INTRUSION",
+        "custom INTRUSION publication must be parsed");
+
     auto customExit = event::CameraEventParser::parse(
         "cam01/onvif-ej/iva/vs-0/EV01/exit",
         R"({ "schema": "smart-parking-iva-v1", "camera_id": "cam01", "video_source_token": "vs-0", "rule_name": "EV01", "slot_id": "EV01", "event_type": "IVA_AREA", "action": "EXIT", "active": false })",
@@ -142,6 +155,69 @@ int main() {
                           &error) &&
                           error.find("ambiguous") != std::string::npos,
                       "ambiguous mapping must be rejected");
+
+    auto aggregateSlots = std::vector<parking::ParkingSlotConfig>{
+        slot("EV01", "vs-0", "name1"),
+        slot("EV04", "vs-0", "name3")};
+    aggregateSlots[1].cameraBindings.push_back(
+        {"cam01", "vs-0", "name4", true, 90});
+    event::IvaSlotOccupancyAggregator aggregator(aggregateSlots);
+    auto aggregate = aggregator.update(
+        "EV01", "cam01", "vs-0", "name1", true);
+    success &= expect(aggregate && aggregate->occupied &&
+                          aggregate->activeAreaCount == 1 &&
+                          aggregate->configuredAreaCount == 1,
+                      "active name1 must occupy EV01");
+    aggregate = aggregator.update(
+        "EV01", "cam01", "vs-0", "name1", false);
+    success &= expect(aggregate && !aggregate->occupied &&
+                          aggregate->knownAreaCount == 1,
+                      "inactive name1 must clear EV01");
+    success &= expect(!aggregator.update(
+                          "EV04", "cam01", "vs-0", "name3", false),
+                      "one inactive area with unknown peer must not clear EV04");
+    aggregate = aggregator.update(
+        "EV04", "cam01", "VideoSourceToken-0", "name4", false);
+    success &= expect(aggregate && !aggregate->occupied,
+                      "name3/name4 inactive must clear EV04");
+    aggregate = aggregator.update(
+        "EV04", "cam01", "vs-0", "name3", true);
+    success &= expect(aggregate && aggregate->occupied,
+                      "active name3 must occupy EV04");
+    success &= expect(!aggregator.update(
+                          "EV04", "cam01", "vs-0", "name3", true),
+                      "duplicate IVA state must not emit another transition");
+
+    const std::string bundledNotifications = R"(
+      <wsnt:Notify>
+        <wsnt:NotificationMessage>
+          <tt:Source><tt:SimpleItem Name="Rule" Value="name1"/></tt:Source>
+          <tt:Data><tt:SimpleItem Name="Action" Value="Intrusion"/>
+                   <tt:SimpleItem Name="State" Value="true"/></tt:Data>
+        </wsnt:NotificationMessage>
+        <wsnt:NotificationMessage>
+          <tt:Source><tt:SimpleItem Name="Rule" Value="name1"/></tt:Source>
+          <tt:Data><tt:SimpleItem Name="Action" Value="Exit"/>
+                   <tt:SimpleItem Name="State" Value="false"/></tt:Data>
+        </wsnt:NotificationMessage>
+      </wsnt:Notify>)";
+    const auto bundled = event::CameraEventParser::parseMany(
+        "cam01/onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0",
+        bundledNotifications, "ch01");
+    success &= expect(bundled.size() == 2,
+                      "two NotificationMessage blocks must produce two events");
+    if (bundled.size() == 2) {
+        success &= expect(
+            bundled[0].event_type == "camera_iva_area_intrusion" &&
+                bundled[0].is_active &&
+                bundled[0].raw_payload.find("name1") != std::string::npos,
+            "first bundled notification must preserve name1 intrusion");
+        success &= expect(
+                bundled[1].event_type == "camera_iva_area_exit" &&
+                !bundled[1].is_active &&
+                bundled[1].raw_payload.find("name1") != std::string::npos,
+            "second bundled notification must preserve name1 exit");
+    }
 
     if (!success) return EXIT_FAILURE;
     std::cout << "camera IVA event tests passed\n";

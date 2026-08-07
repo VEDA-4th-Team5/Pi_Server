@@ -3,6 +3,8 @@
 #include "app/AppConfig.hpp"
 #include "camera/CameraChannel.hpp"
 #include "database/EventDatabase.hpp"
+#include "event/CameraEvent.hpp"
+#include "event/IvaSlotOccupancyAggregator.hpp"
 #include "ocr/OcrWorker.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
@@ -84,6 +86,9 @@ private:
         const mosquitto_message* message
     );
 
+    /** @brief 분리된 카메라 이벤트 한 건을 기존 IVA/일반 이벤트 흐름으로 처리한다. */
+    void processCameraEvent(event::CameraEvent camera_event);
+
 private:
     const app::AppConfig& config_;
     std::vector<std::shared_ptr<camera::CameraChannel>>& channels_;
@@ -92,6 +97,7 @@ private:
     parking::ParkingTriggerCoordinator& trigger_coordinator_;
     ocr::OcrWorker& ocr_worker_;
     const std::vector<parking::ParkingSlotConfig> parking_slot_configs_;
+    event::IvaSlotOccupancyAggregator iva_occupancy_aggregator_;
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
     IvaOccupancyHandler iva_occupancy_handler_;

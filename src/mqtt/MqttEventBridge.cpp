@@ -57,6 +57,7 @@ MqttEventBridge::MqttEventBridge(
       trigger_coordinator_(trigger_coordinator),
       ocr_worker_(ocr_worker),
       parking_slot_configs_(std::move(parking_slot_configs)),
+      iva_occupancy_aggregator_(parking_slot_configs_),
       sensor_message_handler_(std::move(sensor_message_handler)),
       fire_ack_handler_(std::move(fire_ack_handler)),
       iva_occupancy_handler_(std::move(iva_occupancy_handler)),
@@ -237,13 +238,22 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         return;
     }
 
-    // 카메라마다 다른 raw topic을 서버 내부의 공통 이벤트 형식으로 정규화한다.
-    event::CameraEvent camera_event =
-        event::CameraEventParser::parse(
-            raw_topic,
-            raw_payload,
-            config_.default_channel_id
-        );
+    // 한 PUBLISH에 여러 ONVIF NotificationMessage가 묶여도 각각 처리한다.
+    auto camera_events = event::CameraEventParser::parseMany(
+        raw_topic, raw_payload, config_.default_channel_id);
+    if (camera_events.size() > 1) {
+        util::logLine("CAMERA_EVENT",
+                      "bundled notifications parsed count=" +
+                          std::to_string(camera_events.size()) +
+                          " topic=" + raw_topic);
+    }
+    for (auto& camera_event : camera_events) {
+        processCameraEvent(std::move(camera_event));
+    }
+}
+
+void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
+    const std::string& raw_topic = camera_event.raw_topic;
 
     // IVA Area 이벤트는 모든 채널이 아니라 해당 주차면의 채널/ROI만 증거로 저장한다.
     if (camera_event.is_iva_area_event) {
@@ -269,7 +279,11 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
                 camera_event.slot_id != target->slotId ||
                 !hasTopicSegment(raw_topic, target->slotId) ||
                 !hasTopicSegment(raw_topic,
-                    camera_event.action == "ENTER" ? "enter" : "exit")) {
+                    camera_event.action == "ENTER"
+                        ? "enter"
+                        : (camera_event.action == "INTRUSION"
+                               ? "intrusion"
+                               : "exit"))) {
                 util::logWarn(
                     "IVA protocol rejected: topic/payload/config mismatch "
                     "topic=" + raw_topic + " slot=" + target->slotId);
@@ -284,12 +298,25 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
                 util::logError("IVA occupancy handler is not configured");
                 return;
             }
-            const bool occupied_event =
-                !exit_event && camera_event.is_active;
-            if (!iva_occupancy_handler_(target->slotId, occupied_event)) {
+            const auto aggregate = iva_occupancy_aggregator_.update(
+                target->slotId, config_.camera_id,
+                camera_event.video_source_token, target->ruleName,
+                !exit_event && camera_event.is_active);
+            if (!aggregate) return;
+            util::logLine(
+                "IVA_OCCUPANCY",
+                "slot=" + aggregate->slotId + " state=" +
+                    (aggregate->occupied ? "OCCUPIED" : "VACANT") +
+                    " active_areas=" +
+                    std::to_string(aggregate->activeAreaCount) + "/" +
+                    std::to_string(aggregate->configuredAreaCount) +
+                    " known_areas=" +
+                    std::to_string(aggregate->knownAreaCount));
+            if (!iva_occupancy_handler_(aggregate->slotId,
+                                        aggregate->occupied)) {
                 util::logWarn("IVA occupancy event was not accepted: slot=" +
-                              target->slotId + " action=" +
-                              (occupied_event ? "ENTER" : "EXIT"));
+                              aggregate->slotId + " action=" +
+                              (aggregate->occupied ? "ENTER" : "EXIT"));
             }
             return;
         }

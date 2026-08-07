@@ -7,6 +7,7 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 namespace {
 
@@ -101,11 +102,55 @@ void parseSmartParkingIva(const std::string& payload,
     }
     if (event.action == "ENTER" && event.is_active) {
         event.event_type = "camera_iva_area_enter";
+    } else if (event.action == "INTRUSION" && event.is_active) {
+        event.event_type = "camera_iva_area_intrusion";
     } else if (event.action == "EXIT" && !event.is_active) {
         event.event_type = "camera_iva_area_exit";
     } else {
         reject("action and active are inconsistent");
     }
+}
+
+std::vector<std::string> splitNotificationMessages(
+    const std::string& payload) {
+    std::vector<std::string> messages;
+    const std::string lower = lowerCopy(payload);
+    std::size_t searchPosition{};
+
+    while (searchPosition < lower.size()) {
+        const std::size_t namePosition =
+            lower.find("notificationmessage", searchPosition);
+        if (namePosition == std::string::npos) break;
+
+        const std::size_t tagStart = lower.rfind('<', namePosition);
+        if (tagStart == std::string::npos || tagStart + 1 >= lower.size() ||
+            lower[tagStart + 1] == '/') {
+            searchPosition = namePosition + 1;
+            continue;
+        }
+
+        std::size_t tagEnd = tagStart + 1;
+        while (tagEnd < lower.size() &&
+               !std::isspace(static_cast<unsigned char>(lower[tagEnd])) &&
+               lower[tagEnd] != '>' && lower[tagEnd] != '/') {
+            ++tagEnd;
+        }
+        if (tagEnd == tagStart + 1) {
+            searchPosition = namePosition + 1;
+            continue;
+        }
+
+        const std::string tagName = lower.substr(tagStart + 1,
+                                                 tagEnd - tagStart - 1);
+        const std::string closingTag = "</" + tagName + ">";
+        const std::size_t closingStart = lower.find(closingTag, tagEnd);
+        if (closingStart == std::string::npos) break;
+
+        const std::size_t messageEnd = closingStart + closingTag.size();
+        messages.push_back(payload.substr(tagStart, messageEnd - tagStart));
+        searchPosition = messageEnd;
+    }
+    return messages;
 }
 
 }
@@ -139,6 +184,24 @@ CameraEvent CameraEventParser::parse(
     event.severity = parseSeverity(event.event_type);
 
     return event;
+}
+
+std::vector<CameraEvent> CameraEventParser::parseMany(
+    const std::string& raw_topic,
+    const std::string& raw_payload,
+    const std::string& default_channel_id) {
+    const auto notificationMessages =
+        splitNotificationMessages(raw_payload);
+    if (notificationMessages.empty()) {
+        return {parse(raw_topic, raw_payload, default_channel_id)};
+    }
+
+    std::vector<CameraEvent> events;
+    events.reserve(notificationMessages.size());
+    for (const auto& notification : notificationMessages) {
+        events.push_back(parse(raw_topic, notification, default_channel_id));
+    }
+    return events;
 }
 
 std::string CameraEventParser::parseVideoSourceToken(

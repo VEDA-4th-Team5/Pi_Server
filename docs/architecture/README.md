@@ -54,11 +54,12 @@ Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Snapshot API 전
 Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 요청한다. Qt의
 실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
 
-EVDA-192에서는 한 채널에 고정된 `EV01~EV04` IVA 영역을 WiseAI가 판단하고 Pi가
-고정 MQTT Publication을 수신한다. `PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 ENTER가
-세션을 만들고 EXIT는 기본 10초 확인 후 Hall VACANT와 동일한 출차 정리 정책으로
-세션을 닫는다. 신규 이미지는 `ch1/EV01/<stage>/`에 저장하고 파일명과 DB에
-`session_id`를 보존한다. Snapshot
+EVDA-192에서는 CH1의 통합 WiseAI `name1`을 EV01, `name3/name4`를 EV04로
+묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다.
+`PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 영역 하나가 활성일 때 세션을 만들고,
+같은 슬롯의 모든 영역이 비활성인 상태가 10초 유지된 경우에만 Hall VACANT와
+동일한 출차 정리 정책으로 세션을 닫는다. 신규 이미지는
+`ch1/EV01/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
 API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 
 ## 2. 프로세스 시작 순서

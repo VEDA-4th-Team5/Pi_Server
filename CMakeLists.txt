@@ -111,6 +111,7 @@ add_executable(camera-iva-event-test
     tests/unit/CameraIvaEventTest.cpp
     src/event/CameraEventParser.cpp
     src/event/IvaEventResolver.cpp
+    src/event/IvaSlotOccupancyAggregator.cpp
     src/util/TimeUtil.cpp)
 target_include_directories(camera-iva-event-test PRIVATE include)
 target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
