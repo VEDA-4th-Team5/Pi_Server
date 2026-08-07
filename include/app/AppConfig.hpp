@@ -58,6 +58,14 @@ struct AppConfig {
     std::string capture_offsets_sec;
     int capture_ocr_max_attempts;
 
+    // 야간 번호판 조명 LED (Pi -> STM32). 예약된 촬영 직전에만 켜고 직후에 끈다.
+    // 야간 구간은 일출/일몰 계산 없이 관리자가 계절마다 조정하는 시각 구간이다.
+    bool plate_led_enabled;
+    int plate_led_night_start_hour;
+    int plate_led_night_end_hour;
+    // LED 점등부터 실제 촬영까지 두는 정착 지연이다.
+    int plate_led_settle_ms;
+
     // CV5 cv_snapshot_api에서 original/enhanced JPEG를 생성·다운로드한다.
     bool camera_snapshot_api_enabled;
     bool camera_snapshot_api_rtsp_fallback;

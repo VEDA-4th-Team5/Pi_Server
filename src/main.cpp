@@ -18,6 +18,7 @@
 #include "parking/HallCaptureExecutor.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "parking/ParkingSlotConfig.hpp"
+#include "parking/PlateIlluminator.hpp"
 #include "parking_timer/EventManager.hpp"
 #include "parking_timer/ParkingSlotManager.hpp"
 #include "ocr/GeminiOcrClient.hpp"
@@ -531,12 +532,59 @@ int main() {
                     session_id, slot_id, plate_number);
             }
         };
+    // 링크는 촬영 runtime보다 뒤에서 열리므로 포인터만 미리 잡아두고 배선한다.
+    device::SensorLinkManager* sensor_link_for_led = nullptr;
+    std::unique_ptr<parking::PlateIlluminator> plate_illuminator;
+    if (config.plate_led_enabled) {
+        parking::PlateIlluminatorConfig led_config;
+        led_config.enabled = true;
+        led_config.nightStartHour = config.plate_led_night_start_hour;
+        led_config.nightEndHour = config.plate_led_night_end_hour;
+        led_config.settleDelay =
+            std::chrono::milliseconds(config.plate_led_settle_ms);
+        plate_illuminator = std::make_unique<parking::PlateIlluminator>(
+            led_config,
+            [&sensor_link_for_led](const std::string& payload,
+                                   const std::uint32_t sequence) {
+                if (sensor_link_for_led == nullptr) return false;
+                return sensor_link_for_led->sendAlertCommand(payload, sequence);
+            });
+        util::logInfo("plate LED enabled: night=" +
+                      std::to_string(config.plate_led_night_start_hour) +
+                      "h-" +
+                      std::to_string(config.plate_led_night_end_hour) +
+                      "h settle=" +
+                      std::to_string(config.plate_led_settle_ms) + "ms");
+        // 조명은 Pi가 직접 노출을 거는 예약 촬영 경로에만 붙는다. 둘 중 하나라도
+        // 꺼져 있으면 명령이 한 건도 나가지 않으므로 조용히 넘어가지 않는다.
+        if (!config.capture_sched_enabled || !config.hall_capture_ocr_enabled) {
+            util::logWarn(
+                "plate LED will never fire: PLATE_LED_ENABLED=true but "
+                "CAPTURE_SCHED_ENABLED=" +
+                std::string(config.capture_sched_enabled ? "true" : "false") +
+                " HALL_CAPTURE_OCR_ENABLED=" +
+                std::string(config.hall_capture_ocr_enabled ? "true"
+                                                            : "false") +
+                "; both must be true for scheduled captures to drive the LED");
+        }
+    }
+
     auto hall_ocr_coordinator =
         std::make_unique<parking::HallCaptureCoordinator>(
             std::move(hall_capture_ports), config.capture_ocr_max_attempts);
     ocr_worker.setHallCaptureCallback(
-        [&hall_ocr_coordinator](const ocr::HallCaptureResult& result) {
+        [&hall_ocr_coordinator, &plate_illuminator](
+            const ocr::HallCaptureResult& result) {
             if (!hall_ocr_coordinator) return;
+            if (plate_illuminator) {
+                // 번호판을 읽지 못한 세션만 남은 예약 촬영을 LED 보정으로 다시
+                // 시도한다. 요청 실패나 큐 거부는 조명으로 풀리지 않는다.
+                if (result.plate_unreadable)
+                    plate_illuminator->markPlateUnreadable(result.session_id);
+                // 번호판을 확보했으면 남은 촬영은 증거 저장용이라 조명이 없다.
+                else if (result.recognized)
+                    plate_illuminator->markResolved(result.session_id);
+            }
             hall_ocr_coordinator->onOcrOutcome({
                 result.session_id,
                 result.stage == 1 ? parking::CaptureStage::Second60s
@@ -587,7 +635,8 @@ int main() {
                                 buildCaptureRequestPayload(request), 1, false);
                     },
                     camera_snapshot_api.get(),
-                    config.camera_snapshot_api_rtsp_fallback);
+                    config.camera_snapshot_api_rtsp_fallback,
+                    plate_illuminator.get());
             capture_runtime =
                 std::make_unique<parking::CaptureSchedulerRuntime>(
                     *capture_scheduler,
@@ -597,6 +646,8 @@ int main() {
                                hall_capture_executor->execute(request);
                     });
         } else {
+            // 촬영을 카메라가 수행하므로 Pi는 노출 시점을 모른다. 점등해도
+            // 노출과 어긋나기 때문에 이 경로에서는 조명을 쓰지 않는다.
             capture_runtime =
                 std::make_unique<parking::CaptureSchedulerRuntime>(
                     *capture_scheduler,
@@ -605,7 +656,8 @@ int main() {
                         return capture_mqtt_bridge != nullptr &&
                             capture_mqtt_bridge->publishApplicationEvent(
                                 topic_prefix + "/" + request.slotId,
-                                buildCaptureRequestPayload(request), 1, false);
+                                buildCaptureRequestPayload(request), 1,
+                                false);
                     });
         }
     }
@@ -678,11 +730,16 @@ int main() {
             },
             *parking_timer, *timer_events, *evidence_worker,
             system_event_sink,
-            [&capture_runtime, &hall_ocr_coordinator](
+            [&capture_runtime, &hall_ocr_coordinator, &plate_illuminator](
                 const parking::ParkingTransitionResult& transition) {
                 if (hall_ocr_coordinator)
                     hall_ocr_coordinator->onTransition(transition);
                 if (capture_runtime) capture_runtime->onTransition(transition);
+                if (plate_illuminator &&
+                    transition.code ==
+                        parking::ParkingTransitionCode::SessionCompleted) {
+                    plate_illuminator->forget(transition.sessionId);
+                }
             });
     }
 
@@ -884,6 +941,7 @@ int main() {
             util::logError("Sensor UART/LoRa link could not be started");
             sensor_link.reset();
         }
+        sensor_link_for_led = sensor_link.get();
     }
 
     if (timer_events) {
@@ -921,9 +979,10 @@ int main() {
     }
 
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
+    // 촬영 runtime은 LED 명령으로 sensor_link를 쓰므로 링크보다 먼저 멈춘다.
+    if (capture_runtime) capture_runtime->stop();
     if (sensor_link) sensor_link->stop();
     fire_alarm_manager.reset();
-    if (capture_runtime) capture_runtime->stop();
     // reporter queue를 MQTT가 살아 있을 때 모두 비운 뒤 bridge 수명을 종료한다.
     system_event_reporter.stop();
     system_event_mqtt_bridge.store(nullptr, std::memory_order_release);
