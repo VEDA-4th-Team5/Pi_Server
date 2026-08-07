@@ -3,7 +3,7 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 148
+- 분석 파일 수: 149
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
@@ -2051,6 +2051,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ## tools
+
+### tools/check_coordinates.cpp
+
+개발·운영·문서화를 지원하는 독립 도구다.
+
+- `int main(const int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tools/code_doc_generator.cpp
 
