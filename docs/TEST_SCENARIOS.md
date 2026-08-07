@@ -49,10 +49,9 @@ ctest --test-dir cmake-build --output-on-failure
 2. `parking/v1/events/+`, `parking/v1/state/+`를 구독한다.
 3. `SENSOR:HALL01:OCCUPIED:1`을 `parking/sensor/hall`에 QoS 1로 발행한다.
 4. EV01의 실제 JPEG, ACTIVE 세션, `SLOT_OCCUPIED`를 확인한다.
-5. 테스트 환경에서만 `PARKING_TIMEOUT_SECONDS`를 짧게 설정해 실제 위반 Snapshot과
-   `OVERTIME_VIOLATION`을 확인한다.
-   `PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS=5`로 설정하면 5초 뒤 증거 저장을
-   별도로 검증할 수 있다.
+5. REST API로 기준시간을 60초까지 낮춰 실제 위반 Snapshot과
+   `OVERTIME_VIOLATION`을 확인한다. 위반 판정과 장기점유 증거 촬영은 같은 기준값을
+   사용하므로 별도 환경변수를 맞출 필요가 없다.
 6. HTTP의 `session_images_url`과 이미지 URL이 200으로 응답하는지 확인한다.
 7. 제한시간 전 VACANT와 제한시간 후 VACANT의 보존 정책 차이를 확인한다.
 

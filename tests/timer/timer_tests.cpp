@@ -370,6 +370,44 @@ void testPendingEvidenceRetriesBeforeViolation() {
     removeDatabaseFiles(path);
 }
 
+void testActiveSessionThresholdReschedule() {
+    const auto path = temporaryDatabase("threshold_reschedule");
+    {
+        EventDatabase database(path);
+        initialize(database);
+        parking_timer::EventManager events;
+        parking_timer::ParkingSlotManager slots(database, events, 500ms);
+        const auto entry = slots.handleEntry("EV01", "123가4567");
+        require(entry.accepted && entry.log_id.has_value(),
+                "reschedule fixture entry failed");
+        std::this_thread::sleep_for(30ms);
+        require(slots.updateParkingTimeout(120ms) == 1,
+                "active session was not rescheduled");
+        require(slots.pendingTimerCount() == 1,
+                "old timer generation remained logically active");
+        require(waitUntil([&] {
+                    const auto record = database.findLogById(*entry.log_id);
+                    return record && record->status == "VIOLATION";
+                }, 500ms),
+                "shortened threshold did not expire active session");
+
+        const auto second = slots.handleEntry("EV02", "234나5678");
+        require(second.accepted && second.log_id.has_value(),
+                "raised threshold fixture entry failed");
+        require(slots.updateParkingTimeout(350ms) == 1,
+                "raised threshold was not applied");
+        std::this_thread::sleep_for(170ms);
+        require(database.findLogById(*second.log_id)->status == "PARKED",
+                "stale earlier timer violated session after threshold increase");
+        require(waitUntil([&] {
+                    const auto record = database.findLogById(*second.log_id);
+                    return record && record->status == "VIOLATION";
+                }, 500ms),
+                "raised threshold replacement never expired");
+    }
+    removeDatabaseFiles(path);
+}
+
 }  // namespace
 
 /**
@@ -385,6 +423,7 @@ int main() {
         testWorkerContainsCallbackExceptions();
         testSnapshotFailureStillMarksViolation();
         testPendingEvidenceRetriesBeforeViolation();
+        testActiveSessionThresholdReschedule();
         std::cout << "All parking timer tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

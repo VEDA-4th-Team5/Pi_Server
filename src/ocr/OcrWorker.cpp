@@ -244,6 +244,9 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         }
         std::string plate = normalizePlateNumber(result.plate_number);
         if (!result.readable || !isPlausibleKoreanPlate(plate)) {
+            // 응답은 받았으나 번호판을 읽지 못한 경우다. 조명 보정으로 다시
+            // 시도해볼 값어치가 있어 요청 실패와 구분해 표시한다.
+            hall_result.plate_unreadable = true;
             util::logWarn("Gemini OCR unreadable: path=" + task.image_path);
             database_.applyPlateOcr(task.session_id, task.slot_id,
                                     task.image_path, "", result.confidence);

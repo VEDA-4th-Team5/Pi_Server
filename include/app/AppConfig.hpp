@@ -64,6 +64,14 @@ struct AppConfig {
     std::string capture_offsets_sec;
     int capture_ocr_max_attempts;
 
+    // 야간 번호판 조명 LED (Pi -> STM32). 예약된 촬영 직전에만 켜고 직후에 끈다.
+    // 야간 구간은 일출/일몰 계산 없이 관리자가 계절마다 조정하는 시각 구간이다.
+    bool plate_led_enabled;
+    int plate_led_night_start_hour;
+    int plate_led_night_end_hour;
+    // LED 점등부터 실제 촬영까지 두는 정착 지연이다.
+    int plate_led_settle_ms;
+
     // CV5 cv_snapshot_api에서 세션 증거와 30/60초 original/enhanced JPEG를
     // 생성·다운로드한다. fallback=false이면 Pi RTSP 수신을 시작하지 않는다.
     bool camera_snapshot_api_enabled;
@@ -118,9 +126,9 @@ struct AppConfig {
     int gemini_request_timeout_sec;
 
     bool parking_timer_enabled;
-    int parking_timeout_seconds;
-    // 모든 활성 세션의 장기 점유 증거 촬영 지연. 기본 1시간이다.
-    int parking_overstay_evidence_delay_seconds;
+    // 위반 판정과 OVERSTAY_EVIDENCE가 함께 사용하는 단일 부트스트랩 값.
+    // 서버 시작 후에는 SQLite SYSTEM_SETTINGS 값이 우선한다.
+    int parking_overstay_threshold_seconds;
 
     bool http_api_enabled;
     std::string http_listen_address;

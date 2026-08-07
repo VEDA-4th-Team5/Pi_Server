@@ -146,6 +146,14 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvOrDefault("CAPTURE_OFFSETS_SEC", "30,60");
     config.capture_ocr_max_attempts =
         std::clamp(getEnvIntOrDefault("CAPTURE_OCR_MAX_ATTEMPTS", 2), 1, 2);
+    config.plate_led_enabled =
+        getEnvBoolOrDefault("PLATE_LED_ENABLED", false);
+    config.plate_led_night_start_hour =
+        std::clamp(getEnvIntOrDefault("PLATE_LED_NIGHT_START_HOUR", 19), 0, 23);
+    config.plate_led_night_end_hour =
+        std::clamp(getEnvIntOrDefault("PLATE_LED_NIGHT_END_HOUR", 6), 0, 23);
+    config.plate_led_settle_ms =
+        std::clamp(getEnvIntOrDefault("PLATE_LED_SETTLE_MS", 200), 0, 2000);
     config.camera_snapshot_api_enabled =
         getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_ENABLED", false);
     config.camera_snapshot_api_rtsp_fallback =
@@ -223,11 +231,12 @@ AppConfig AppConfig::loadFromEnv() {
 
     config.parking_timer_enabled =
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
-    config.parking_timeout_seconds =
-        std::max(1, getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600));
-    config.parking_overstay_evidence_delay_seconds = std::max(
-        1, getEnvIntOrDefault(
-               "PARKING_OVERSTAY_EVIDENCE_DELAY_SECONDS", 3600));
+    // 새 단일 설정이 없을 때만 기존 PARKING_TIMEOUT_SECONDS를 시작 기본값으로
+    // 받아 이전 배포 설정과 호환한다. 이후 REST 변경값은 SQLite가 우선한다.
+    config.parking_overstay_threshold_seconds = std::clamp(
+        getEnvIntOrDefault("PARKING_OVERSTAY_THRESHOLD_SECONDS",
+            getEnvIntOrDefault("PARKING_TIMEOUT_SECONDS", 3600)),
+        60, 86400);
 
     config.http_api_enabled = getEnvBoolOrDefault("HTTP_API_ENABLED", true);
     config.http_listen_address = getEnvOrDefault("HTTP_LISTEN_ADDRESS", "0.0.0.0");
