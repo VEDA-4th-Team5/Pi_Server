@@ -11,8 +11,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -32,6 +34,7 @@ struct Options {
     int warmupFrames{5};
     int webPort{8091};
     std::string bindAddress{"127.0.0.1"};
+    std::string piApiBase{"http://127.0.0.1:8080"};
     bool webMode{false};
     bool showHelp{false};
 };
@@ -62,6 +65,8 @@ void printUsage(std::ostream& output) {
         << "  --bind <address>           Web listen address (default: "
            "127.0.0.1).\n"
         << "  --port <number>            Web listen port (default: 8091).\n"
+        << "  --pi-api-base <url>        Running Pi server API base (default: "
+           "http://127.0.0.1:8080).\n"
         << "  --help                     Show this help.\n\n"
         << "If no source is supplied, CAMERA_RTSP_CH1 and then CAMERA_RTSP are "
            "checked.\n";
@@ -153,6 +158,9 @@ std::optional<Options> parseOptions(const int argc, char** argv,
                 error = "--port must be between 1024 and 65535";
                 return std::nullopt;
             }
+        } else if (argument == "--pi-api-base") {
+            if (!readValue(index, argc, argv, options.piApiBase, error))
+                return std::nullopt;
         } else {
             error = "unknown option: " + argument;
             return std::nullopt;
@@ -348,8 +356,9 @@ pre{white-space:pre-wrap;background:#030712;padding:14px;border-radius:6px;min-h
              << "</option>";
     }
     html << R"HTML(</select></label>
-<button id="save" disabled>좌표 저장 및 출력</button>
+<button id="save" disabled>좌표 저장 및 즉시 적용</button>
 <button id="reset">다시 선택</button>
+<button id="refresh">새 프레임 가져오기</button>
 <span class="hint">주차면 왼쪽 위에서 오른쪽 아래로 드래그하세요.</span></div>
 <div class="canvas-wrap"><div class="stage">
 <img id="frame" src="/frame.jpg" alt="카메라 기준 프레임">
@@ -360,7 +369,7 @@ pre{white-space:pre-wrap;background:#030712;padding:14px;border-radius:6px;min-h
 <script>
 const frame=document.getElementById('frame'),overlay=document.getElementById('overlay');
 const ctx=overlay.getContext('2d'),result=document.getElementById('result');
-const save=document.getElementById('save');let start=null,current=null,selection=null;
+const save=document.getElementById('save'),slot=document.getElementById('slot'),refresh=document.getElementById('refresh');let start=null,current=null,selection=null,refreshMessage='';
 function point(event){const r=overlay.getBoundingClientRect();return{
 x:Math.max(0,Math.min(overlay.width,Math.round((event.clientX-r.left)*overlay.width/r.width))),
 y:Math.max(0,Math.min(overlay.height,Math.round((event.clientY-r.top)*overlay.height/r.height)))};}
@@ -368,7 +377,7 @@ function rectangle(a,b){return{x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),width:Mat
 function draw(){ctx.clearRect(0,0,overlay.width,overlay.height);const area=start&&current?rectangle(start,current):selection;if(!area)return;
 ctx.fillStyle='rgba(0,255,102,.14)';ctx.fillRect(area.x,area.y,area.width,area.height);ctx.strokeStyle='#00ff66';
 ctx.lineWidth=Math.max(3,overlay.width/650);ctx.strokeRect(area.x,area.y,area.width,area.height);}
-frame.onload=()=>{overlay.width=frame.naturalWidth;overlay.height=frame.naturalHeight;draw();result.className='';result.textContent=`image_size=${overlay.width}x${overlay.height}\n1. 슬롯 선택 → 2. 주차 영역 드래그 → 3. 저장 버튼 클릭`;};
+frame.onload=()=>{overlay.width=frame.naturalWidth;overlay.height=frame.naturalHeight;draw();result.className=refreshMessage?'ok':'';result.textContent=refreshMessage||`image_size=${overlay.width}x${overlay.height}\n1. 슬롯 선택 → 2. 주차 영역 드래그 → 3. 저장 버튼 클릭`;refreshMessage='';};
 frame.onerror=()=>{result.className='error';result.textContent='카메라 프레임을 불러오지 못했습니다. /frame.jpg 연결을 확인하세요.'};
 overlay.addEventListener('pointerdown',e=>{e.preventDefault();start=point(e);current=start;selection=null;save.disabled=true;overlay.setPointerCapture(e.pointerId);draw();});
 overlay.addEventListener('pointermove',e=>{if(!start)return;current=point(e);draw();const area=rectangle(start,current);result.textContent=`선택 중: ${area.x},${area.y},${area.width},${area.height}`;});
@@ -377,20 +386,26 @@ if(area.width<2||area.height<2){selection=null;draw();result.textContent='영역
 selection=area;draw();save.disabled=false;result.className='';result.textContent=`pixel_roi=${area.x},${area.y},${area.width},${area.height}\n저장 버튼을 누르면 정규화 좌표가 출력됩니다.`;});
 overlay.addEventListener('pointercancel',()=>{start=null;current=null;draw();});
 document.getElementById('reset').onclick=()=>{start=null;current=null;selection=null;save.disabled=true;draw();result.className='';result.textContent='영역을 다시 드래그하세요.'};
-save.onclick=async()=>{if(!selection)return;const body=new URLSearchParams({...selection,slot:document.getElementById('slot').value});
+slot.onchange=()=>document.getElementById('reset').click();
+refresh.onclick=async()=>{refresh.disabled=true;save.disabled=true;start=null;current=null;selection=null;draw();result.className='';result.textContent='카메라에서 새 프레임을 가져오는 중입니다...';
+try{const response=await fetch('/refresh',{method:'POST'});const text=await response.text();if(!response.ok){result.className='error';result.textContent=text;return;}refreshMessage=text;frame.src=`/frame.jpg?v=${Date.now()}`;}catch(error){result.className='error';result.textContent=String(error);}finally{refresh.disabled=false;}};
+save.onclick=async()=>{if(!selection)return;const body=new URLSearchParams({...selection,slot:slot.value});
 try{const response=await fetch('/selection',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
 const text=await response.text();result.className=response.ok?'ok':'error';result.textContent=text;}catch(error){result.className='error';result.textContent=String(error);}};
 </script></body></html>)HTML";
     return html.str();
 }
 
-int runWebServer(const cv::Mat& image, const Options& options) {
+int runWebServer(cv::Mat image, const Options& options,
+                 const std::function<cv::Mat()>& reloadFrame) {
     std::vector<unsigned char> jpeg;
     if (!cv::imencode(".jpg", image, jpeg,
                       {cv::IMWRITE_JPEG_QUALITY, 92})) {
         std::cerr << "error: web reference JPEG encoding failed\n";
         return EXIT_FAILURE;
     }
+    std::mutex frameMutex;
+    std::mutex refreshMutex;
 
     httplib::Server server;
     const std::string page = buildWebPage(options.slotId);
@@ -398,18 +413,55 @@ int runWebServer(const cv::Mat& image, const Options& options) {
         res.set_header("Cache-Control", "no-store");
         res.set_content(page, "text/html; charset=utf-8");
     });
-    server.Get("/frame.jpg", [&jpeg](const httplib::Request&,
-                                     httplib::Response& res) {
+    server.Get("/frame.jpg", [&jpeg, &frameMutex](const httplib::Request&,
+                                                   httplib::Response& res) {
+        std::lock_guard lock(frameMutex);
         res.set_header("Cache-Control", "no-store");
         res.set_content(reinterpret_cast<const char*>(jpeg.data()), jpeg.size(),
                         "image/jpeg");
+    });
+    server.Post("/refresh", [&image, &jpeg, &frameMutex, &refreshMutex,
+                              &reloadFrame](const httplib::Request&,
+                                            httplib::Response& res) {
+        std::unique_lock refreshLock(refreshMutex, std::try_to_lock);
+        if (!refreshLock.owns_lock()) {
+            res.status = 409;
+            res.set_content("another frame refresh is already running\n",
+                            "text/plain; charset=utf-8");
+            return;
+        }
+        cv::Mat refreshed = reloadFrame();
+        if (refreshed.empty()) {
+            res.status = 502;
+            res.set_content("camera frame refresh failed; previous frame kept\n",
+                            "text/plain; charset=utf-8");
+            return;
+        }
+        std::vector<unsigned char> refreshedJpeg;
+        if (!cv::imencode(".jpg", refreshed, refreshedJpeg,
+                          {cv::IMWRITE_JPEG_QUALITY, 92})) {
+            res.status = 500;
+            res.set_content("refreshed frame JPEG encoding failed\n",
+                            "text/plain; charset=utf-8");
+            return;
+        }
+        {
+            std::lock_guard frameLock(frameMutex);
+            image = std::move(refreshed);
+            jpeg = std::move(refreshedJpeg);
+        }
+        res.set_content("new frame loaded: " + std::to_string(image.cols) +
+                            "x" + std::to_string(image.rows) +
+                            "\nselect the parking ROI again\n",
+                        "text/plain; charset=utf-8");
     });
     server.Get("/health", [](const httplib::Request&,
                               httplib::Response& res) {
         res.set_content("ok\n", "text/plain; charset=utf-8");
     });
-    server.Post("/selection", [&image, &options](const httplib::Request& req,
-                                                  httplib::Response& res) {
+    server.Post("/selection", [&image, &options, &frameMutex](
+                                   const httplib::Request& req,
+                                   httplib::Response& res) {
         for (const char* field : {"slot", "x", "y", "width", "height"}) {
             if (!req.has_param(field)) {
                 res.status = 400;
@@ -432,8 +484,13 @@ int runWebServer(const cv::Mat& image, const Options& options) {
             return;
         }
 
+        cv::Mat selectionImage;
+        {
+            std::lock_guard lock(frameMutex);
+            selectionImage = image.clone();
+        }
         const cv::Rect rectangle(x, y, width, height);
-        if (!rectangleIsValid(rectangle, image.size())) {
+        if (!rectangleIsValid(rectangle, selectionImage.size())) {
             res.status = 400;
             res.set_content("ROI is outside image bounds\n",
                             "text/plain; charset=utf-8");
@@ -442,16 +499,51 @@ int runWebServer(const cv::Mat& image, const Options& options) {
         const std::string outputPath = options.outputPath.empty()
             ? "data/roi_checks/" + slot + "_roi_preview.jpg"
             : options.outputPath;
-        if (!savePreview(image, rectangle, slot, outputPath)) {
+        if (!savePreview(selectionImage, rectangle, slot, outputPath)) {
             res.status = 500;
             res.set_content("preview image could not be saved\n",
                             "text/plain; charset=utf-8");
             return;
         }
         const std::string report =
-            coordinateReport(image.size(), rectangle, slot, outputPath);
+            coordinateReport(selectionImage.size(), rectangle, slot, outputPath);
+        const double normalized_x =
+            static_cast<double>(rectangle.x) / selectionImage.cols;
+        const double normalized_y =
+            static_cast<double>(rectangle.y) / selectionImage.rows;
+        const double normalized_width =
+            static_cast<double>(rectangle.width) / selectionImage.cols;
+        const double normalized_height =
+            static_cast<double>(rectangle.height) / selectionImage.rows;
+        std::ostringstream json;
+        json << std::setprecision(17)
+             << "{\"x\":" << normalized_x
+             << ",\"y\":" << normalized_y
+             << ",\"width\":" << normalized_width
+             << ",\"height\":" << normalized_height << '}';
+        httplib::Client piClient(options.piApiBase);
+        piClient.set_connection_timeout(2, 0);
+        piClient.set_read_timeout(3, 0);
+        const auto applied = piClient.Put(
+            "/api/v1/settings/parking-slots/" + slot + "/roi",
+            json.str(), "application/json");
+        if (!applied) {
+            res.status = 502;
+            res.set_content(report +
+                "apply_error=Pi server API connection failed\n",
+                "text/plain; charset=utf-8");
+            return;
+        }
+        if (applied->status != 200) {
+            res.status = 502;
+            res.set_content(report + "apply_error=Pi server rejected ROI " +
+                std::to_string(applied->status) + " " + applied->body + "\n",
+                "text/plain; charset=utf-8");
+            return;
+        }
         std::cout << report << std::flush;
-        res.set_content(report, "text/plain; charset=utf-8");
+        res.set_content(report + "applied_immediately=true\n",
+                        "text/plain; charset=utf-8");
     });
 
     std::cout << "check_coordinates web mode started\n"
@@ -487,8 +579,13 @@ int main(const int argc, char** argv) {
     }
 
     cv::Mat image;
+    std::function<cv::Mat()> reloadFrame;
     if (!options.imagePath.empty()) {
-        image = cv::imread(options.imagePath, cv::IMREAD_COLOR);
+        const std::string imagePath = options.imagePath;
+        reloadFrame = [imagePath] {
+            return cv::imread(imagePath, cv::IMREAD_COLOR);
+        };
+        image = reloadFrame();
         if (image.empty()) {
             std::cerr << "error: cannot read image: " << options.imagePath
                       << '\n';
@@ -504,7 +601,12 @@ int main(const int argc, char** argv) {
         }
         std::cout << "capturing RTSP reference frame from environment="
                   << sourceName << '\n';
-        image = loadRtspFrame(*url, options.warmupFrames);
+        const std::string rtspUrl = *url;
+        const int warmupFrames = options.warmupFrames;
+        reloadFrame = [rtspUrl, warmupFrames] {
+            return loadRtspFrame(rtspUrl, warmupFrames);
+        };
+        image = reloadFrame();
         if (image.empty()) {
             std::cerr << "error: RTSP frame capture failed\n";
             return EXIT_FAILURE;
@@ -512,7 +614,7 @@ int main(const int argc, char** argv) {
     }
 
     if (options.webMode) {
-        return runWebServer(image, options);
+        return runWebServer(std::move(image), options, reloadFrame);
     }
 
     if (options.outputPath.empty()) {

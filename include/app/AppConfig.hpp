@@ -23,6 +23,10 @@ struct IvaAreaConfig {
     double roi_height;
     // CV Snapshot OpenAPI의 0-based channel. RTSP channel_id와 별도다.
     int snapshot_api_channel{0};
+    // true일 때만 이 좌표를 SQLite가 비어 있는 최초 부트스트랩 값으로 쓴다.
+    // 테스트/명시적 aggregate 초기화는 기존 호환을 위해 true가 기본이며,
+    // AppConfig 환경 로더는 ROI 환경변수가 전혀 없으면 false로 설정한다.
+    bool roi_configured{true};
 };
 
 struct AppConfig {

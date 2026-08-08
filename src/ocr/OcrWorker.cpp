@@ -4,12 +4,23 @@
 #include "ocr/PlateImageEnhancer.hpp"
 #include "ocr/PlateNormalizer.hpp"
 #include "util/Logger.hpp"
+#include "util/TimeUtil.hpp"
 
 #include <curl/curl.h>
 #include <chrono>
 #include <filesystem>
 
 namespace ocr {
+namespace {
+
+bool usableImageFile(const std::string& path) {
+    if (path.empty()) return false;
+    std::error_code error;
+    return std::filesystem::is_regular_file(path, error) && !error &&
+           std::filesystem::file_size(path, error) > 0 && !error;
+}
+
+}  // namespace
 
 OcrWorker::OcrWorker(GeminiOcrClient client,
                      database::EventDatabase& database,
@@ -119,6 +130,8 @@ void OcrWorker::enqueueHallCapture(const HallCaptureTask& request) {
         HallCaptureResult result;
         result.session_id = request.session_id;
         result.stage = request.stage;
+        result.error_message = "OCR task was rejected by the bounded queue";
+        result.processed_at = util::nowIsoString();
         rejected(result);
     }
 }
@@ -141,6 +154,7 @@ void OcrWorker::run() {
         HallCaptureResult hall_result;
         hall_result.session_id = task.session_id;
         hall_result.stage = task.hall_stage;
+        hall_result.processed_at = util::nowIsoString();
         process(task, hall_result);
 
         if (task.hall) {
@@ -167,7 +181,6 @@ void OcrWorker::run() {
 void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         PlatePreprocessResult processed;
         bool owns_processed_enhanced = false;
-        std::string ocr_input = task.image_path;
         if (!task.provided_enhanced_path.empty())
             processed.enhanced_path = task.provided_enhanced_path;
         if (!preprocess_enabled_ && task.detect_candidate) {
@@ -188,6 +201,32 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
                                                     processed.enhanced_path);
                 util::logLine("PLATE_PREPROCESS", "original=" + task.image_path +
                               " enhanced=" + processed.enhanced_path);
+            }
+        }
+
+        // Hall 30/60초 촬영은 카메라가 만든 개선본을 OCR의 단일 우선 입력으로
+        // 사용한다. 개선본이 없거나 손상된 경우에만 원본으로 안전하게 돌아간다.
+        // 일반 BestShot/IVA OCR은 기존 호환을 위해 원본+개선본 비교를 유지한다.
+        std::string ocr_input = task.image_path;
+        std::string secondary_input = processed.enhanced_path;
+        if (task.hall) {
+            std::string input_kind{"original_fallback"};
+            if (usableImageFile(processed.enhanced_path)) {
+                ocr_input = processed.enhanced_path;
+                input_kind = task.provided_enhanced_path.empty()
+                    ? "generated_enhanced"
+                    : "camera_enhanced";
+            }
+            secondary_input.clear();
+            const std::string selection =
+                "session=" + std::to_string(task.session_id) +
+                " slot=" + task.slot_id + " input=" + input_kind +
+                " path=" + ocr_input;
+            util::logLine("HALL_OCR", "OCR_INPUT " + selection);
+            if (!database_.insertSystemEvent(
+                    "HALL_OCR_INPUT_SELECTED", task.slot_id, selection)) {
+                util::logWarn("Hall OCR input selection event was not stored: " +
+                              selection);
             }
         }
 
@@ -214,30 +253,33 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
                 remove_owned_enhanced();
                 return;
             }
-            result = client_.recognizePlate(
-                ocr_input, processed.enhanced_path);
+            result = client_.recognizePlate(ocr_input, secondary_input);
             if (result.success) break;
             // VACANT 처리 중 파일이 정리된 세션은 실패 재시도를 하지 않는다.
             if (session_canceled()) {
                 remove_owned_enhanced();
                 return;
             }
-            // 잘못된 키/요청처럼 재시도로 회복되지 않는 4xx는 즉시 중단한다.
-            const bool permanent_client_error =
-                result.error.find("Gemini HTTP status 4") != std::string::npos &&
-                result.error.find("Gemini HTTP status 429") == std::string::npos;
-            if (attempt == 3 || permanent_client_error) break;
+            if (attempt == 3 || !result.retryable()) break;
             const int delay_seconds = attempt;
             util::logWarn("Gemini OCR retry " + std::to_string(attempt + 1) +
                           "/3 after " + std::to_string(delay_seconds) +
-                          "s: " + result.error);
+                          "s kind=" + toString(result.error_kind) +
+                          " status=" + std::to_string(result.http_status) +
+                          " error=" + result.error);
             std::this_thread::sleep_for(std::chrono::seconds(delay_seconds));
         }
         if (!result.success) {
-            util::logError("Gemini OCR failed: path=" + task.image_path +
+            hall_result.error_message = result.error;
+            hall_result.raw_text = result.raw_text;
+            util::logError("Gemini OCR failed: path=" + ocr_input +
+                           " kind=" + toString(result.error_kind) +
+                           " status=" + std::to_string(result.http_status) +
                            " error=" + result.error);
             return;
         }
+        hall_result.ocr_succeeded = true;
+        hall_result.raw_text = result.raw_text;
         if (session_canceled()) {
             remove_owned_enhanced();
             return;
@@ -247,7 +289,7 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
             // 응답은 받았으나 번호판을 읽지 못한 경우다. 조명 보정으로 다시
             // 시도해볼 값어치가 있어 요청 실패와 구분해 표시한다.
             hall_result.plate_unreadable = true;
-            util::logWarn("Gemini OCR unreadable: path=" + task.image_path);
+            util::logWarn("Gemini OCR unreadable: path=" + ocr_input);
             database_.applyPlateOcr(task.session_id, task.slot_id,
                                     task.image_path, "", result.confidence);
             return;

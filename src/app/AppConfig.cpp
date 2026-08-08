@@ -74,9 +74,8 @@ bool getEnvBoolOrDefault(const char* key, bool default_value) {
     return default_value;
 }
 
-double getEnvDoubleOrDefault(const char* key, double default_value) {
-    const char* value = std::getenv(key);
-    if (value == nullptr || std::string(value).empty()) return default_value;
+double parseDoubleOrDefault(const std::string& value, double default_value) {
+    if (value.empty()) return default_value;
     try {
         return std::stod(value);
     } catch (...) {
@@ -270,7 +269,8 @@ AppConfig AppConfig::loadFromEnv() {
     }
 
     // EV01~EV04는 카메라 웹 설정의 IVA Area 이름과 동일하게 두는 것이 기본이다.
-    // ROI 미설정 시 전체 프레임(0,0,1,1)을 사용해 이벤트 사진을 놓치지 않는다.
+    // ROI 네 값이 전혀 없으면 좌표는 "미설정"으로 유지한다. SQLite에 Qt가
+    // 저장한 값이 있으면 ParkingRoiSettingsService가 그것을 우선 복원한다.
     for (int i = 1; i <= 4; ++i) {
         std::ostringstream slot;
         slot << "EV" << std::setw(2) << std::setfill('0') << i;
@@ -278,6 +278,17 @@ AppConfig AppConfig::loadFromEnv() {
         // 향후 채널 확장 시 IVA_EVxx_CHANNEL_ID로 슬롯별 override한다.
         const std::string channel = "ch01";
         const std::string prefix = "IVA_" + slot.str() + "_";
+        const std::string roi_x = getEnvOrLocalSetting(
+            (prefix + "ROI_X").c_str(), "", ".env.iva.local");
+        const std::string roi_y = getEnvOrLocalSetting(
+            (prefix + "ROI_Y").c_str(), "", ".env.iva.local");
+        const std::string roi_width = getEnvOrLocalSetting(
+            (prefix + "ROI_WIDTH").c_str(), "", ".env.iva.local");
+        const std::string roi_height = getEnvOrLocalSetting(
+            (prefix + "ROI_HEIGHT").c_str(), "", ".env.iva.local");
+        const bool roi_configured =
+            !roi_x.empty() || !roi_y.empty() ||
+            !roi_width.empty() || !roi_height.empty();
 
         config.iva_areas.push_back({
             slot.str(),
@@ -285,12 +296,13 @@ AppConfig AppConfig::loadFromEnv() {
                                  ".env.iva.local"),
             getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel,
                                  ".env.iva.local"),
-            getEnvDoubleOrDefault((prefix + "ROI_X").c_str(), 0.0),
-            getEnvDoubleOrDefault((prefix + "ROI_Y").c_str(), 0.0),
-            getEnvDoubleOrDefault((prefix + "ROI_WIDTH").c_str(), 1.0),
-            getEnvDoubleOrDefault((prefix + "ROI_HEIGHT").c_str(), 1.0),
+            parseDoubleOrDefault(roi_x, 0.0),
+            parseDoubleOrDefault(roi_y, 0.0),
+            parseDoubleOrDefault(roi_width, 1.0),
+            parseDoubleOrDefault(roi_height, 1.0),
             std::max(0, getEnvIntOrDefault(
-                (prefix + "SNAPSHOT_API_CHANNEL").c_str(), 0))
+                (prefix + "SNAPSHOT_API_CHANNEL").c_str(), 0)),
+            roi_configured
         });
     }
 

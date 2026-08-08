@@ -3,7 +3,7 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 149
+- 분석 파일 수: 153
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
@@ -62,7 +62,7 @@ Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Snapshot API 전
 Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 요청한다. Qt의
 실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
 
-EVDA-192에서는 CH1의 통합 WiseAI `name1`을 EV01, `name3/name4`를 EV04로
+EVDA-192에서는 CH1의 WiseAI `name1`~`name4`를 EV01~EV04에 1:1로
 묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다.
 `PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 영역 하나가 활성일 때 세션을 만들고,
 같은 슬롯의 모든 영역이 비활성인 상태가 10초 유지된 경우에만 Hall VACANT와
@@ -173,9 +173,10 @@ CAMERA_IMAGE_SERVER_PORT=8080
 실행하지 않는다. API가 비활성이면 기존 `CameraChannel::latest_full_frame` ROI 촬영을
 사용하며, API 실패 시 RTSP fallback은 별도 설정으로만 허용한다.
 
-현재 CV Snapshot API 계약에는 ROI 입력이 없기 때문에 API 모드의 OCR 입력은 채널 전체
-프레임이다. ROI가 필요하면 카메라 CAP 계약 확장 또는 Pi의 crop-only 정책을 별도로
-결정해야 한다.
+현재 CV Snapshot API 계약에는 ROI 입력이 없기 때문에 카메라는 채널 전체 프레임을
+반환한다. Pi는 실제 촬영 순간 실행 중인 슬롯별 ROI를 조회하고 original/enhanced를
+같은 좌표로 crop한 뒤 enhanced crop을 OCR에 전달한다. ROI는 HTTP PUT으로 즉시
+변경하며 SQLite `SYSTEM_SETTINGS`에 영구 저장한다.
 
 ## 4. 조기 출차와 장기 점유
 
@@ -203,6 +204,7 @@ HallParkingService VACANT
 ```text
 EvidenceCaptureWorker
 → Camera Snapshot API 전체 original/enhanced frame
+→ 실행 중 슬롯 ROI 조회 및 동일 영역 crop
 → OVERSTAY_EVIDENCE 파일 / IMAGE_LOG 저장
 
 TimerManager
@@ -343,7 +345,9 @@ report()
 - `CAPTURE_SCHED_ENABLED`의 기본값은 `false`라 30/60초 경로는 운영 설정에서
   명시적으로 켜야 한다.
 - EV01~EV04의 기본 카메라 채널은 모두 `ch01`이다.
-- ROI 미설정 시 슬롯별 기본 ROI는 전체 프레임 `(0,0,1,1)`이다.
+- SQLite와 `IVA_EVxx_ROI_*` 설정에 ROI가 모두 없으면 해당 슬롯 ROI는
+  미설정 상태로 유지한다. 촬영/OCR은 전체 프레임을 임의로 사용하지 않고
+  명확한 오류를 남긴 뒤 건너뛴다.
 - `PARKING_HALL_ENABLED` 설정은 로드되지만 현재 `main.cpp`의 홀 경로 활성화
   조건으로 사용되지 않는다.
 - `FIRE_ALARM_ENABLED`와 `FireAlarmManager`는 존재하지만 현재 `main.cpp`에 배선되지
@@ -705,7 +709,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool http::ParkingHttpServer::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::usesTls() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::ParkingHttpServer(const ParkingHttpServer &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr, settings::ParkingRoiSettingsService *roi_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::~ParkingHttpServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::registerRoutes()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -735,7 +739,8 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `OcrResult ocr::GeminiOcrClient::recognizePlate(const std::string &image_path, const std::string &enhanced_image_path="") const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `OcrResult ocr::GeminiOcrClient::recognizePlateWithModel(const std::string &model, const std::string &image_path, const std::string &enhanced_image_path) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool ocr::GeminiOcrClient::configured() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `ocr::GeminiOcrClient::GeminiOcrClient(std::string api_key, std::string model, long connect_timeout_sec, long request_timeout_sec, std::string fallback_model="")` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool ocr::OcrResult::retryable() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `ocr::GeminiOcrClient::GeminiOcrClient(std::string api_key, std::string model, long connect_timeout_sec, long request_timeout_sec, std::string fallback_model="", HttpTransport transport={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/ocr/OcrWorker.hpp
 
@@ -850,7 +855,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 - `PlateIlluminator::Scope parking::HallCaptureExecutor::illuminate(const CaptureRequest &request)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool parking::HallCaptureExecutor::execute(const CaptureRequest &request) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `parking::HallCaptureExecutor::HallCaptureExecutor(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, snapshot::SnapshotStorage &storage, HallCaptureCoordinator &coordinator, DraftPublisher draftPublisher, camera::CameraSnapshotApiClient *snapshotApiClient=nullptr, bool rtspFallback=false, PlateIlluminator *illuminator=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `parking::HallCaptureExecutor::HallCaptureExecutor(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, snapshot::SnapshotStorage &storage, HallCaptureCoordinator &coordinator, DraftPublisher draftPublisher, camera::CameraSnapshotApiClient *snapshotApiClient=nullptr, bool rtspFallback=false, PlateIlluminator *illuminator=nullptr, RoiResolver roiResolver={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/parking/HallCaptureTypes.hpp
 
@@ -1135,13 +1140,33 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `settings::OverstayThresholdService::OverstayThresholdService(database::EventDatabase &database, int bootstrap_seconds=kDefaultSeconds)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void settings::OverstayThresholdService::setApplyCallback(ApplyCallback callback)` — 타이머·증거 worker 재예약 callback을 서버 조립 단계에서 주입한다.
 
+### include/settings/ParkingRoiSettingsService.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `ParkingRoiUpdateResult settings::ParkingRoiSettingsService::update(const std::string &slot_id, snapshot::NormalizedRoi roi)` — DB 저장 성공 후에만 실행 중 좌표를 즉시 교체한다.
+- `bool settings::ParkingRoiSettingsService::initialize()` — DB 저장값을 불러오고, 없으면 AppConfig 좌표를 초기값으로 저장한다.
+- `bool settings::ParkingRoiSettingsService::isValid(const snapshot::NormalizedRoi &roi) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `settings::ParkingRoiSettingsService::ParkingRoiSettingsService(database::EventDatabase &database, const std::vector< app::IvaAreaConfig > &bootstrap)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< snapshot::NormalizedRoi > settings::ParkingRoiSettingsService::parse(const std::string &value)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< snapshot::NormalizedRoi > settings::ParkingRoiSettingsService::roiForSlot(const std::string &slot_id) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string settings::ParkingRoiSettingsService::serialize(const snapshot::NormalizedRoi &roi)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string settings::ParkingRoiSettingsService::settingKey(const std::string &slot_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< ParkingRoiSetting > settings::ParkingRoiSettingsService::list() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ## include/snapshot
+
+### include/snapshot/NormalizedRoi.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- 함수 없음: 타입·상수·구조체 선언 또는 데이터 전용 파일
 
 ### include/snapshot/SnapshotStorage.hpp
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
-- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP 전체 original/enhanced JPEG를 세션·단계별로 저장한다.
+- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const NormalizedRoi &roi, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP original/enhanced JPEG를 같은 슬롯 ROI로 잘라 저장한다.
 - `cv::Mat snapshot::SnapshotStorage::waitForFullFrame(const std::shared_ptr< camera::CameraChannel > &channel)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `snapshot::SnapshotStorage::SnapshotStorage(const std::string &snapshot_dir, int snapshot_frame_wait_ms, std::atomic< bool > &running)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string snapshot::SnapshotStorage::saveAreaSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, const std::string &slot_id, const NormalizedRoi &roi, const std::string &filename_prefix, std::int64_t session_id=-1, const std::string &stage_directory={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1458,7 +1483,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `bool http::ParkingHttpServer::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::usesTls() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr, settings::ParkingRoiSettingsService *roi_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::~ParkingHttpServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::registerRoutes()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1496,7 +1521,8 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `OcrResult ocr::GeminiOcrClient::recognizePlate(const std::string &image_path, const std::string &enhanced_image_path="") const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `OcrResult ocr::GeminiOcrClient::recognizePlateWithModel(const std::string &model, const std::string &image_path, const std::string &enhanced_image_path) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool ocr::GeminiOcrClient::configured() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `ocr::GeminiOcrClient::GeminiOcrClient(std::string api_key, std::string model, long connect_timeout_sec, long request_timeout_sec, std::string fallback_model="")` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `const char * ocr::toString(OcrErrorKind kind) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `ocr::GeminiOcrClient::GeminiOcrClient(std::string api_key, std::string model, long connect_timeout_sec, long request_timeout_sec, std::string fallback_model="", HttpTransport transport={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/ocr/OcrWorker.cpp
 
@@ -1605,7 +1631,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `PlateIlluminator::Scope parking::HallCaptureExecutor::illuminate(const CaptureRequest &request)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool parking::HallCaptureExecutor::execute(const CaptureRequest &request) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `parking::HallCaptureExecutor::HallCaptureExecutor(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, snapshot::SnapshotStorage &storage, HallCaptureCoordinator &coordinator, DraftPublisher draftPublisher, camera::CameraSnapshotApiClient *snapshotApiClient=nullptr, bool rtspFallback=false, PlateIlluminator *illuminator=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `parking::HallCaptureExecutor::HallCaptureExecutor(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, snapshot::SnapshotStorage &storage, HallCaptureCoordinator &coordinator, DraftPublisher draftPublisher, camera::CameraSnapshotApiClient *snapshotApiClient=nullptr, bool rtspFallback=false, PlateIlluminator *illuminator=nullptr, RoiResolver roiResolver={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/parking/HallOcrPolicy.cpp
 
@@ -1797,13 +1823,27 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `settings::OverstayThresholdService::OverstayThresholdService(database::EventDatabase &database, int bootstrap_seconds=kDefaultSeconds)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void settings::OverstayThresholdService::setApplyCallback(ApplyCallback callback)` — 타이머·증거 worker 재예약 callback을 서버 조립 단계에서 주입한다.
 
+### src/settings/ParkingRoiSettingsService.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `ParkingRoiUpdateResult settings::ParkingRoiSettingsService::update(const std::string &slot_id, snapshot::NormalizedRoi roi)` — DB 저장 성공 후에만 실행 중 좌표를 즉시 교체한다.
+- `bool settings::ParkingRoiSettingsService::initialize()` — DB 저장값을 불러오고, 없으면 AppConfig 좌표를 초기값으로 저장한다.
+- `bool settings::ParkingRoiSettingsService::isValid(const snapshot::NormalizedRoi &roi) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `settings::ParkingRoiSettingsService::ParkingRoiSettingsService(database::EventDatabase &database, const std::vector< app::IvaAreaConfig > &bootstrap)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< snapshot::NormalizedRoi > settings::ParkingRoiSettingsService::parse(const std::string &value)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< snapshot::NormalizedRoi > settings::ParkingRoiSettingsService::roiForSlot(const std::string &slot_id) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string settings::ParkingRoiSettingsService::serialize(const snapshot::NormalizedRoi &roi)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string settings::ParkingRoiSettingsService::settingKey(const std::string &slot_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< ParkingRoiSetting > settings::ParkingRoiSettingsService::list() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ## src/snapshot
 
 ### src/snapshot/SnapshotStorage.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
-- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP 전체 original/enhanced JPEG를 세션·단계별로 저장한다.
+- `StoredImagePair snapshot::SnapshotStorage::saveCameraApiHallCapture(const std::string &channel_id, std::int64_t session_id, const std::string &slot_id, const std::string &capture_stage, const NormalizedRoi &roi, const std::vector< unsigned char > &original_jpeg, const std::vector< unsigned char > &enhanced_jpeg)` — 카메라 CAP original/enhanced JPEG를 같은 슬롯 ROI로 잘라 저장한다.
 - `cv::Mat snapshot::SnapshotStorage::waitForFullFrame(const std::shared_ptr< camera::CameraChannel > &channel)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `snapshot::SnapshotStorage::SnapshotStorage(const std::string &snapshot_dir, int snapshot_frame_wait_ms, std::atomic< bool > &running)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string snapshot::SnapshotStorage::saveAreaSnapshot(const std::shared_ptr< camera::CameraChannel > &channel, const std::string &slot_id, const NormalizedRoi &roi, const std::string &filename_prefix, std::int64_t session_id=-1, const std::string &stage_directory={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1991,6 +2031,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tests/unit/FireAlarmTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/unit/GeminiOcrClientTest.cpp
 
 자동 테스트와 회귀 검증 시나리오를 구현한다.
 

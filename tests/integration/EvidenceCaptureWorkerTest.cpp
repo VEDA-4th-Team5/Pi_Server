@@ -74,6 +74,30 @@ int main() {
             240, 320, CV_8UC3, cv::Scalar(25, 120, 220));
         require(cv::imencode(".jpg", enhancedFrame, enhancedJpeg),
                 "API fixture enhanced JPEG encode failed");
+        const auto croppedPair = storage.saveCameraApiHallCapture(
+            "ch01", 999, "EV01", "HALL_30S",
+            {0.25, 0.25, 0.5, 0.5}, originalJpeg, enhancedJpeg);
+        require(!croppedPair.originalPath.empty() &&
+                    !croppedPair.enhancedPath.empty(),
+                "camera API ROI crop fixture was not stored");
+        require(fs::path(croppedPair.originalPath).parent_path().filename() ==
+                        "original" &&
+                    fs::path(croppedPair.enhancedPath).parent_path().filename() ==
+                        "enhanced",
+                "camera API original/enhanced directories were not separated");
+        const cv::Mat croppedOriginal = cv::imread(croppedPair.originalPath);
+        const cv::Mat croppedEnhanced = cv::imread(croppedPair.enhancedPath);
+        require(croppedOriginal.cols == 160 && croppedOriginal.rows == 120 &&
+                    croppedEnhanced.cols == 160 &&
+                    croppedEnhanced.rows == 120,
+                "camera API original/enhanced did not use the same ROI");
+        const auto tinyCrop = storage.saveCameraApiHallCapture(
+            "ch01", 999, "EV01", "HALL_60S",
+            {0.0, 0.0, 0.001, 0.001}, originalJpeg, enhancedJpeg);
+        require(tinyCrop.originalPath.empty() && tinyCrop.enhancedPath.empty(),
+                "sub-8px ROI must be rejected before OCR storage");
+        fs::remove(croppedPair.originalPath);
+        fs::remove(croppedPair.enhancedPath);
 
         std::mutex result_mutex;
         std::vector<parking::EvidenceCaptureResult> results;
@@ -92,8 +116,8 @@ int main() {
                     return snapshot::StoredImagePair{};
                 return storage.saveCameraApiHallCapture(
                     request.channel->channel_id, request.sessionId,
-                    request.slotId, parking::toString(reason), originalJpeg,
-                    enhancedJpeg);
+                    request.slotId, parking::toString(reason), request.roi,
+                    originalJpeg, enhancedJpeg);
             });
         require(worker.start(), "worker did not start");
 
@@ -135,7 +159,7 @@ int main() {
                     "camera API evidence filename lost session id");
             const cv::Mat stored = cv::imread(image.original_path);
             require(stored.cols == 320 && stored.rows == 240,
-                    "camera API evidence must remain a full frame before ROI setup");
+                    "full-frame ROI must preserve source dimensions");
         }
 
         const auto session2 = database.createHallSession(

@@ -88,7 +88,8 @@ ctest --test-dir cmake-build --output-on-failure
 ## 실행
 
 현재 로컬 카메라·Gemini 설정과 STM32 UART 자동 탐색을 적용해 실행합니다.
-`.env.fire.local`이 있으면 화재·홀센서 시험 설정도 함께 적용합니다.
+최초 실행 시 `.env.fire.local`을 자동 생성하며, 실행할 때마다 변경된 소스만
+증분 빌드한 후 서버를 시작합니다.
 
 ```bash
 ./run_server.sh
@@ -130,8 +131,8 @@ export HALL_CAPTURE_OCR_ENABLED=true
 # 실기기 반복 시험에서만 예: export CAPTURE_OFFSETS_SEC=5,10
 ```
 
-확정된 입차는 Camera Snapshot API가 활성화된 경우 카메라의 전체 original/enhanced를
-`OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
+확정된 입차는 Camera Snapshot API가 활성화된 경우 카메라의 original/enhanced를
+현재 슬롯 ROI로 잘라 `OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
 `overstay_threshold_seconds` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더 저장하고 같은
 시점에 장기 점유 위반을 판정한다. 값은 SQLite `SYSTEM_SETTINGS`에 저장되며 Qt가
 `GET/PUT /api/v1/settings/overstay-threshold`로 60~86400초 범위에서 변경한다.
@@ -145,11 +146,11 @@ Snapshot API가 비활성이면 기존 RTSP FrameBuffer ROI를 사용한다.
 `CAMERA_SNAPSHOT_API_ENABLED=true`이면 시작·장기점유 증거와 30/60초 scheduler는
 CV5 카메라의
 `/images/generate`를 호출하고 같은 프레임의 original/enhanced JPEG를 즉시 내려받아
-파일·IMAGE_LOG·Gemini OCR로 연결한다. 개선본이 제공되므로 Hall OCR에서는 Pi의
+실행 중 슬롯 ROI로 동일하게 crop한 뒤 파일·IMAGE_LOG·Gemini OCR로 연결한다. 개선본이 제공되므로 Hall OCR에서는 Pi의
 OpenCV 화질 개선을 실행하지 않는다. API가 비활성이면 기존 RTSP FrameBuffer 촬영을
 유지한다. `CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false`이면 API 모드에서 Pi는 RTSP
-수신기와 최초 프레임 대기를 시작하지 않는다. 현재 좌표가 확정되지 않아 API 이미지는
-crop하지 않고 전체 프레임을 저장한다. 상세 설정과 실기기 검증 절차는
+수신기와 최초 프레임 대기를 시작하지 않는다. ROI 웹 도구에서 저장한 좌표는 실행 중인
+서버에 즉시 반영되어 다음 촬영부터 적용된다. 상세 설정과 실기기 검증 절차는
 [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md)에 있다.
 
 가짜 홀센서 입력:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/CameraChannel.hpp"
+#include "snapshot/NormalizedRoi.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -9,13 +10,6 @@
 #include <vector>
 
 namespace snapshot {
-
-struct NormalizedRoi {
-    double x;
-    double y;
-    double width;
-    double height;
-};
 
 struct StoredImagePair {
     std::string originalPath;
@@ -59,15 +53,13 @@ public:
         const NormalizedRoi& roi
     );
 
-    /**
-     * @brief 카메라 CAP 전체 original/enhanced JPEG를 세션·단계별로 저장한다.
-     * @note 실제 슬롯 좌표가 확정되기 전에는 ROI crop을 수행하지 않는다.
-     */
+    /** @brief 카메라 CAP original/enhanced JPEG를 같은 슬롯 ROI로 잘라 저장한다. */
     StoredImagePair saveCameraApiHallCapture(
         const std::string& channel_id,
         std::int64_t session_id,
         const std::string& slot_id,
         const std::string& capture_stage,
+        const NormalizedRoi& roi,
         const std::vector<unsigned char>& original_jpeg,
         const std::vector<unsigned char>& enhanced_jpeg
     );

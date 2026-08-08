@@ -7,14 +7,19 @@
 #include <opencv2/core.hpp>
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <thread>
 
 namespace fs = std::filesystem;
 
 namespace {
+
+constexpr int kMinimumCropPixels = 8;
 
 std::string channelDirectoryName(const std::string& channel_id) {
     if (channel_id.size() > 2 && channel_id.rfind("ch", 0) == 0) {
@@ -41,6 +46,45 @@ std::string stageDirectoryName(const std::string& value) {
     if (value == "HALL_30S") return "hall_30s";
     if (value == "HALL_60S") return "hall_60s";
     return "capture";
+}
+
+bool validNormalizedRoi(const snapshot::NormalizedRoi& roi) {
+    return std::isfinite(roi.x) && std::isfinite(roi.y) &&
+           std::isfinite(roi.width) && std::isfinite(roi.height) &&
+           roi.x >= 0.0 && roi.y >= 0.0 && roi.width > 0.0 &&
+           roi.height > 0.0 && roi.x < 1.0 && roi.y < 1.0 &&
+           roi.x + roi.width <= 1.0 && roi.y + roi.height <= 1.0;
+}
+
+std::optional<std::vector<unsigned char>> cropJpeg(
+    const std::vector<unsigned char>& jpeg,
+    const snapshot::NormalizedRoi& roi) {
+    if (jpeg.empty() || !validNormalizedRoi(roi)) return std::nullopt;
+    const cv::Mat image = cv::imdecode(jpeg, cv::IMREAD_COLOR);
+    if (image.empty()) return std::nullopt;
+
+    const int left = std::clamp(
+        static_cast<int>(std::lround(roi.x * image.cols)), 0, image.cols - 1);
+    const int top = std::clamp(
+        static_cast<int>(std::lround(roi.y * image.rows)), 0, image.rows - 1);
+    const int right = std::clamp(
+        static_cast<int>(std::lround((roi.x + roi.width) * image.cols)),
+        left + 1, image.cols);
+    const int bottom = std::clamp(
+        static_cast<int>(std::lround((roi.y + roi.height) * image.rows)),
+        top + 1, image.rows);
+    if (right - left < kMinimumCropPixels ||
+        bottom - top < kMinimumCropPixels) {
+        return std::nullopt;
+    }
+    const cv::Mat cropped = image(cv::Rect(left, top, right - left,
+                                           bottom - top)).clone();
+    std::vector<unsigned char> encoded;
+    if (!cv::imencode(".jpg", cropped, encoded,
+                      {cv::IMWRITE_JPEG_QUALITY, 95})) {
+        return std::nullopt;
+    }
+    return encoded;
 }
 
 }
@@ -102,7 +146,7 @@ std::string SnapshotStorage::saveEvidenceSnapshot(
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + evidence_reason;
     return saveAreaSnapshot(channel, slot_id, roi, prefix, session_id,
-                            stageDirectoryName(evidence_reason));
+                            stageDirectoryName(evidence_reason) + "/original");
 }
 
 std::string SnapshotStorage::saveHallCaptureSnapshot(
@@ -116,7 +160,7 @@ std::string SnapshotStorage::saveHallCaptureSnapshot(
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + capture_stage;
     return saveAreaSnapshot(channel, slot_id, roi, prefix, session_id,
-                            stageDirectoryName(capture_stage));
+                            stageDirectoryName(capture_stage) + "/original");
 }
 
 StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
@@ -124,25 +168,39 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
     const std::int64_t session_id,
     const std::string& slot_id,
     const std::string& capture_stage,
+    const NormalizedRoi& roi,
     const std::vector<unsigned char>& original_jpeg,
     const std::vector<unsigned char>& enhanced_jpeg
 ) {
-    // CV Snapshot API에는 현재 슬롯 ROI 입력이 없고 실설치 좌표도 미확정이다.
-    // 따라서 카메라가 생성한 전체 JPEG byte를 변경 없이 보존한다.
     if (channel_id.empty() || session_id < 0 || slot_id.empty() ||
         capture_stage.empty() || original_jpeg.empty() ||
         enhanced_jpeg.empty()) {
         util::logError("camera API snapshot contains an empty field or JPEG");
         return {};
     }
+    const auto cropped_original = cropJpeg(original_jpeg, roi);
+    const auto cropped_enhanced = cropJpeg(enhanced_jpeg, roi);
+    if (!cropped_original || !cropped_enhanced) {
+        util::logError("camera API ROI crop failed: session=" +
+                       std::to_string(session_id) + " slot=" + slot_id);
+        return {};
+    }
 
     const fs::path stage_dir = fs::path(snapshot_dir_) /
         channelDirectoryName(channel_id) / slot_id /
         stageDirectoryName(capture_stage);
+    const fs::path original_dir = stage_dir / "original";
+    const fs::path enhanced_dir = stage_dir / "enhanced";
     std::error_code error;
-    fs::create_directories(stage_dir, error);
+    fs::create_directories(original_dir, error);
     if (error) {
-        util::logError("camera API snapshot directory create failed: " +
+        util::logError("camera API original directory create failed: " +
+                       error.message());
+        return {};
+    }
+    fs::create_directories(enhanced_dir, error);
+    if (error) {
+        util::logError("camera API enhanced directory create failed: " +
                        error.message());
         return {};
     }
@@ -151,13 +209,13 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
         std::to_string(next_file_sequence_.fetch_add(1));
     const std::string prefix = "session_" + std::to_string(session_id) +
         "_slot_" + slot_id + "_" + capture_stage + "_CAMERA_API_" + unique;
-    const fs::path original_path = stage_dir / (prefix + "_original.jpg");
-    const fs::path enhanced_path = stage_dir / (prefix + "_enhanced.jpg");
+    const fs::path original_path = original_dir / (prefix + "_original.jpg");
+    const fs::path enhanced_path = enhanced_dir / (prefix + "_enhanced.jpg");
     const fs::path original_temp = original_path.string() + ".tmp";
     const fs::path enhanced_temp = enhanced_path.string() + ".tmp";
 
-    if (!writeBytes(original_temp, original_jpeg) ||
-        !writeBytes(enhanced_temp, enhanced_jpeg)) {
+    if (!writeBytes(original_temp, *cropped_original) ||
+        !writeBytes(enhanced_temp, *cropped_enhanced)) {
         fs::remove(original_temp, error);
         fs::remove(enhanced_temp, error);
         util::logError("camera API JPEG file write failed: session=" +
@@ -218,6 +276,12 @@ std::string SnapshotStorage::saveAreaSnapshot(
                       std::max(1, static_cast<int>((bottom - y) * frame.rows)));
     if (px < 0 || py < 0 || px >= frame.cols || py >= frame.rows || pw <= 0 || ph <= 0) {
         util::logError("Invalid IVA ROI for slot=" + slot_id);
+        return "";
+    }
+    if (pw < kMinimumCropPixels || ph < kMinimumCropPixels) {
+        util::logError("IVA ROI is too small after pixel conversion: slot=" +
+                       slot_id + " size=" + std::to_string(pw) + "x" +
+                       std::to_string(ph));
         return "";
     }
 

@@ -30,6 +30,7 @@
 #include "snapshot/SnapshotStorage.hpp"
 #include "sensor/HallParkingService.hpp"
 #include "settings/OverstayThresholdService.hpp"
+#include "settings/ParkingRoiSettingsService.hpp"
 #include "util/Logger.hpp"
 #include "util/StringUtil.hpp"
 #include "util/TimeUtil.hpp"
@@ -375,6 +376,12 @@ int main() {
         database.close();
         return 1;
     }
+    settings::ParkingRoiSettingsService roi_settings(database,
+                                                      config.iva_areas);
+    if (!roi_settings.initialize()) {
+        database.close();
+        return 1;
+    }
 
     // 센서/통신 스레드는 DB/MQTT I/O를 직접 기다리지 않고 bounded reporter queue에
     // 기록한다. MQTT bridge는 뒤에서 생성되므로 atomic pointer로 준비 상태만 공유한다.
@@ -677,7 +684,10 @@ int main() {
                     },
                     camera_snapshot_api.get(),
                     config.camera_snapshot_api_rtsp_fallback,
-                    plate_illuminator.get());
+                    plate_illuminator.get(),
+                    [&roi_settings](const std::string& slot_id) {
+                        return roi_settings.roiForSlot(slot_id);
+                    });
             capture_runtime =
                 std::make_unique<parking::CaptureSchedulerRuntime>(
                     *capture_scheduler,
@@ -736,17 +746,27 @@ int main() {
         },
         camera_snapshot_api
             ? parking::EvidenceCaptureWorker::Capture{
-                [&camera_snapshot_api, &snapshot_storage, &config](
+                [&camera_snapshot_api, &snapshot_storage, &config,
+                 &roi_settings](
                     const parking::EvidenceCaptureRequest& request,
                     const parking::EvidenceReason reason) {
+                    const auto current_roi =
+                        roi_settings.roiForSlot(request.slotId);
+                    if (!current_roi) {
+                        util::logError(
+                            "evidence ROI is not configured: session=" +
+                            std::to_string(request.sessionId) + " slot=" +
+                            request.slotId);
+                        return snapshot::StoredImagePair{};
+                    }
                     camera::CameraGeneratedImages generated;
                     if (camera_snapshot_api->generate(
                             request.snapshotApiChannel, generated)) {
                         auto paths = snapshot_storage.saveCameraApiHallCapture(
                             request.channel ? request.channel->channel_id : "",
                             request.sessionId, request.slotId,
-                            parking::toString(reason), generated.originalJpeg,
-                            generated.enhancedJpeg);
+                            parking::toString(reason), *current_roi,
+                            generated.originalJpeg, generated.enhancedJpeg);
                         if (!paths.originalPath.empty() &&
                             !paths.enhancedPath.empty()) {
                             util::logLine(
@@ -775,7 +795,7 @@ int main() {
                     return snapshot::StoredImagePair{
                         snapshot_storage.saveEvidenceSnapshot(
                             request.channel, request.sessionId, request.slotId,
-                            parking::toString(reason), request.roi),
+                            parking::toString(reason), *current_roi),
                         {}};
                 }}
             : parking::EvidenceCaptureWorker::Capture{});
@@ -897,7 +917,7 @@ int main() {
         http_config.max_image_bytes = static_cast<std::size_t>(
             std::max(1, config.http_max_image_mb)) * 1024U * 1024U;
         http_server = std::make_unique<http::ParkingHttpServer>(
-            database, http_config, &overstay_settings);
+            database, http_config, &overstay_settings, &roi_settings);
         if (!http_server->start()) {
             g_running.store(false);
             rtsp_receiver.stop();

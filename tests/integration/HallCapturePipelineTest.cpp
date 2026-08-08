@@ -6,6 +6,7 @@
 #include "snapshot/SnapshotStorage.hpp"
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -92,11 +93,15 @@ int main() {
         parking::HallCaptureCoordinator coordinator(std::move(ports));
 
         int draftPublishes{};
+        snapshot::NormalizedRoi currentRoi{0.25, 0.25, 0.5, 0.5};
         parking::HallCaptureExecutor executor(
             channels, storage, coordinator,
             [&draftPublishes](const parking::CaptureRequest&) {
                 ++draftPublishes;
                 return false;  // MQTT 실패와 실제 로컬 촬영 성공은 독립이다.
+            }, nullptr, false, nullptr,
+            [&currentRoi](const std::string&) {
+                return std::optional<snapshot::NormalizedRoi>{currentRoi};
             });
 
         const auto sessionId = database.createHallSession(
@@ -106,6 +111,7 @@ int main() {
         require(executor.execute(request(
                     sessionId, parking::CaptureReason::HallOccupied30s)),
                 "local 30s capture failed when MQTT draft publish failed");
+        currentRoi = {0.0, 0.0, 0.25, 0.25};
         require(executor.execute(request(
                     sessionId, parking::CaptureReason::HallOccupied60s)),
                 "local 60s capture failed");
@@ -126,6 +132,12 @@ int main() {
         for (const auto& image : images)
             require(fs::is_regular_file(image.original_path),
                     "IMAGE_LOG points to a missing capture file");
+        const cv::Mat firstCrop = cv::imread(images[0].original_path);
+        const cv::Mat secondCrop = cv::imread(images[1].original_path);
+        require(firstCrop.cols == 160 && firstCrop.rows == 120,
+                "30s capture did not use the initial live ROI");
+        require(secondCrop.cols == 80 && secondCrop.rows == 60,
+                "60s capture did not read the updated live ROI");
 
         // 같은 단계 재실행은 DB 중복으로 접히고 새로 쓴 파일은 Executor가 지운다.
         require(executor.execute(request(

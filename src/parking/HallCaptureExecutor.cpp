@@ -24,11 +24,12 @@ HallCaptureExecutor::HallCaptureExecutor(
     HallCaptureCoordinator& coordinator,
     DraftPublisher draftPublisher,
     camera::CameraSnapshotApiClient* snapshotApiClient,
-    const bool rtspFallback, PlateIlluminator* illuminator)
+    const bool rtspFallback, PlateIlluminator* illuminator,
+    RoiResolver roiResolver)
     : channels_(channels), storage_(storage), coordinator_(coordinator),
       draftPublisher_(std::move(draftPublisher)),
       snapshotApiClient_(snapshotApiClient), rtspFallback_(rtspFallback),
-      illuminator_(illuminator) {}
+      illuminator_(illuminator), roi_resolver_(std::move(roiResolver)) {}
 
 PlateIlluminator::Scope HallCaptureExecutor::illuminate(
     const CaptureRequest& request) {
@@ -52,6 +53,18 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
             return false;
         }
         const CaptureStage stage = toStage(request.reason);
+        snapshot::NormalizedRoi roi{
+            request.target.roiX, request.target.roiY,
+            request.target.roiWidth, request.target.roiHeight};
+        if (roi_resolver_) {
+            const auto current = roi_resolver_(request.slotId);
+            if (!current) {
+                util::logError("capture ROI is not configured: slot=" +
+                               request.slotId);
+                return false;
+            }
+            roi = *current;
+        }
 
         if (snapshotApiClient_ != nullptr) {
             camera::CameraGeneratedImages generated;
@@ -66,7 +79,7 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
             if (captured) {
                 const auto paths = storage_.saveCameraApiHallCapture(
                     request.target.channelId, sessionId, request.slotId,
-                    toEnhancementType(stage), generated.originalJpeg,
+                    toEnhancementType(stage), roi, generated.originalJpeg,
                     generated.enhancedJpeg);
                 if (paths.originalPath.empty() || paths.enhancedPath.empty())
                     return false;
@@ -108,9 +121,6 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
                           "capture continues slot=" + request.slotId +
                           " session=" + request.sessionId);
         }
-        const snapshot::NormalizedRoi roi{
-            request.target.roiX, request.target.roiY,
-            request.target.roiWidth, request.target.roiHeight};
         std::string path;
         {
             const auto lamp = illuminate(request);

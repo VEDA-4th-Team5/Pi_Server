@@ -26,12 +26,16 @@ struct HallCaptureResult {
     std::int64_t session_id{-1};
     int stage{0};
     bool recognized{false};
+    bool ocr_succeeded{false};
     // Gemini가 응답했으나 번호판을 읽지 못한 경우에만 true다. 요청 실패나 큐
     // 거부처럼 OCR을 시도조차 못한 경우와 구분하기 위해 recognized와 나눠 둔다.
     bool plate_unreadable{false};
     std::string plate_number;
     double confidence{0.0};
     std::string classification{"OCR_FAILED"};
+    std::string raw_text;
+    std::string error_message;
+    std::string processed_at;
 };
 
 using HallCaptureCallback = std::function<void(const HallCaptureResult&)>;

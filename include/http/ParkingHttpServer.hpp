@@ -8,6 +8,7 @@
 namespace database { class EventDatabase; }
 namespace httplib { class Server; }
 namespace settings { class OverstayThresholdService; }
+namespace settings { class ParkingRoiSettingsService; }
 
 namespace http {
 
@@ -23,7 +24,8 @@ struct ServerConfig {
 class ParkingHttpServer {
 public:
     ParkingHttpServer(database::EventDatabase& database, ServerConfig config,
-                      settings::OverstayThresholdService* overstay_settings = nullptr);
+                      settings::OverstayThresholdService* overstay_settings = nullptr,
+                      settings::ParkingRoiSettingsService* roi_settings = nullptr);
     ~ParkingHttpServer();
     ParkingHttpServer(const ParkingHttpServer&) = delete;
     ParkingHttpServer& operator=(const ParkingHttpServer&) = delete;
@@ -35,6 +37,7 @@ private:
     void registerRoutes();
     database::EventDatabase& database_;
     settings::OverstayThresholdService* overstay_settings_{};
+    settings::ParkingRoiSettingsService* roi_settings_{};
     ServerConfig config_;
     std::unique_ptr<httplib::Server> server_;
     std::thread worker_;

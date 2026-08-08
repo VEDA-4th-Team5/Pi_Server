@@ -2,6 +2,7 @@
 
 #include "database/EventDatabase.hpp"
 #include "settings/OverstayThresholdService.hpp"
+#include "settings/ParkingRoiSettingsService.hpp"
 #include "util/Logger.hpp"
 
 #include <httplib.h>
@@ -10,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <algorithm>
+#include <cctype>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -79,13 +82,26 @@ bool parsePositiveId(const std::string& value, int& output) {
         return true;
     } catch (...) { return false; }
 }
+std::string normalizedSlotId(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](const unsigned char character) {
+                       return static_cast<char>(std::toupper(character));
+                   });
+    return value;
+}
+json roiJson(const snapshot::NormalizedRoi& roi) {
+    return {{"x", roi.x}, {"y", roi.y}, {"width", roi.width},
+            {"height", roi.height}};
+}
 }
 
 namespace http {
 ParkingHttpServer::ParkingHttpServer(database::EventDatabase& database,
                                      ServerConfig config,
-                                     settings::OverstayThresholdService* overstay_settings)
+                                     settings::OverstayThresholdService* overstay_settings,
+                                     settings::ParkingRoiSettingsService* roi_settings)
     : database_(database), overstay_settings_(overstay_settings),
+      roi_settings_(roi_settings),
       config_(std::move(config)) {}
 ParkingHttpServer::~ParkingHttpServer() { stop(); }
 
@@ -199,6 +215,80 @@ void ParkingHttpServer::registerRoutes() {
         // 초기 요청서 경로도 유지해 Qt 배포 버전 간 호환성을 보장한다.
         server_->Get("/api/settings/overstay-threshold", get_threshold);
         server_->Put("/api/settings/overstay-threshold", put_threshold);
+    }
+    if (roi_settings_ != nullptr) {
+        server_->Get("/api/v1/settings/parking-slots/roi",
+            [this](const httplib::Request&, httplib::Response& res) {
+                json items = json::array();
+                for (const auto& setting : roi_settings_->list()) {
+                    items.push_back({{"slotId", setting.slotId},
+                                     {"roi", roiJson(setting.roi)}});
+                }
+                sendJson(res, {{"items", items}, {"count", items.size()}});
+            });
+        server_->Get(
+            R"(/api/v1/settings/parking-slots/([^/]+)/roi)",
+            [this](const httplib::Request& req, httplib::Response& res) {
+                const std::string slot_id =
+                    normalizedSlotId(req.matches[1].str());
+                const auto roi = roi_settings_->roiForSlot(slot_id);
+                if (!roi) {
+                    sendError(res, 404, "SLOT_NOT_FOUND",
+                              "ROI가 설정된 주차면을 찾을 수 없습니다.");
+                    return;
+                }
+                sendJson(res, {{"slotId", slot_id}, {"roi", roiJson(*roi)}});
+            });
+        server_->Put(
+            R"(/api/v1/settings/parking-slots/([^/]+)/roi)",
+            [this](const httplib::Request& req, httplib::Response& res) {
+                json body;
+                try {
+                    body = json::parse(req.body);
+                } catch (...) {
+                    sendJson(res, {{"success", false},
+                                   {"error", "request body must be valid JSON"}},
+                             400);
+                    return;
+                }
+                for (const char* field : {"x", "y", "width", "height"}) {
+                    if (!body.is_object() || !body.contains(field) ||
+                        !body[field].is_number()) {
+                        sendJson(res, {{"success", false},
+                                       {"error", std::string(field) +
+                                           " must be a number"}}, 400);
+                        return;
+                    }
+                }
+                snapshot::NormalizedRoi roi{};
+                try {
+                    roi = {body["x"].get<double>(), body["y"].get<double>(),
+                           body["width"].get<double>(),
+                           body["height"].get<double>()};
+                } catch (...) {
+                    sendJson(res, {{"success", false},
+                                   {"error", "ROI values are invalid"}}, 400);
+                    return;
+                }
+                const std::string slot_id =
+                    normalizedSlotId(req.matches[1].str());
+                const auto result = roi_settings_->update(slot_id, roi);
+                if (!result.slotFound) {
+                    sendJson(res, {{"success", false},
+                                   {"error", result.error}}, 404);
+                    return;
+                }
+                if (!result.success) {
+                    const int status = settings::ParkingRoiSettingsService::isValid(roi)
+                        ? 500 : 400;
+                    sendJson(res, {{"success", false},
+                                   {"error", result.error}}, status);
+                    return;
+                }
+                sendJson(res, {{"success", true}, {"slotId", slot_id},
+                               {"appliedImmediately", true},
+                               {"roi", roiJson(result.roi)}});
+            });
     }
     server_->Get("/api/v1/parking-slots", [this](const httplib::Request&, httplib::Response& res) {
         std::vector<database::ParkingSlotView> slots;

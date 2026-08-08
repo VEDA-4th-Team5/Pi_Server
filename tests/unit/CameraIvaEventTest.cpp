@@ -158,9 +158,9 @@ int main() {
 
     auto aggregateSlots = std::vector<parking::ParkingSlotConfig>{
         slot("EV01", "vs-0", "name1"),
-        slot("EV04", "vs-0", "name3")};
-    aggregateSlots[1].cameraBindings.push_back(
-        {"cam01", "vs-0", "name4", true, 90});
+        slot("EV02", "vs-0", "name2"),
+        slot("EV03", "vs-0", "name3"),
+        slot("EV04", "vs-0", "name4")};
     event::IvaSlotOccupancyAggregator aggregator(aggregateSlots);
     auto aggregate = aggregator.update(
         "EV01", "cam01", "vs-0", "name1", true);
@@ -173,19 +173,16 @@ int main() {
     success &= expect(aggregate && !aggregate->occupied &&
                           aggregate->knownAreaCount == 1,
                       "inactive name1 must clear EV01");
-    success &= expect(!aggregator.update(
-                          "EV04", "cam01", "vs-0", "name3", false),
-                      "one inactive area with unknown peer must not clear EV04");
     aggregate = aggregator.update(
         "EV04", "cam01", "VideoSourceToken-0", "name4", false);
     success &= expect(aggregate && !aggregate->occupied,
-                      "name3/name4 inactive must clear EV04");
+                      "inactive name4 must clear EV04");
     aggregate = aggregator.update(
-        "EV04", "cam01", "vs-0", "name3", true);
+        "EV04", "cam01", "vs-0", "name4", true);
     success &= expect(aggregate && aggregate->occupied,
-                      "active name3 must occupy EV04");
+                      "active name4 must occupy EV04");
     success &= expect(!aggregator.update(
-                          "EV04", "cam01", "vs-0", "name3", true),
+                          "EV04", "cam01", "vs-0", "name4", true),
                       "duplicate IVA state must not emit another transition");
 
     const std::string bundledNotifications = R"(

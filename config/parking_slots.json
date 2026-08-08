@@ -22,14 +22,30 @@
         "enabled": true,
         "zone_type": "ev_charging",
         "sensor_id": "HALL02",
-        "camera_bindings": []
+        "camera_bindings": [
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-0",
+            "rule_name": "name2",
+            "enabled": true,
+            "priority": 100
+          }
+        ]
       },
       {
         "slot_id": "EV03",
         "enabled": true,
         "zone_type": "ev_charging",
         "sensor_id": "HALL03",
-        "camera_bindings": []
+        "camera_bindings": [
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-0",
+            "rule_name": "name3",
+            "enabled": true,
+            "priority": 100
+          }
+        ]
       },
       {
         "slot_id": "EV04",
@@ -40,16 +56,9 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "name3",
-            "enabled": true,
-            "priority": 100
-          },
-          {
-            "camera_id": "cam01",
-            "video_source_token": "vs-0",
             "rule_name": "name4",
             "enabled": true,
-            "priority": 90
+            "priority": 100
           }
         ]
       }

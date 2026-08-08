@@ -36,6 +36,15 @@ target_compile_options(gemini-ocr-test PRIVATE -Wall -Wextra)
 target_link_libraries(gemini-ocr-test PRIVATE
     PkgConfig::OPENCV PkgConfig::CURL Threads::Threads)
 
+# 외부 Gemini 호출 없이 HTTP 상태/JSON/MIME/fallback 계약을 검증한다.
+add_executable(gemini-ocr-client-test
+    tests/unit/GeminiOcrClientTest.cpp
+    src/ocr/GeminiOcrClient.cpp)
+target_include_directories(gemini-ocr-client-test PRIVATE include)
+target_compile_options(gemini-ocr-client-test PRIVATE -Wall -Wextra)
+target_link_libraries(gemini-ocr-client-test PRIVATE PkgConfig::CURL)
+add_test(NAME gemini-ocr-client-test COMMAND gemini-ocr-client-test)
+
 add_executable(db-manager-test
     tests/integration/DbManagerTest.c
     src/database/db_manager.c)
@@ -370,7 +379,8 @@ add_test(NAME camera-snapshot-api-client-test
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
     src/http/ParkingHttpServer.cpp
-    src/settings/OverstayThresholdService.cpp)
+    src/settings/OverstayThresholdService.cpp
+    src/settings/ParkingRoiSettingsService.cpp)
 target_include_directories(http-api-test PRIVATE include)
 target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE

@@ -9,6 +9,8 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace parking {
@@ -17,6 +19,8 @@ namespace parking {
 class HallCaptureExecutor {
 public:
     using DraftPublisher = std::function<bool(const CaptureRequest&)>;
+    using RoiResolver = std::function<std::optional<snapshot::NormalizedRoi>(
+        const std::string& slot_id)>;
 
     HallCaptureExecutor(
         std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
@@ -25,7 +29,8 @@ public:
         DraftPublisher draftPublisher,
         camera::CameraSnapshotApiClient* snapshotApiClient = nullptr,
         bool rtspFallback = false,
-        PlateIlluminator* illuminator = nullptr);
+        PlateIlluminator* illuminator = nullptr,
+        RoiResolver roiResolver = {});
 
     /** @return 실제 RTSP 파일·DB 처리가 성공했거나 더 이상 재시도할 필요가 없으면 true. */
     bool execute(const CaptureRequest& request) noexcept;
@@ -43,6 +48,7 @@ private:
     bool rtspFallback_{};
     // 노출 구간에만 번호판 조명을 켠다. 없으면 조명 없이 촬영한다.
     PlateIlluminator* illuminator_{};
+    RoiResolver roi_resolver_;
 };
 
 }  // namespace parking

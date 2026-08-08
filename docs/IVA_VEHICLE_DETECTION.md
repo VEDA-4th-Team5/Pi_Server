@@ -20,13 +20,15 @@ Hanwha WiseAI IVA Area
 
 ## 2026-08-05 배치 기준
 
-현재 실기기 배치는 한 카메라 채널의 고정 화면 안에서 여러 WiseAI 영역을 실제
-주차면 하나로 묶는 구조다. 영역 상태는 슬롯별 OR 조건으로 집계한다.
+현재 실기기 배치는 한 카메라 채널의 고정 화면 안에서 WiseAI 기본 영역
+`name1`~`name4`를 EV 주차면과 1:1로 매핑한다.
 
 | 서버 채널 | Video source token | IVA Rule | 전역 slot_id | Snapshot API channel |
 |---|---|---|---|---:|
 | `ch01` | `vs-0` | `name1` | `EV01` | 0 |
-| `ch01` | `vs-0` | `name3`, `name4` | `EV04` | 0 |
+| `ch01` | `vs-0` | `name2` | `EV02` | 0 |
+| `ch01` | `vs-0` | `name3` | `EV03` | 0 |
+| `ch01` | `vs-0` | `name4` | `EV04` | 0 |
 
 네 슬롯은 같은 전체 프레임을 공유하지만 ROI가 서로 다르다. 실제 좌표는 카메라
 설치 후 캡처한 기준 프레임에서 측정하며 문서가 임의 값을 확정하지 않는다.
@@ -59,7 +61,8 @@ camera_id + video_source_token + rule_name
 
 슬롯별 ROI와 서버 채널은 `AppConfig::iva_areas`에서 가져온다. 운영 전에
 `.env.iva.local` 또는 환경변수로 `IVA_EV01_ROI_X` 등의 정규화 좌표를 설정해야
-한다. 설정하지 않으면 기존 호환 동작으로 전체 프레임 `(0, 0, 1, 1)`을 사용한다.
+한다. 또는 Qt가 REST API로 좌표를 SQLite에 저장할 수 있다. 두 위치 모두에
+좌표가 없으면 전체 프레임을 임의로 사용하지 않고 해당 슬롯 촬영/OCR을 건너뛴다.
 
 좌표는 이미지 디렉터리마다 별도 파일로 복제하지 않고 슬롯 설정 한 곳에서 관리한다.
 장기적으로는 `config/parking_slots.json`의 각 `camera_bindings`에 다음 정보를 함께
@@ -88,12 +91,21 @@ ROI는 입력 해상도와 무관한 0.0~1.0 정규화 좌표를 사용한다. �
 data/snapshots/ch1/
 └─ EV01/
    ├─ occupancy_start/
+   │  ├─ original/
+   │  └─ enhanced/
    ├─ hall_30s/
+   │  ├─ original/
+   │  └─ enhanced/
    ├─ hall_60s/
+   │  ├─ original/
+   │  └─ enhanced/
    └─ overstay/
+      ├─ original/
+      └─ enhanced/
 ```
 
-각 촬영 단계의 original/enhanced 파일은 같은 단계 디렉터리에 둔다. 세션에
+각 촬영 단계의 original/enhanced 파일은 각각 `original/`과 `enhanced/`
+하위 디렉터리에 둔다. 세션에
 연결되지 않은 IVA 진단 이미지만 `EV01/events/iva/`에 격리한다.
 
 ## Hall 센서 없이 운영하는 상태 머신
@@ -134,13 +146,11 @@ BestShot/Plate 이벤트
 
 ```text
 .../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name1
-.../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name3
 .../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name4
 ```
 
-`name1`은 EV01, `name3 || name4`는 EV04다. 한 영역의 비활성
-이벤트만으로 출차시키지 않고 같은 슬롯의 모든 영역이 비활성일 때만 VACANT를
-전달한다.
+`name1`~`name4`는 각각 `EV01`~`EV04`다. 각 영역의 비활성 이벤트는 대응하는
+슬롯의 VACANT 후보로 전달한다.
 
 아래 고정 Publication은 카메라 설정 진단용으로만 보존하며 운영 점유 입력으로
 사용하지 않는다. 같은 Intrusion Event Rule에 연결하면 ENTER와 EXIT가 동시에
@@ -174,12 +184,14 @@ IVA MQTT active 수신
 → CameraSnapshotApiClient /images/generate 호출
 → 해당 API channel의 original/enhanced JPEG 즉시 다운로드
 → data/snapshots/ch1/EVxx/<stage> 저장
+→ 카메라 enhanced ROI를 Gemini OCR 우선 입력으로 사용
 → IMAGE_LOG / OCR / Qt 이벤트 연결
 ```
 
 MQTT는 촬영 신호와 식별자만 전달하고 JPEG는 Snapshot HTTP API로 내려받는다. Pi는
-카메라 개선본에 CLAHE/Sharpen을 다시 적용하지 않는다. 실제 슬롯 좌표가 아직 확정되지
-않아 현재는 전체 프레임을 저장하며 crop은 구현하지 않았다. 이 방식으로
+카메라 개선본에 CLAHE/Sharpen을 다시 적용하지 않고 슬롯 ROI crop만 수행한다.
+홀 촬영 OCR은 카메라 `enhanced` 파일을 우선 사용하고 파일이 누락·손상된
+경우에만 `original`로 fallback한다. 이 방식으로
 Qt의 RTSP 스트리밍과 Pi의 이벤트 촬영을 분리하고 Pi의 연속 영상 디코딩을 제거한다.
 
 Snapshot API가 반환하는 것은 호출 시점의 현재 프레임이다. IVA가 감지된 바로 그
@@ -223,7 +235,8 @@ ctest --test-dir cmake-build \
 - Rule 이름이 없는 이벤트 거부
 - 비활성 이벤트 판별
 - 모호한 camera/token/rule 설정 거부
-- `name1 → EV01`, `name3 || name4 → EV04` 점유 집계
+- `name1 → EV01`, `name2 → EV02`, `name3 → EV03`, `name4 → EV04`
+  1:1 점유 매핑
 - EXIT 확인 전 세션 유지 및 ENTER 재수신 취소
 - 조기 EXIT의 이미지·IMAGE_LOG 삭제
 - `violation_at`이 있는 EXIT의 증거 보존
