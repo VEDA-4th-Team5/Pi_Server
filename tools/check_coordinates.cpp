@@ -331,8 +331,10 @@ main{max-width:1400px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 12px
 .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 select,button{font:inherit;padding:8px 12px;border-radius:6px;border:1px solid #4b5563}
 button{background:#2563eb;color:white;cursor:pointer}button:disabled{opacity:.45}
-.canvas-wrap{background:#000;border:1px solid #374151;overflow:auto}
-canvas{display:block;width:100%;height:auto;cursor:crosshair;touch-action:none}
+.canvas-wrap{background:#000;border:1px solid #374151;overflow:auto;text-align:center}
+.stage{position:relative;display:inline-block;max-width:100%;line-height:0}
+#frame{display:block;max-width:100%;height:auto}
+#overlay{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;touch-action:none}
 pre{white-space:pre-wrap;background:#030712;padding:14px;border-radius:6px;min-height:120px}
 .hint{color:#9ca3af}.ok{color:#86efac}.error{color:#fca5a5}
 </style>
@@ -349,26 +351,32 @@ pre{white-space:pre-wrap;background:#030712;padding:14px;border-radius:6px;min-h
 <button id="save" disabled>좌표 저장 및 출력</button>
 <button id="reset">다시 선택</button>
 <span class="hint">주차면 왼쪽 위에서 오른쪽 아래로 드래그하세요.</span></div>
-<div class="canvas-wrap"><canvas id="canvas"></canvas></div>
+<div class="canvas-wrap"><div class="stage">
+<img id="frame" src="/frame.jpg" alt="카메라 기준 프레임">
+<canvas id="overlay"></canvas>
+</div></div>
 <pre id="result">프레임을 불러오는 중입니다...</pre>
 </main>
 <script>
-const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
-const result=document.getElementById('result'),save=document.getElementById('save');
-const image=new Image();let start=null,current=null,selection=null;
-function point(event){const r=canvas.getBoundingClientRect();return{
-x:Math.max(0,Math.min(canvas.width,Math.round((event.clientX-r.left)*canvas.width/r.width))),
-y:Math.max(0,Math.min(canvas.height,Math.round((event.clientY-r.top)*canvas.height/r.height)))};}
-function draw(){ctx.drawImage(image,0,0);if(!current)return;const x=Math.min(start.x,current.x),y=Math.min(start.y,current.y);
-const w=Math.abs(current.x-start.x),h=Math.abs(current.y-start.y);ctx.strokeStyle='#00ff66';ctx.lineWidth=Math.max(2,canvas.width/640);ctx.strokeRect(x,y,w,h);}
-image.onload=()=>{canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;draw();result.textContent=`image_size=${canvas.width}x${canvas.height}\n영역을 드래그하세요.`};
-image.onerror=()=>{result.className='error';result.textContent='프레임을 불러오지 못했습니다.'};image.src='/frame.jpg';
-canvas.addEventListener('pointerdown',e=>{start=point(e);current=start;selection=null;save.disabled=true;canvas.setPointerCapture(e.pointerId);draw();});
-canvas.addEventListener('pointermove',e=>{if(!start)return;current=point(e);draw();});
-canvas.addEventListener('pointerup',e=>{if(!start)return;current=point(e);const x=Math.min(start.x,current.x),y=Math.min(start.y,current.y);
-const width=Math.abs(current.x-start.x),height=Math.abs(current.y-start.y);start=null;if(width<2||height<2){current=null;draw();return;}
-selection={x,y,width,height};save.disabled=false;result.className='';result.textContent=`pixel_roi=${x},${y},${width},${height}\n저장 버튼을 누르면 정규화 좌표가 출력됩니다.`;});
-document.getElementById('reset').onclick=()=>{start=null;current=null;selection=null;save.disabled=true;draw();result.textContent='영역을 다시 드래그하세요.'};
+const frame=document.getElementById('frame'),overlay=document.getElementById('overlay');
+const ctx=overlay.getContext('2d'),result=document.getElementById('result');
+const save=document.getElementById('save');let start=null,current=null,selection=null;
+function point(event){const r=overlay.getBoundingClientRect();return{
+x:Math.max(0,Math.min(overlay.width,Math.round((event.clientX-r.left)*overlay.width/r.width))),
+y:Math.max(0,Math.min(overlay.height,Math.round((event.clientY-r.top)*overlay.height/r.height)))};}
+function rectangle(a,b){return{x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),width:Math.abs(b.x-a.x),height:Math.abs(b.y-a.y)};}
+function draw(){ctx.clearRect(0,0,overlay.width,overlay.height);const area=start&&current?rectangle(start,current):selection;if(!area)return;
+ctx.fillStyle='rgba(0,255,102,.14)';ctx.fillRect(area.x,area.y,area.width,area.height);ctx.strokeStyle='#00ff66';
+ctx.lineWidth=Math.max(3,overlay.width/650);ctx.strokeRect(area.x,area.y,area.width,area.height);}
+frame.onload=()=>{overlay.width=frame.naturalWidth;overlay.height=frame.naturalHeight;draw();result.className='';result.textContent=`image_size=${overlay.width}x${overlay.height}\n1. 슬롯 선택 → 2. 주차 영역 드래그 → 3. 저장 버튼 클릭`;};
+frame.onerror=()=>{result.className='error';result.textContent='카메라 프레임을 불러오지 못했습니다. /frame.jpg 연결을 확인하세요.'};
+overlay.addEventListener('pointerdown',e=>{e.preventDefault();start=point(e);current=start;selection=null;save.disabled=true;overlay.setPointerCapture(e.pointerId);draw();});
+overlay.addEventListener('pointermove',e=>{if(!start)return;current=point(e);draw();const area=rectangle(start,current);result.textContent=`선택 중: ${area.x},${area.y},${area.width},${area.height}`;});
+overlay.addEventListener('pointerup',e=>{if(!start)return;current=point(e);const area=rectangle(start,current);start=null;current=null;
+if(area.width<2||area.height<2){selection=null;draw();result.textContent='영역이 너무 작습니다. 다시 드래그하세요.';return;}
+selection=area;draw();save.disabled=false;result.className='';result.textContent=`pixel_roi=${area.x},${area.y},${area.width},${area.height}\n저장 버튼을 누르면 정규화 좌표가 출력됩니다.`;});
+overlay.addEventListener('pointercancel',()=>{start=null;current=null;draw();});
+document.getElementById('reset').onclick=()=>{start=null;current=null;selection=null;save.disabled=true;draw();result.className='';result.textContent='영역을 다시 드래그하세요.'};
 save.onclick=async()=>{if(!selection)return;const body=new URLSearchParams({...selection,slot:document.getElementById('slot').value});
 try{const response=await fetch('/selection',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
 const text=await response.text();result.className=response.ok?'ok':'error';result.textContent=text;}catch(error){result.className='error';result.textContent=String(error);}};
@@ -387,6 +395,7 @@ int runWebServer(const cv::Mat& image, const Options& options) {
     httplib::Server server;
     const std::string page = buildWebPage(options.slotId);
     server.Get("/", [&page](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Cache-Control", "no-store");
         res.set_content(page, "text/html; charset=utf-8");
     });
     server.Get("/frame.jpg", [&jpeg](const httplib::Request&,
