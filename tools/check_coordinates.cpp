@@ -3,6 +3,8 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
+#include <httplib.h>
+
 #include <algorithm>
 #include <charconv>
 #include <cctype>
@@ -28,6 +30,9 @@ struct Options {
     std::optional<cv::Rect> rectangle;
     int displayMaxWidth{1280};
     int warmupFrames{5};
+    int webPort{8091};
+    std::string bindAddress{"127.0.0.1"};
+    bool webMode{false};
     bool showHelp{false};
 };
 
@@ -38,6 +43,7 @@ void printUsage(std::ostream& output) {
         << "  check_coordinates --rtsp-env CAMERA_RTSP --slot EV01\n"
         << "  check_coordinates --image <jpeg> --slot EV01 "
            "--rect x,y,width,height\n\n"
+        << "  check_coordinates --image <jpeg> --web --port 8091\n\n"
         << "Options:\n"
         << "  --image <path>            Load an existing reference image.\n"
         << "  --rtsp-env <name>         Read the RTSP URL from an environment "
@@ -52,6 +58,10 @@ void printUsage(std::ostream& output) {
            "(default: 1280).\n"
         << "  --warmup-frames <count>   RTSP frames read before selection "
            "(default: 5).\n"
+        << "  --web                      Start the browser ROI selector.\n"
+        << "  --bind <address>           Web listen address (default: "
+           "127.0.0.1).\n"
+        << "  --port <number>            Web listen port (default: 8091).\n"
         << "  --help                     Show this help.\n\n"
         << "If no source is supplied, CAMERA_RTSP_CH1 and then CAMERA_RTSP are "
            "checked.\n";
@@ -131,6 +141,18 @@ std::optional<Options> parseOptions(const int argc, char** argv,
                 error = "--warmup-frames must be between 1 and 300";
                 return std::nullopt;
             }
+        } else if (argument == "--web") {
+            options.webMode = true;
+        } else if (argument == "--bind") {
+            if (!readValue(index, argc, argv, options.bindAddress, error))
+                return std::nullopt;
+        } else if (argument == "--port") {
+            if (!readValue(index, argc, argv, value, error) ||
+                !parseInteger(value, options.webPort) ||
+                options.webPort < 1024 || options.webPort > 65535) {
+                error = "--port must be between 1024 and 65535";
+                return std::nullopt;
+            }
         } else {
             error = "unknown option: " + argument;
             return std::nullopt;
@@ -139,6 +161,14 @@ std::optional<Options> parseOptions(const int argc, char** argv,
 
     if (!options.imagePath.empty() && !options.rtspEnvironment.empty()) {
         error = "--image and --rtsp-env cannot be used together";
+        return std::nullopt;
+    }
+    if (options.bindAddress.empty()) {
+        error = "--bind must not be empty";
+        return std::nullopt;
+    }
+    if (options.webMode && options.rectangle) {
+        error = "--web and --rect cannot be used together";
         return std::nullopt;
     }
     if (options.slotId.empty() ||
@@ -246,25 +276,189 @@ bool savePreview(const cv::Mat& image, const cv::Rect& rectangle,
     return cv::imwrite(outputPath, preview);
 }
 
-void printCoordinates(const cv::Size& imageSize, const cv::Rect& rectangle,
-                      const std::string& slotId,
-                      const std::string& outputPath) {
+std::string coordinateReport(const cv::Size& imageSize,
+                             const cv::Rect& rectangle,
+                             const std::string& slotId,
+                             const std::string& outputPath) {
     const double x = static_cast<double>(rectangle.x) / imageSize.width;
     const double y = static_cast<double>(rectangle.y) / imageSize.height;
     const double width = static_cast<double>(rectangle.width) / imageSize.width;
     const double height =
         static_cast<double>(rectangle.height) / imageSize.height;
-    std::cout << "image_size=" << imageSize.width << 'x' << imageSize.height
-              << '\n'
-              << "slot_id=" << slotId << '\n'
-              << "pixel_roi=" << rectangle.x << ',' << rectangle.y << ','
-              << rectangle.width << ',' << rectangle.height << '\n'
-              << std::fixed << std::setprecision(6)
-              << "IVA_" << slotId << "_ROI_X=" << x << '\n'
-              << "IVA_" << slotId << "_ROI_Y=" << y << '\n'
-              << "IVA_" << slotId << "_ROI_WIDTH=" << width << '\n'
-              << "IVA_" << slotId << "_ROI_HEIGHT=" << height << '\n'
-              << "preview_path=" << outputPath << '\n';
+    std::ostringstream output;
+    output << "image_size=" << imageSize.width << 'x' << imageSize.height
+           << '\n'
+           << "slot_id=" << slotId << '\n'
+           << "pixel_roi=" << rectangle.x << ',' << rectangle.y << ','
+           << rectangle.width << ',' << rectangle.height << '\n'
+           << std::fixed << std::setprecision(6)
+           << "IVA_" << slotId << "_ROI_X=" << x << '\n'
+           << "IVA_" << slotId << "_ROI_Y=" << y << '\n'
+           << "IVA_" << slotId << "_ROI_WIDTH=" << width << '\n'
+           << "IVA_" << slotId << "_ROI_HEIGHT=" << height << '\n'
+           << "preview_path=" << outputPath << '\n';
+    return output.str();
+}
+
+bool validSlotId(const std::string& value) {
+    return !value.empty() &&
+           std::all_of(value.begin(), value.end(),
+                       [](const unsigned char character) {
+                           return std::isalnum(character) != 0 ||
+                                  character == '_' || character == '-';
+                       });
+}
+
+std::string normalizedSlotId(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](const unsigned char character) {
+                       return static_cast<char>(std::toupper(character));
+                   });
+    return value;
+}
+
+std::string buildWebPage(const std::string& initialSlot) {
+    std::ostringstream html;
+    html << R"HTML(<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IVA ROI Coordinate Checker</title>
+<style>
+body{margin:0;background:#111827;color:#f3f4f6;font-family:system-ui,sans-serif}
+main{max-width:1400px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 12px}
+.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select,button{font:inherit;padding:8px 12px;border-radius:6px;border:1px solid #4b5563}
+button{background:#2563eb;color:white;cursor:pointer}button:disabled{opacity:.45}
+.canvas-wrap{background:#000;border:1px solid #374151;overflow:auto}
+canvas{display:block;width:100%;height:auto;cursor:crosshair;touch-action:none}
+pre{white-space:pre-wrap;background:#030712;padding:14px;border-radius:6px;min-height:120px}
+.hint{color:#9ca3af}.ok{color:#86efac}.error{color:#fca5a5}
+</style>
+</head>
+<body><main>
+<h1>IVA ROI Coordinate Checker</h1>
+<div class="toolbar"><label>주차면 <select id="slot">)HTML";
+    for (const std::string slot : {"EV01", "EV02", "EV03", "EV04"}) {
+        html << "<option value=\"" << slot << "\""
+             << (slot == initialSlot ? " selected" : "") << '>' << slot
+             << "</option>";
+    }
+    html << R"HTML(</select></label>
+<button id="save" disabled>좌표 저장 및 출력</button>
+<button id="reset">다시 선택</button>
+<span class="hint">주차면 왼쪽 위에서 오른쪽 아래로 드래그하세요.</span></div>
+<div class="canvas-wrap"><canvas id="canvas"></canvas></div>
+<pre id="result">프레임을 불러오는 중입니다...</pre>
+</main>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const result=document.getElementById('result'),save=document.getElementById('save');
+const image=new Image();let start=null,current=null,selection=null;
+function point(event){const r=canvas.getBoundingClientRect();return{
+x:Math.max(0,Math.min(canvas.width,Math.round((event.clientX-r.left)*canvas.width/r.width))),
+y:Math.max(0,Math.min(canvas.height,Math.round((event.clientY-r.top)*canvas.height/r.height)))};}
+function draw(){ctx.drawImage(image,0,0);if(!current)return;const x=Math.min(start.x,current.x),y=Math.min(start.y,current.y);
+const w=Math.abs(current.x-start.x),h=Math.abs(current.y-start.y);ctx.strokeStyle='#00ff66';ctx.lineWidth=Math.max(2,canvas.width/640);ctx.strokeRect(x,y,w,h);}
+image.onload=()=>{canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;draw();result.textContent=`image_size=${canvas.width}x${canvas.height}\n영역을 드래그하세요.`};
+image.onerror=()=>{result.className='error';result.textContent='프레임을 불러오지 못했습니다.'};image.src='/frame.jpg';
+canvas.addEventListener('pointerdown',e=>{start=point(e);current=start;selection=null;save.disabled=true;canvas.setPointerCapture(e.pointerId);draw();});
+canvas.addEventListener('pointermove',e=>{if(!start)return;current=point(e);draw();});
+canvas.addEventListener('pointerup',e=>{if(!start)return;current=point(e);const x=Math.min(start.x,current.x),y=Math.min(start.y,current.y);
+const width=Math.abs(current.x-start.x),height=Math.abs(current.y-start.y);start=null;if(width<2||height<2){current=null;draw();return;}
+selection={x,y,width,height};save.disabled=false;result.className='';result.textContent=`pixel_roi=${x},${y},${width},${height}\n저장 버튼을 누르면 정규화 좌표가 출력됩니다.`;});
+document.getElementById('reset').onclick=()=>{start=null;current=null;selection=null;save.disabled=true;draw();result.textContent='영역을 다시 드래그하세요.'};
+save.onclick=async()=>{if(!selection)return;const body=new URLSearchParams({...selection,slot:document.getElementById('slot').value});
+try{const response=await fetch('/selection',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+const text=await response.text();result.className=response.ok?'ok':'error';result.textContent=text;}catch(error){result.className='error';result.textContent=String(error);}};
+</script></body></html>)HTML";
+    return html.str();
+}
+
+int runWebServer(const cv::Mat& image, const Options& options) {
+    std::vector<unsigned char> jpeg;
+    if (!cv::imencode(".jpg", image, jpeg,
+                      {cv::IMWRITE_JPEG_QUALITY, 92})) {
+        std::cerr << "error: web reference JPEG encoding failed\n";
+        return EXIT_FAILURE;
+    }
+
+    httplib::Server server;
+    const std::string page = buildWebPage(options.slotId);
+    server.Get("/", [&page](const httplib::Request&, httplib::Response& res) {
+        res.set_content(page, "text/html; charset=utf-8");
+    });
+    server.Get("/frame.jpg", [&jpeg](const httplib::Request&,
+                                     httplib::Response& res) {
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(reinterpret_cast<const char*>(jpeg.data()), jpeg.size(),
+                        "image/jpeg");
+    });
+    server.Get("/health", [](const httplib::Request&,
+                              httplib::Response& res) {
+        res.set_content("ok\n", "text/plain; charset=utf-8");
+    });
+    server.Post("/selection", [&image, &options](const httplib::Request& req,
+                                                  httplib::Response& res) {
+        for (const char* field : {"slot", "x", "y", "width", "height"}) {
+            if (!req.has_param(field)) {
+                res.status = 400;
+                res.set_content(std::string("missing field: ") + field + '\n',
+                                "text/plain; charset=utf-8");
+                return;
+            }
+        }
+
+        std::string slot = normalizedSlotId(req.get_param_value("slot"));
+        int x{}, y{}, width{}, height{};
+        if (!validSlotId(slot) ||
+            !parseInteger(req.get_param_value("x"), x) ||
+            !parseInteger(req.get_param_value("y"), y) ||
+            !parseInteger(req.get_param_value("width"), width) ||
+            !parseInteger(req.get_param_value("height"), height)) {
+            res.status = 400;
+            res.set_content("invalid slot or rectangle fields\n",
+                            "text/plain; charset=utf-8");
+            return;
+        }
+
+        const cv::Rect rectangle(x, y, width, height);
+        if (!rectangleIsValid(rectangle, image.size())) {
+            res.status = 400;
+            res.set_content("ROI is outside image bounds\n",
+                            "text/plain; charset=utf-8");
+            return;
+        }
+        const std::string outputPath = options.outputPath.empty()
+            ? "data/roi_checks/" + slot + "_roi_preview.jpg"
+            : options.outputPath;
+        if (!savePreview(image, rectangle, slot, outputPath)) {
+            res.status = 500;
+            res.set_content("preview image could not be saved\n",
+                            "text/plain; charset=utf-8");
+            return;
+        }
+        const std::string report =
+            coordinateReport(image.size(), rectangle, slot, outputPath);
+        std::cout << report << std::flush;
+        res.set_content(report, "text/plain; charset=utf-8");
+    });
+
+    std::cout << "check_coordinates web mode started\n"
+              << "listen=" << options.bindAddress << ':' << options.webPort
+              << '\n';
+    if (options.bindAddress == "127.0.0.1" ||
+        options.bindAddress == "localhost") {
+        std::cout << "open=http://127.0.0.1:" << options.webPort
+                  << " (use VS Code port forwarding for remote SSH)\n";
+    } else {
+        std::cout << "open=http://<PI_IP>:" << options.webPort << '\n'
+                  << "warning=the calibration page has no authentication\n";
+    }
+    return server.listen(options.bindAddress, options.webPort)
+               ? EXIT_SUCCESS
+               : EXIT_FAILURE;
 }
 
 }  // namespace
@@ -308,6 +502,10 @@ int main(const int argc, char** argv) {
         }
     }
 
+    if (options.webMode) {
+        return runWebServer(image, options);
+    }
+
     if (options.outputPath.empty()) {
         options.outputPath =
             "data/roi_checks/" + options.slotId + "_roi_preview.jpg";
@@ -343,7 +541,7 @@ int main(const int argc, char** argv) {
         std::cerr << "error: preview image could not be saved\n";
         return EXIT_FAILURE;
     }
-    printCoordinates(image.size(), *rectangle, options.slotId,
-                     options.outputPath);
+    std::cout << coordinateReport(image.size(), *rectangle, options.slotId,
+                                  options.outputPath);
     return EXIT_SUCCESS;
 }

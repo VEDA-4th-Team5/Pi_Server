@@ -51,6 +51,38 @@ export CAMERA_RTSP='rtsp://USER:PASSWORD@CAMERA_IP:554/profile2/media.smp'
 
 ## GUI 없는 SSH 환경
 
+### 브라우저 웹 모드
+
+VS Code Remote SSH에서는 로컬 포트 전달을 사용해 브라우저에서 직접 영역을
+드래그할 수 있다. 기본 바인딩은 외부에 노출되지 않는 `127.0.0.1:8091`이다.
+
+```bash
+./cmake-build/check_coordinates \
+  --rtsp-env CAMERA_RTSP \
+  --slot EV01 \
+  --web \
+  --port 8091
+```
+
+VS Code의 **PORTS** 탭에서 8091 포트를 전달한 뒤 로컬 브라우저로
+`http://127.0.0.1:8091`을 연다. 화면에서 슬롯을 선택하고 영역을 드래그한 다음
+`좌표 저장 및 출력`을 누른다.
+
+같은 네트워크의 다른 PC에서 Pi IP로 직접 접속할 때만 다음처럼 외부 바인딩을
+명시한다. 이 개발 도구에는 인증이 없으므로 신뢰할 수 있는 내부망에서만 사용한다.
+
+```bash
+./cmake-build/check_coordinates \
+  --rtsp-env CAMERA_RTSP \
+  --web --bind 0.0.0.0 --port 8091
+```
+
+```text
+http://PI_IP:8091
+```
+
+### 좌표 직접 입력 모드
+
 픽셀 좌표 `x,y,width,height`를 직접 전달하면 창을 열지 않고 정규화 좌표와
 확인용 이미지를 생성한다.
 

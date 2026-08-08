@@ -220,7 +220,8 @@ target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
 # 운영 pi-server와 별도 프로세스이며, RTSP URL은 환경변수로만 전달한다.
 add_executable(check_coordinates tools/check_coordinates.cpp)
 target_compile_options(check_coordinates PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(check_coordinates PRIVATE PkgConfig::OPENCV)
+target_link_libraries(check_coordinates PRIVATE
+    PkgConfig::OPENCV PkgConfig::HTTPLIB Threads::Threads)
 add_test(NAME check-coordinates-test
     COMMAND check_coordinates
             --image ${CMAKE_SOURCE_DIR}/tests/fixtures/roi_checker_test.ppm
