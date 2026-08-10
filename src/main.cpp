@@ -951,9 +951,9 @@ int main() {
             return fire_alarm_manager &&
                    fire_alarm_manager->acknowledge(channel_id, alarm_id);
         },
-        [&hall_service](const std::string& slot_id, const bool occupied) {
+        [&hall_service](const event::IvaOccupancySignal& signal) {
             return hall_service &&
-                   hall_service->handleCameraOccupancy(slot_id, occupied);
+                   hall_service->handleCameraIvaSignal(signal);
         }
     );
     capture_mqtt_bridge = &mqtt_bridge;

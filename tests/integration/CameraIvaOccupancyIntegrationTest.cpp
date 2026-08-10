@@ -49,6 +49,14 @@ struct TemporaryRoot {
     }
 };
 
+event::IvaOccupancySignal ivaSignal(
+    const event::IvaOccupancyAction action,
+    std::string objectId = "41808",
+    const bool authoritativeExit = true) {
+    return {"EV01", "cam01", "vs-0", "name1", std::move(objectId),
+            action, authoritativeExit};
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -108,12 +116,27 @@ int main(int argc, char* argv[]) {
                 },
                 timer, events, evidence);
 
-            require(service.handleCameraOccupancy("EV01", true),
-                    "IVA ENTER was rejected");
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Enter)),
+                    "IVA ENTER ignore policy was rejected");
+            std::this_thread::sleep_for(20ms);
+            require(!database.findActiveBySlot("EV01").has_value(),
+                    "IVA ENTER incorrectly created an ACTIVE session");
+
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Exit)),
+                    "initial IVA EXIT was rejected");
+            std::this_thread::sleep_for(10ms);
+            require(!database.findActiveBySlot("EV01").has_value(),
+                    "initial IVA EXIT incorrectly created a session");
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Intrusion)),
+                    "IVA INTRUSION was rejected");
             require(waitUntil([&] {
                         return database.findActiveBySlot("EV01").has_value();
                     }),
-                    "IVA ENTER did not create an ACTIVE session");
+                    "IVA INTRUSION after pending EXIT did not create an "
+                    "ACTIVE session");
             const auto first = database.findActiveBySlot("EV01");
             require(first.has_value(), "first IVA session is missing");
 
@@ -124,7 +147,7 @@ int main(int argc, char* argv[]) {
                                    static_cast<int>(first->id), images) &&
                                images.size() == 1;
                     }),
-                    "IVA ENTER did not store start evidence");
+                    "IVA INTRUSION did not store start evidence");
             const std::string firstPath = images.front().original_path;
             const std::string expectedDirectory =
                 "/EV01/occupancy_start/";
@@ -134,25 +157,37 @@ int main(int argc, char* argv[]) {
                                    "_slot_EV01_") != std::string::npos,
                     "start evidence filename did not preserve session id");
 
-            require(service.handleCameraOccupancy("EV01", true),
-                    "duplicate IVA ENTER was rejected");
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Intrusion)),
+                    "duplicate IVA INTRUSION was rejected");
             require(database.listLogs().size() == 1,
-                    "duplicate IVA ENTER created another session");
+                    "duplicate IVA INTRUSION created another session");
 
-            require(service.handleCameraOccupancy("EV01", false),
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Exit, "", false)),
+                    "custom IVA EXIT ignore policy was rejected");
+            std::this_thread::sleep_for(80ms);
+            require(database.findActiveBySlot("EV01").has_value(),
+                    "custom IVA EXIT incorrectly closed the session");
+
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Exit)),
                     "IVA EXIT was rejected");
             std::this_thread::sleep_for(20ms);
             require(database.findActiveBySlot("EV01").has_value(),
                     "IVA EXIT closed the session before confirmation");
-            require(service.handleCameraOccupancy("EV01", true),
-                    "ENTER did not cancel pending EXIT");
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Intrusion)),
+                    "INTRUSION did not cancel pending EXIT");
             std::this_thread::sleep_for(80ms);
             require(database.findActiveBySlot("EV01").has_value(),
                     "canceled IVA EXIT still closed the session");
 
-            require(service.handleCameraOccupancy("EV01", false),
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Exit)),
                     "confirmed IVA EXIT was rejected");
-            require(service.handleCameraOccupancy("EV01", false),
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Exit)),
                     "duplicate pending IVA EXIT was rejected");
             require(waitUntil([&] {
                         return !database.findActiveBySlot("EV01").has_value();
@@ -170,8 +205,10 @@ int main(int argc, char* argv[]) {
             require(canceledSession.load() == first->id,
                     "early IVA EXIT did not cancel OCR");
 
-            require(service.handleCameraOccupancy("EV01", true),
-                    "second IVA ENTER was rejected");
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Intrusion,
+                                  "52001")),
+                    "second IVA INTRUSION was rejected");
             require(waitUntil([&] {
                         return database.findActiveBySlot("EV01").has_value();
                     }),
@@ -201,7 +238,8 @@ int main(int argc, char* argv[]) {
             require(violated && violated->violation_at.has_value(),
                     "NON_EV did not set violation_at");
 
-            require(service.handleCameraOccupancy("EV01", false),
+            require(service.handleCameraIvaSignal(
+                        ivaSignal(event::IvaOccupancyAction::Exit, "52001")),
                     "violating IVA EXIT was rejected");
             require(waitUntil([&] {
                         return !database.findActiveBySlot("EV01").has_value();
@@ -216,7 +254,7 @@ int main(int argc, char* argv[]) {
         }
 
         evidence.stop();
-        std::cout << "[PASS] camera IVA ENTER/EXIT/session cleanup flow\n";
+        std::cout << "[PASS] camera IVA INTRUSION/EXIT/session cleanup flow\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "[FAIL] camera IVA occupancy: " << error.what() << '\n';

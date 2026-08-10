@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <sstream>
 #include <utility>
 
@@ -36,6 +37,22 @@ bool hasTopicSegment(const std::string& topic, const std::string& segment) {
     return false;
 }
 
+event::IvaOccupancyAction toOccupancyAction(const std::string& action) {
+    if (action == "ENTER") return event::IvaOccupancyAction::Enter;
+    if (action == "INTRUSION") return event::IvaOccupancyAction::Intrusion;
+    if (action == "EXIT") return event::IvaOccupancyAction::Exit;
+    return event::IvaOccupancyAction::Unsupported;
+}
+
+int ivaProcessingOrder(const event::CameraEvent& cameraEvent) {
+    // 한 PUBLISH에 EXIT와 INTRUSION이 함께 있으면 EXIT 후보를 먼저 만들고
+    // 마지막 INTRUSION이 이를 취소하게 하여 점유 상태가 우선하도록 한다.
+    if (cameraEvent.action == "EXIT") return 0;
+    if (cameraEvent.action == "ENTER") return 1;
+    if (cameraEvent.action == "INTRUSION") return 2;
+    return 1;
+}
+
 }
 
 MqttEventBridge::MqttEventBridge(
@@ -57,7 +74,6 @@ MqttEventBridge::MqttEventBridge(
       trigger_coordinator_(trigger_coordinator),
       ocr_worker_(ocr_worker),
       parking_slot_configs_(std::move(parking_slot_configs)),
-      iva_occupancy_aggregator_(parking_slot_configs_),
       sensor_message_handler_(std::move(sensor_message_handler)),
       fire_ack_handler_(std::move(fire_ack_handler)),
       iva_occupancy_handler_(std::move(iva_occupancy_handler)),
@@ -246,6 +262,11 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
                       "bundled notifications parsed count=" +
                           std::to_string(camera_events.size()) +
                           " topic=" + raw_topic);
+        std::stable_sort(camera_events.begin(), camera_events.end(),
+                         [](const auto& left, const auto& right) {
+                             return ivaProcessingOrder(left) <
+                                    ivaProcessingOrder(right);
+                         });
     }
     for (auto& camera_event : camera_events) {
         processCameraEvent(std::move(camera_event));
@@ -291,40 +312,36 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
             }
         }
 
-        const bool exit_event =
-            camera_event.event_type == "camera_iva_area_exit";
+        const auto iva_action = toOccupancyAction(camera_event.action);
         if (config_.parking_occupancy_source == "CAMERA_IVA") {
             if (!iva_occupancy_handler_) {
                 util::logError("IVA occupancy handler is not configured");
                 return;
             }
-            const auto aggregate = iva_occupancy_aggregator_.update(
-                target->slotId, config_.camera_id,
-                camera_event.video_source_token, target->ruleName,
-                !exit_event && camera_event.is_active);
-            if (!aggregate) return;
-            util::logLine(
-                "IVA_OCCUPANCY",
-                "slot=" + aggregate->slotId + " state=" +
-                    (aggregate->occupied ? "OCCUPIED" : "VACANT") +
-                    " active_areas=" +
-                    std::to_string(aggregate->activeAreaCount) + "/" +
-                    std::to_string(aggregate->configuredAreaCount) +
-                    " known_areas=" +
-                    std::to_string(aggregate->knownAreaCount));
-            if (!iva_occupancy_handler_(aggregate->slotId,
-                                        aggregate->occupied)) {
+            event::IvaOccupancySignal signal;
+            signal.slotId = target->slotId;
+            signal.cameraId = config_.camera_id;
+            signal.videoSourceToken = camera_event.video_source_token;
+            signal.ruleName = target->ruleName;
+            signal.objectId = camera_event.object_id;
+            signal.action = iva_action;
+            // smart-parking-iva-v1 Publication은 고정 payload라 실제 WiseAI
+            // Action과 무관하게 발행될 수 있다. INTRUSION은 보조 입력으로
+            // 허용하되 EXIT는 Raw WiseAI만 출차 권한을 갖는다.
+            signal.authoritativeExit = !camera_event.is_smart_parking_iva;
+            if (!iva_occupancy_handler_(signal)) {
                 util::logWarn("IVA occupancy event was not accepted: slot=" +
-                              aggregate->slotId + " action=" +
-                              (aggregate->occupied ? "ENTER" : "EXIT"));
+                              target->slotId + " action=" +
+                              camera_event.action);
             }
             return;
         }
 
         // HALL 모드에서는 IVA가 세션을 종료하지 않고 촬영 후보로만 동작한다.
-        if (exit_event || !camera_event.is_active) {
-            util::logInfo("IVA area inactive/exit event ignored in HALL mode: " +
-                          raw_topic);
+        if (iva_action != event::IvaOccupancyAction::Intrusion ||
+            !camera_event.is_active) {
+            util::logInfo("IVA action ignored in HALL mode: action=" +
+                          camera_event.action + " topic=" + raw_topic);
             return;
         }
         std::shared_ptr<camera::CameraChannel> channel =

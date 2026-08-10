@@ -4,7 +4,7 @@
 #include "camera/CameraChannel.hpp"
 #include "database/EventDatabase.hpp"
 #include "event/CameraEvent.hpp"
-#include "event/IvaSlotOccupancyAggregator.hpp"
+#include "event/IvaOccupancyCoordinator.hpp"
 #include "ocr/OcrWorker.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
@@ -33,7 +33,7 @@ public:
         std::function<bool(const std::string& channel_id,
                            const std::string& alarm_id)>;
     using IvaOccupancyHandler =
-        std::function<bool(const std::string& slot_id, bool occupied)>;
+        std::function<bool(const event::IvaOccupancySignal& signal)>;
 
     MqttEventBridge(
         const app::AppConfig& config,
@@ -97,7 +97,6 @@ private:
     parking::ParkingTriggerCoordinator& trigger_coordinator_;
     ocr::OcrWorker& ocr_worker_;
     const std::vector<parking::ParkingSlotConfig> parking_slot_configs_;
-    event::IvaSlotOccupancyAggregator iva_occupancy_aggregator_;
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
     IvaOccupancyHandler iva_occupancy_handler_;
