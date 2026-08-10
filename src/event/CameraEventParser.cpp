@@ -82,6 +82,14 @@ void parseSmartParkingIva(const std::string& payload,
     event.rule_name = body["rule_name"].get<std::string>();
     event.slot_id = body["slot_id"].get<std::string>();
     event.action = upperCopy(body["action"].get<std::string>());
+    if (body.contains("object_id")) {
+        if (body["object_id"].is_string()) {
+            event.object_id = body["object_id"].get<std::string>();
+        } else if (body["object_id"].is_number_integer() ||
+                   body["object_id"].is_number_unsigned()) {
+            event.object_id = body["object_id"].dump();
+        }
+    }
     event.is_active = body["active"].get<bool>();
     const std::string declaredToken = canonicalVideoSourceToken(
         body["video_source_token"].get<std::string>());
@@ -108,6 +116,86 @@ void parseSmartParkingIva(const std::string& payload,
         event.event_type = "camera_iva_area_exit";
     } else {
         reject("action and active are inconsistent");
+    }
+}
+
+void parseWiseAiIvaJson(const std::string& topic,
+                        const std::string& payload,
+                        event::CameraEvent& event) {
+    if (lowerCopy(topic).find("ivaarea") == std::string::npos) return;
+
+    nlohmann::json body;
+    try {
+        body = nlohmann::json::parse(payload);
+    } catch (...) {
+        return;
+    }
+    if (!body.is_object() || !body.contains("Source") ||
+        !body["Source"].is_object() || !body.contains("Data") ||
+        !body["Data"].is_object()) {
+        return;
+    }
+
+    const auto& source = body["Source"];
+    const auto& data = body["Data"];
+    if (!data.contains("Action") || !data["Action"].is_string()) return;
+
+    const std::string action = upperCopy(data["Action"].get<std::string>());
+    if (action != "ENTER" && action != "INTRUSION" && action != "EXIT") {
+        return;
+    }
+
+    event.action = action;
+    if (source.contains("RuleName") && source["RuleName"].is_string()) {
+        event.rule_name = source["RuleName"].get<std::string>();
+    }
+    if (source.contains("VideoSourceToken") &&
+        source["VideoSourceToken"].is_string()) {
+        const std::string payloadToken = canonicalVideoSourceToken(
+            source["VideoSourceToken"].get<std::string>());
+        if (!payloadToken.empty() && !event.video_source_token.empty() &&
+            payloadToken != event.video_source_token) {
+            event.protocol_valid = false;
+            event.protocol_error =
+                "topic/payload video_source_token mismatch";
+            return;
+        }
+        if (!payloadToken.empty()) event.video_source_token = payloadToken;
+    }
+    if (data.contains("ObjectId")) {
+        if (data["ObjectId"].is_string()) {
+            event.object_id = data["ObjectId"].get<std::string>();
+        } else if (data["ObjectId"].is_number_integer() ||
+                   data["ObjectId"].is_number_unsigned()) {
+            event.object_id = data["ObjectId"].dump();
+        }
+    }
+    if (body.contains("UtcTime") && body["UtcTime"].is_string()) {
+        event.timestamp = body["UtcTime"].get<std::string>();
+    }
+
+    if (action == "INTRUSION") {
+        event.event_type = "camera_iva_area_intrusion";
+        event.is_active = true;
+    } else if (action == "EXIT") {
+        // WiseAI의 State=true는 Exit 이벤트가 발생했다는 뜻이지 슬롯이
+        // 활성이라는 뜻이 아니다. 점유 상태는 Action으로 정규화한다.
+        event.event_type = "camera_iva_area_exit";
+        event.is_active = false;
+    } else {
+        event.event_type = "camera_iva_area_enter";
+        event.is_active = true;
+    }
+}
+
+void inferIvaAction(event::CameraEvent& event) {
+    if (!event.action.empty()) return;
+    if (event.event_type == "camera_iva_area_intrusion") {
+        event.action = "INTRUSION";
+    } else if (event.event_type == "camera_iva_area_exit") {
+        event.action = "EXIT";
+    } else if (event.event_type == "camera_iva_area_enter") {
+        event.action = "ENTER";
     }
 }
 
@@ -177,6 +265,10 @@ CameraEvent CameraEventParser::parse(
     event.event_type = parseEventType(raw_topic, raw_payload);
     event.is_active = parseActiveState(raw_payload);
     parseSmartParkingIva(raw_payload, event);
+    if (!event.is_smart_parking_iva) {
+        parseWiseAiIvaJson(raw_topic, raw_payload, event);
+    }
+    inferIvaAction(event);
     event.is_iva_area_event = event.event_type == "camera_iva_area_enter" ||
                               event.event_type == "camera_iva_area_exit" ||
                               event.event_type == "camera_iva_area_intrusion" ||

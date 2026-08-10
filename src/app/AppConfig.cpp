@@ -127,7 +127,7 @@ AppConfig AppConfig::loadFromEnv() {
         config.parking_occupancy_source = "HALL";
     }
     config.camera_iva_exit_confirm_ms = std::clamp(
-        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 10000),
+        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 20000),
         1000, 60000);
     config.capture_sched_enabled =
         getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);

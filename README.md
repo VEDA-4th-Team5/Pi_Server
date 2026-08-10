@@ -61,16 +61,16 @@ SENSOR:HALL01:OCCUPIED:1
 타이머에 등록합니다. 별도의 세션을 다시 만들지 않으며, 서버 재시작 시 활성 세션도
 남은 시간을 기준으로 복구합니다. 독립 실행형 `parking-timer` 역시 계속 빌드됩니다.
 
-카메라 WiseAI ENTER/EXIT를 점유 입력으로 사용할 때는 다음을 설정합니다. 기본값은
+카메라 WiseAI INTRUSION/EXIT를 점유 입력으로 사용할 때는 다음을 설정합니다. 기본값은
 기존 홀센서 호환을 위한 `HALL`입니다.
 
 ```bash
 export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
-export CAMERA_IVA_EXIT_CONFIRM_MS=10000
+export CAMERA_IVA_EXIT_CONFIRM_MS=20000
 ```
 
-이 모드에서는 ENTER가 세션을 만들고 EXIT는 10초 동안 재진입을 기다린 뒤 출차를
-확정합니다. 조기 출차는 이미지와 `IMAGE_LOG`를 삭제하고, `violation_at`이 있는
+이 모드에서는 INTRUSION만 세션을 만들고 ENTER는 무시합니다. EXIT는 20초 동안
+후속 INTRUSION을 기다린 뒤 출차를 확정합니다. 조기 출차는 이미지와 `IMAGE_LOG`를 삭제하고, `violation_at`이 있는
 위반 세션은 증거를 보존합니다. 자세한 Publication 계약은
 [`docs/IVA_VEHICLE_DETECTION.md`](docs/IVA_VEHICLE_DETECTION.md)에 있습니다.
 
