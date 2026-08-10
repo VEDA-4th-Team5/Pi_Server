@@ -17,6 +17,10 @@
 #include <string>
 #include <vector>
 
+namespace notification {
+class TelegramChannelNotifier;
+}
+
 namespace mqtt {
 
 /**
@@ -45,7 +49,8 @@ public:
         std::vector<parking::ParkingSlotConfig> parking_slot_configs,
         SensorMessageHandler sensor_message_handler = {},
         FireAckHandler fire_ack_handler = {},
-        IvaOccupancyHandler iva_occupancy_handler = {}
+        IvaOccupancyHandler iva_occupancy_handler = {},
+        notification::TelegramChannelNotifier* telegram_notifier = nullptr
     );
 
     /** @brief Broker 연결, topic 구독과 network loop를 시작한다. */
@@ -100,6 +105,8 @@ private:
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
     IvaOccupancyHandler iva_occupancy_handler_;
+
+    notification::TelegramChannelNotifier* telegram_notifier_;
 
     mosquitto* mosq_;
 };
