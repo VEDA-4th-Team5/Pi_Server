@@ -1,6 +1,9 @@
 # Pi Server Architecture
 
-기준일: 2026-07-28
+WiseAI IVA 차량 탐지의 MQTT parsing 및 슬롯 매핑 계약은
+[`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
+
+기준일: 2026-08-05
 
 기준 코드: CV Snapshot API 통합 작업 트리 (base `f6b8ac8`)
 
@@ -47,9 +50,17 @@ flowchart LR
     Http --> Images
 ```
 
-Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Pi는 자신의 촬영·OCR·
-증거 저장을 위해 최신 프레임을 메모리에 유지한다. Qt의 실시간 영상 표시는
-카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
+Raspberry Pi는 카메라 RTSP를 Qt에 중계하지 않는다. Snapshot API 전용 모드에서는
+Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 요청한다. Qt의
+실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
+
+EVDA-192에서는 CH1의 WiseAI `name1`~`name4`를 EV01~EV04에 1:1로
+묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다.
+`PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 영역 하나가 활성일 때 세션을 만들고,
+같은 슬롯의 모든 영역이 비활성인 상태가 10초 유지된 경우에만 Hall VACANT와
+동일한 출차 정리 정책으로 세션을 닫는다. 신규 이미지는
+`ch1/EV01/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
+API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 
 ## 2. 프로세스 시작 순서
 
@@ -61,10 +72,9 @@ AppConfig 환경변수 로드
 → SQLite open / runtime migration
 → SystemEventReporter 시작
 → ParkingHttpServer 시작
-→ RTSP, Snapshot, Scheduler, Timer, OCR 객체 구성
+→ 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
-→ RtspStreamReceiver 시작
-→ 최초 RTSP frame 대기
+→ RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
 → OcrWorker / BestShotReceiver 시작
 → MqttEventBridge 연결
 → CaptureSchedulerRuntime 시작
@@ -73,8 +83,8 @@ AppConfig 환경변수 로드
 → SIGINT/SIGTERM 대기
 ```
 
-RTSP URL이 하나도 없거나 설정된 시간 안에 최초 프레임을 받지 못하면
-서버는 실패로 종료한다.
+Snapshot API가 비활성인 경우 RTSP URL이 없거나 최초 프레임을 받지 못하면 실패한다.
+Snapshot API가 활성이고 fallback이 꺼져 있으면 RTSP 없이 서버를 시작한다.
 
 ## 3. 홀센서 입차 및 OCR 흐름
 
@@ -148,15 +158,17 @@ CAMERA_IMAGE_SERVER_PORT=8080
 
 ### 3.3 실제 촬영 의미
 
-`CAMERA_SNAPSHOT_API_ENABLED=true`이면 `HallCaptureExecutor`는 CV5 CAP의
+`CAMERA_SNAPSHOT_API_ENABLED=true`이면 `HallCaptureExecutor`와
+`EvidenceCaptureWorker`는 CV5 CAP의
 `/images/generate`를 호출하고 응답에 포함된 같은 run의 original/enhanced JPEG를 즉시
 다운로드한다. `OcrWorker`는 제공된 enhanced 경로를 사용하므로 Pi OpenCV 화질 개선을
 실행하지 않는다. API가 비활성이면 기존 `CameraChannel::latest_full_frame` ROI 촬영을
 사용하며, API 실패 시 RTSP fallback은 별도 설정으로만 허용한다.
 
-현재 CV Snapshot API 계약에는 ROI 입력이 없기 때문에 API 모드의 OCR 입력은 채널 전체
-프레임이다. ROI가 필요하면 카메라 CAP 계약 확장 또는 Pi의 crop-only 정책을 별도로
-결정해야 한다.
+현재 CV Snapshot API 계약에는 ROI 입력이 없기 때문에 카메라는 채널 전체 프레임을
+반환한다. Pi는 실제 촬영 순간 실행 중인 슬롯별 ROI를 조회하고 original/enhanced를
+같은 좌표로 crop한 뒤 enhanced crop을 OCR에 전달한다. ROI는 HTTP PUT으로 즉시
+변경하며 SQLite `SYSTEM_SETTINGS`에 영구 저장한다.
 
 ## 4. 조기 출차와 장기 점유
 
@@ -183,7 +195,8 @@ HallParkingService VACANT
 
 ```text
 EvidenceCaptureWorker
-→ RTSP 최신 ROI frame
+→ Camera Snapshot API 전체 original/enhanced frame
+→ 실행 중 슬롯 ROI 조회 및 동일 영역 crop
 → OVERSTAY_EVIDENCE 파일 / IMAGE_LOG 저장
 
 TimerManager
@@ -261,17 +274,20 @@ BestShot 경로는 홀센서 경로와 별개로 DB 세션을 생성한다. 동�
 ```text
 data/snapshots/
 └── ch1/
-    ├── EV01/scene/
-    ├── EV02/scene/
-    ├── EV03/scene/
-    └── EV04/scene/
+    ├── EV01/{occupancy_start,hall_30s,hall_60s,overstay}/
+    ├── EV02/{occupancy_start,hall_30s,hall_60s,overstay}/
+    ├── EV03/{occupancy_start,hall_30s,hall_60s,overstay}/
+    └── EV04/{occupancy_start,hall_30s,hall_60s,overstay}/
 
 data/bestshots/
 ├── vehicle/
 └── plate/
 ```
 
-DB에는 이미지 BLOB이 아니라 파일 경로와 메타데이터를 저장한다.
+DB에는 이미지 BLOB이 아니라 파일 경로와 메타데이터를 저장한다. 네 단계
+디렉터리는 미리 생성되며 세션 구분은 파일명의 `session_<id>`와 DB FK로 유지한다.
+`violation_at` 미설정 조기 출차에서는 해당 세션의 DB 경로만 조회해 파일을 삭제하므로,
+같은 단계 폴더의 다른 세션 증거는 영향을 받지 않는다.
 
 ## 7. Qt 관제 연동
 
@@ -321,7 +337,9 @@ report()
 - `CAPTURE_SCHED_ENABLED`의 기본값은 `false`라 30/60초 경로는 운영 설정에서
   명시적으로 켜야 한다.
 - EV01~EV04의 기본 카메라 채널은 모두 `ch01`이다.
-- ROI 미설정 시 슬롯별 기본 ROI는 전체 프레임 `(0,0,1,1)`이다.
+- SQLite와 `IVA_EVxx_ROI_*` 설정에 ROI가 모두 없으면 해당 슬롯 ROI는
+  미설정 상태로 유지한다. 촬영/OCR은 전체 프레임을 임의로 사용하지 않고
+  명확한 오류를 남긴 뒤 건너뛴다.
 - `PARKING_HALL_ENABLED` 설정은 로드되지만 현재 `main.cpp`의 홀 경로 활성화
   조건으로 사용되지 않는다.
 - `FIRE_ALARM_ENABLED`와 `FireAlarmManager`는 존재하지만 현재 `main.cpp`에 배선되지

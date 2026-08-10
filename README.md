@@ -14,7 +14,7 @@ RTSP, MQTT, OpenCV, Gemini OCR, SQLite 및 Qt 조회 API를 사용합니다.
 - SQLite 주차 세션·이미지·이벤트 저장
 - Qt용 HTTP/HTTPS 상태·이미지 조회 API
 - 가짜 홀센서 MQTT 입력과 실제 Snapshot·세션·타이머 연결
-- OCCUPIED 확정 유예시간과 T0+30초/60초 RTSP ROI 촬영·OCR scheduler
+- OCCUPIED 확정 유예시간과 T0+30초/60초 요청형 촬영·OCR scheduler
 - CV5 Snapshot OpenAPI의 동일 프레임 original/enhanced 다운로드 및 OCR 연결
 - 실제 UART line 및 UART 기반 LoRa CRC frame 수신 드라이버
 - 프로젝트 전용 Linux Character Device `/dev/parking_alert`
@@ -48,7 +48,7 @@ MQTT 메시지로 동일한 센서 업무 흐름을 검증합니다.
 ```text
 SENSOR:HALL01:OCCUPIED:1
 → 설정된 유예시간 동안 VACANT 없이 유지되면 OCCUPIED 확정
-→ EV01 최신 ROI Snapshot 저장
+→ EV01 세션 시작 Snapshot 저장
 → T0+30초 카메라 original/enhanced 촬영 및 첫 Gemini OCR
 → 실패 시 T0+60초 동일 방식으로 Gemini OCR 재시도
 → EV/PHEV이면 동일 SQLite session_id로 장기 점유 타이머 등록
@@ -60,6 +60,19 @@ SENSOR:HALL01:OCCUPIED:1
 번호판 OCR이 EV/PHEV로 확인되면 같은 `PARKING_SESSION.session_id`를 장기 점유
 타이머에 등록합니다. 별도의 세션을 다시 만들지 않으며, 서버 재시작 시 활성 세션도
 남은 시간을 기준으로 복구합니다. 독립 실행형 `parking-timer` 역시 계속 빌드됩니다.
+
+카메라 WiseAI ENTER/EXIT를 점유 입력으로 사용할 때는 다음을 설정합니다. 기본값은
+기존 홀센서 호환을 위한 `HALL`입니다.
+
+```bash
+export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
+export CAMERA_IVA_EXIT_CONFIRM_MS=10000
+```
+
+이 모드에서는 ENTER가 세션을 만들고 EXIT는 10초 동안 재진입을 기다린 뒤 출차를
+확정합니다. 조기 출차는 이미지와 `IMAGE_LOG`를 삭제하고, `violation_at`이 있는
+위반 세션은 증거를 보존합니다. 자세한 Publication 계약은
+[`docs/IVA_VEHICLE_DETECTION.md`](docs/IVA_VEHICLE_DETECTION.md)에 있습니다.
 
 ## 빌드 및 테스트
 
@@ -75,7 +88,8 @@ ctest --test-dir cmake-build --output-on-failure
 ## 실행
 
 현재 로컬 카메라·Gemini 설정과 STM32 UART 자동 탐색을 적용해 실행합니다.
-`.env.fire.local`이 있으면 화재·홀센서 시험 설정도 함께 적용합니다.
+최초 실행 시 `.env.fire.local`을 자동 생성하며, 실행할 때마다 변경된 소스만
+증분 빌드한 후 서버를 시작합니다.
 
 ```bash
 ./run_server.sh
@@ -117,22 +131,26 @@ export HALL_CAPTURE_OCR_ENABLED=true
 # 실기기 반복 시험에서만 예: export CAPTURE_OFFSETS_SEC=5,10
 ```
 
-확정된 입차는 최신 RTSP FrameBuffer의 ROI를
-`OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
+확정된 입차는 Camera Snapshot API가 활성화된 경우 카메라의 original/enhanced를
+현재 슬롯 ROI로 잘라 `OCCUPANCY_START_EVIDENCE`로 한 번 저장한다. 세션이 계속 활성 상태이면 T0 기준
 `overstay_threshold_seconds` 뒤에 `OVERSTAY_EVIDENCE`를 한 번 더 저장하고 같은
 시점에 장기 점유 위반을 판정한다. 값은 SQLite `SYSTEM_SETTINGS`에 저장되며 Qt가
 `GET/PUT /api/v1/settings/overstay-threshold`로 60~86400초 범위에서 변경한다.
 변경값은 활성 세션과 이후 신규 세션 모두에 원래 입차시각 T0 기준으로 적용된다.
+Snapshot API가 비활성이면 기존 RTSP FrameBuffer ROI를 사용한다.
 
 재시작 시 활성 세션의 원래 T0를 기준으로 아직 없는 증거 작업을 복원한다. 조기 출차는
 대기 중인 Job을 즉시 제거하며, 홀센서 비동기 큐는 같은 슬롯의 최신 상태를 병합하고
 서로 다른 슬롯이 설정 용량을 넘을 때 `HALL_WORK_QUEUE_OVERFLOW`를 기록한다.
 
-`CAMERA_SNAPSHOT_API_ENABLED=true`이면 촬영 scheduler는 CV5 카메라의
+`CAMERA_SNAPSHOT_API_ENABLED=true`이면 시작·장기점유 증거와 30/60초 scheduler는
+CV5 카메라의
 `/images/generate`를 호출하고 같은 프레임의 original/enhanced JPEG를 즉시 내려받아
-파일·IMAGE_LOG·Gemini OCR로 연결한다. 개선본이 제공되므로 Hall OCR에서는 Pi의
+실행 중 슬롯 ROI로 동일하게 crop한 뒤 파일·IMAGE_LOG·Gemini OCR로 연결한다. 개선본이 제공되므로 Hall OCR에서는 Pi의
 OpenCV 화질 개선을 실행하지 않는다. API가 비활성이면 기존 RTSP FrameBuffer 촬영을
-유지한다. 상세 설정과 실기기 검증 절차는
+유지한다. `CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false`이면 API 모드에서 Pi는 RTSP
+수신기와 최초 프레임 대기를 시작하지 않는다. ROI 웹 도구에서 저장한 좌표는 실행 중인
+서버에 즉시 반영되어 다음 촬영부터 적용된다. 상세 설정과 실기기 검증 절차는
 [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md)에 있다.
 
 가짜 홀센서 입력:
@@ -214,12 +232,19 @@ data/
 │   └── plate/
 │       └── enhanced/
 ├── snapshots/
-│   └── ch1/EV01~EV04/
+│   └── ch1/
+│       └── EV01~EV04/
+│           ├── occupancy_start/
+│           ├── hall_30s/
+│           ├── hall_60s/
+│           └── overstay/
 └── db/
     └── parking.db
 ```
 
-`snapshots/ch1/EV01~EV04` 아래에는 슬롯마다 `scene/`, `enhanced/`가 생성됩니다.
+슬롯별 네 단계 디렉터리는 미리 생성해 둔다. 세션 구분은 파일명의
+`session_<id>`와 `IMAGE_LOG.session_id`로 유지한다. `violation_at`이 없는 조기 출차는
+해당 세션의 파일과 `IMAGE_LOG`를 삭제하고, 위반 세션의 증거는 보존한다.
 
 SQLite 주요 테이블:
 
@@ -262,6 +287,7 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 
 - [`docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`](docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md): 카메라 MQTT 촬영 요청 목표 규약과 ROI 처리
 - [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md): CV5 카메라 내부 화질 개선 이미지 연동
+- [`docs/IVA_ROI_COORDINATE_TOOL.md`](docs/IVA_ROI_COORDINATE_TOOL.md): 독립 OpenCV 도구로 주차면 ROI 좌표 측정
 - [`docs/GEMINI_OCR_GUIDE.md`](docs/GEMINI_OCR_GUIDE.md): OpenCV 전처리, Gemini HTTPS OCR, DB 반영과 수동 테스트
 - [`docs/UART_LORA_PROTOCOL.md`](docs/UART_LORA_PROTOCOL.md): STM32 UART 및 LoRa frame 규약
 - [`docs/PARKING_ALERT_DRIVER.md`](docs/PARKING_ALERT_DRIVER.md): 전용 Linux Character Device 빌드·ABI·검증

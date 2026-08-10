@@ -11,6 +11,17 @@ struct CameraEvent {
     std::string timestamp;
 
     std::string event_channel_id;
+    // 카메라 MQTT topic에서 읽은 canonical token("vs-0" 형식)이다.
+    // 토큰을 읽지 못한 이벤트는 IVA 슬롯 매핑에 사용하지 않는다.
+    std::string video_source_token;
+    // parking_slots.json의 camera binding으로 확정된 IVA Rule 이름이다.
+    std::string rule_name;
+    // smart-parking-iva-v1 고정 Publication payload에서 선언한 값이다.
+    std::string declared_camera_id;
+    std::string action;
+    bool is_smart_parking_iva{false};
+    bool protocol_valid{true};
+    std::string protocol_error;
     std::string source_type;
     std::string source_id;
 

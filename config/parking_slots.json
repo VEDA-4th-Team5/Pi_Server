@@ -11,7 +11,7 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "EV01",
+            "rule_name": "name1",
             "enabled": true,
             "priority": 100
           }
@@ -26,7 +26,7 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "EV02",
+            "rule_name": "name2",
             "enabled": true,
             "priority": 100
           }
@@ -41,7 +41,7 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "EV03",
+            "rule_name": "name3",
             "enabled": true,
             "priority": 100
           }
@@ -56,7 +56,7 @@
           {
             "camera_id": "cam01",
             "video_source_token": "vs-0",
-            "rule_name": "EV04",
+            "rule_name": "name4",
             "enabled": true,
             "priority": 100
           }

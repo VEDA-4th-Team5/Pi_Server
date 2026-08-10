@@ -3,7 +3,10 @@
 #include "app/AppConfig.hpp"
 #include "camera/CameraChannel.hpp"
 #include "database/EventDatabase.hpp"
+#include "event/CameraEvent.hpp"
+#include "event/IvaSlotOccupancyAggregator.hpp"
 #include "ocr/OcrWorker.hpp"
+#include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingTriggerCoordinator.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 
@@ -29,6 +32,8 @@ public:
     using FireAckHandler =
         std::function<bool(const std::string& channel_id,
                            const std::string& alarm_id)>;
+    using IvaOccupancyHandler =
+        std::function<bool(const std::string& slot_id, bool occupied)>;
 
     MqttEventBridge(
         const app::AppConfig& config,
@@ -37,8 +42,10 @@ public:
         snapshot::SnapshotStorage& snapshot_storage,
         parking::ParkingTriggerCoordinator& trigger_coordinator,
         ocr::OcrWorker& ocr_worker,
+        std::vector<parking::ParkingSlotConfig> parking_slot_configs,
         SensorMessageHandler sensor_message_handler = {},
-        FireAckHandler fire_ack_handler = {}
+        FireAckHandler fire_ack_handler = {},
+        IvaOccupancyHandler iva_occupancy_handler = {}
     );
 
     /** @brief Broker 연결, topic 구독과 network loop를 시작한다. */
@@ -79,6 +86,9 @@ private:
         const mosquitto_message* message
     );
 
+    /** @brief 분리된 카메라 이벤트 한 건을 기존 IVA/일반 이벤트 흐름으로 처리한다. */
+    void processCameraEvent(event::CameraEvent camera_event);
+
 private:
     const app::AppConfig& config_;
     std::vector<std::shared_ptr<camera::CameraChannel>>& channels_;
@@ -86,8 +96,11 @@ private:
     snapshot::SnapshotStorage& snapshot_storage_;
     parking::ParkingTriggerCoordinator& trigger_coordinator_;
     ocr::OcrWorker& ocr_worker_;
+    const std::vector<parking::ParkingSlotConfig> parking_slot_configs_;
+    event::IvaSlotOccupancyAggregator iva_occupancy_aggregator_;
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
+    IvaOccupancyHandler iva_occupancy_handler_;
 
     mosquitto* mosq_;
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,7 @@ private:
         std::string transportError;
     };
 
+    bool initializeUnlocked();
     bool startImageServer();
     bool discoverChannels();
     bool discoverFilters();
@@ -74,6 +76,9 @@ private:
     std::vector<std::string> filters_;
     std::string lastError_;
     bool initialized_{};
+    // 카메라 CAP는 한 번에 하나의 이미지 생성 요청만 처리하므로 증거와
+    // 30/60초 촬영 요청을 직렬화한다.
+    std::mutex requestMutex_;
 };
 
 }  // namespace camera

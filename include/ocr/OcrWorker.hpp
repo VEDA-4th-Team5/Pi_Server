@@ -26,12 +26,16 @@ struct HallCaptureResult {
     std::int64_t session_id{-1};
     int stage{0};
     bool recognized{false};
+    bool ocr_succeeded{false};
     // Gemini가 응답했으나 번호판을 읽지 못한 경우에만 true다. 요청 실패나 큐
     // 거부처럼 OCR을 시도조차 못한 경우와 구분하기 위해 recognized와 나눠 둔다.
     bool plate_unreadable{false};
     std::string plate_number;
     double confidence{0.0};
     std::string classification{"OCR_FAILED"};
+    std::string raw_text;
+    std::string error_message;
+    std::string processed_at;
 };
 
 using HallCaptureCallback = std::function<void(const HallCaptureResult&)>;
@@ -63,7 +67,8 @@ public:
     void stop();
     /** @brief BestShot 이미지를 기존 session의 OCR 작업으로 등록한다. */
     void enqueue(int session_id, const std::string& slot_id,
-                 const std::string& image_path);
+                 const std::string& image_path,
+                 const std::string& enhanced_image_path = {});
     /** @brief 세션이 아직 없는 IVA scene을 후보 탐색 OCR 작업으로 등록한다. */
     void enqueueScene(const std::string& slot_id,
                       const std::string& image_path,

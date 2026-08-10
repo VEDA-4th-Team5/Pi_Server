@@ -67,7 +67,7 @@ curl --max-time 3 http://127.0.0.1:8080/api/v1/health
 해결:
 
 ```bash
-./set.sh
+./run_server.sh
 ```
 
 정상 확인 주소:
