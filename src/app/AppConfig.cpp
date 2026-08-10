@@ -227,6 +227,22 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("GEMINI_CONNECT_TIMEOUT_SEC", 5);
     config.gemini_request_timeout_sec =
         getEnvIntOrDefault("GEMINI_REQUEST_TIMEOUT_SEC", 30);
+    config.telegram_enabled =
+        getEnvBoolOrDefault("TELEGRAM_ENABLED", false);
+    config.telegram_bot_token = getEnvOrLocalSetting(
+        "TELEGRAM_BOT_TOKEN", "", ".env.telegram.local");
+    config.telegram_channel = getEnvOrLocalSetting(
+        "TELEGRAM_CHANNEL", "", ".env.telegram.local");
+    config.telegram_connect_timeout_ms =
+        std::max(1, getEnvIntOrDefault("TELEGRAM_CONNECT_TIMEOUT_MS", 3000));
+    config.telegram_request_timeout_ms =
+        std::max(1, getEnvIntOrDefault("TELEGRAM_REQUEST_TIMEOUT_MS", 10000));
+    config.telegram_retry_count =
+        std::max(0, getEnvIntOrDefault("TELEGRAM_RETRY_COUNT", 2));
+    config.telegram_retry_delay_ms =
+        std::max(1, getEnvIntOrDefault("TELEGRAM_RETRY_DELAY_MS", 500));
+    config.telegram_queue_capacity =
+        std::max(1, getEnvIntOrDefault("TELEGRAM_QUEUE_CAPACITY", 256));
 
     config.parking_timer_enabled =
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
