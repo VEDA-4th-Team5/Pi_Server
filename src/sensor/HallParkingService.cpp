@@ -83,6 +83,9 @@ HallParkingService::HallParkingService(
       slot_index_(slot_configs_),
       adapter_(slot_index_),
       occupancy_manager_(slot_configs_),
+      iva_occupancy_coordinator_(
+          slot_configs_,
+          std::chrono::milliseconds(app_config.camera_iva_exit_confirm_ms)),
       app_config_(app_config),
       channels_(channels),
       database_(database),
@@ -163,54 +166,96 @@ bool HallParkingService::handleLine(const std::string& line,
     return processEventLocked(*event, true);
 }
 
-bool HallParkingService::handleCameraOccupancy(
-    const std::string& slot_id, const bool occupied) {
+bool HallParkingService::handleCameraIvaSignal(
+    const event::IvaOccupancySignal& signal) {
     std::lock_guard lock(mutex_);
     if (app_config_.parking_occupancy_source != "CAMERA_IVA") return false;
 
     const auto slot = std::find_if(
         slot_configs_.begin(), slot_configs_.end(),
-        [&slot_id](const parking::ParkingSlotConfig& config) {
-            return config.enabled && config.slotId == slot_id;
+        [&signal](const parking::ParkingSlotConfig& config) {
+            return config.enabled && config.slotId == signal.slotId;
         });
     if (slot == slot_configs_.end()) {
         util::logWarn("IVA occupancy rejected: unknown/disabled slot=" +
-                      slot_id);
+                      signal.slotId);
         return false;
     }
 
-    parking::ParkingSensorEvent event;
-    event.slotId = slot->slotId;
-    // 기존 상태 머신이 슬롯 설정과 일치 여부를 검증하므로 설정된 안정 ID를
-    // 사용하되 transport는 camera-mqtt로 남겨 입력 출처를 구분한다.
-    event.sensorId = slot->sensorId;
-    event.state = occupied ? parking::ParkingSensorState::Occupied
-                           : parking::ParkingSensorState::Vacant;
-    event.occurredAt = std::chrono::system_clock::now();
-    event.receivedMonotonic = std::chrono::steady_clock::now();
-    event.sourceTransport = "camera-mqtt";
+    const auto now = std::chrono::steady_clock::now();
+    const auto result = iva_occupancy_coordinator_.handle(signal, now);
+    const std::string object = signal.objectId.empty() ? "none"
+                                                       : signal.objectId;
 
-    if (occupied) {
-        const std::size_t canceled = pending_camera_exits_.erase(slot_id);
-        if (canceled != 0) {
-            util::logLine("IVA_EXIT", "canceled by ENTER slot=" + slot_id);
-            camera_exit_condition_.notify_all();
-        }
-        return processEventLocked(event, false);
-    }
-
-    if (pending_camera_exits_.contains(slot_id)) {
-        util::logLine("IVA_EXIT", "duplicate ignored slot=" + slot_id);
+    if (result.code == event::IvaCoordinationCode::IgnoredEnter) {
+        util::logLine("IVA_OCCUPANCY",
+                      "ignored action=ENTER slot=" + signal.slotId +
+                          " object=" + object +
+                          " reason=INTRUSION_ONLY_POLICY");
         return true;
     }
-    const auto delay = std::chrono::milliseconds(
-        app_config_.camera_iva_exit_confirm_ms);
-    pending_camera_exits_.emplace(
-        slot_id, PendingCameraExit{event, event.receivedMonotonic + delay});
-    util::logLine("IVA_EXIT", "pending slot=" + slot_id +
-                  " confirm_ms=" + std::to_string(delay.count()));
-    camera_exit_condition_.notify_all();
-    return true;
+    if (result.code == event::IvaCoordinationCode::IgnoredCustomExit) {
+        util::logLine(
+            "IVA_EXIT",
+            "custom publication ignored slot=" + signal.slotId +
+                " object=" + object +
+                " reason=RAW_WISEAI_EXIT_REQUIRED");
+        return true;
+    }
+    if (result.code == event::IvaCoordinationCode::Unsupported) {
+        util::logWarn("IVA occupancy rejected: unsupported action slot=" +
+                      signal.slotId);
+        return false;
+    }
+    if (result.code == event::IvaCoordinationCode::Duplicate) {
+        util::logLine("IVA_OCCUPANCY",
+                      "duplicate ignored slot=" + signal.slotId +
+                          " object=" + object);
+        return true;
+    }
+    if (result.code == event::IvaCoordinationCode::ExitPending) {
+        util::logLine(
+            "IVA_OCCUPANCY",
+            "slot=" + signal.slotId + " state=VACANT_CANDIDATE" +
+                " active_areas=" +
+                std::to_string(result.activeAreaCount) + "/" +
+                std::to_string(result.configuredAreaCount) +
+                " known_areas=" +
+                std::to_string(result.knownAreaCount) +
+                " object=" + object);
+        util::logLine(
+            "IVA_EXIT",
+            "pending slot=" + signal.slotId + " object=" + object +
+                " confirm_ms=" +
+                std::to_string(app_config_.camera_iva_exit_confirm_ms));
+        camera_exit_condition_.notify_all();
+        return true;
+    }
+    if (result.code == event::IvaCoordinationCode::ExitCanceled) {
+        util::logLine("IVA_EXIT",
+                      "canceled by INTRUSION slot=" + signal.slotId +
+                          " object=" + object);
+        camera_exit_condition_.notify_all();
+        // 서버 시작 직후 EXIT를 먼저 받아 pending이 만들어진 뒤 첫 INTRUSION이
+        // 온 경우에도 세션을 생성해야 한다. 이미 점유 중이면 기존 상태 머신이
+        // 중복 OCCUPIED를 안전하게 무시한다.
+    }
+
+    util::logLine(
+        "IVA_OCCUPANCY",
+        "slot=" + signal.slotId + " state=OCCUPIED" +
+            " active_areas=" + std::to_string(result.activeAreaCount) +
+            "/" + std::to_string(result.configuredAreaCount) +
+            " known_areas=" + std::to_string(result.knownAreaCount) +
+            " object=" + object);
+    parking::ParkingSensorEvent sensor_event;
+    sensor_event.slotId = slot->slotId;
+    sensor_event.sensorId = slot->sensorId;
+    sensor_event.state = parking::ParkingSensorState::Occupied;
+    sensor_event.occurredAt = std::chrono::system_clock::now();
+    sensor_event.receivedMonotonic = now;
+    sensor_event.sourceTransport = "camera-mqtt";
+    return processEventLocked(sensor_event, false);
 }
 
 bool HallParkingService::processEventLocked(
@@ -485,17 +530,12 @@ void HallParkingService::confirmationLoop() {
 void HallParkingService::cameraExitLoop() {
     std::unique_lock lock(mutex_);
     while (!stopping_) {
-        if (pending_camera_exits_.empty()) {
+        const auto next = iva_occupancy_coordinator_.nextDeadline();
+        if (!next) {
             camera_exit_condition_.wait(lock);
             continue;
         }
-        auto next = std::min_element(
-            pending_camera_exits_.begin(), pending_camera_exits_.end(),
-            [](const auto& left, const auto& right) {
-                return left.second.deadline < right.second.deadline;
-            });
-        const auto deadline = next->second.deadline;
-        if (camera_exit_condition_.wait_until(lock, deadline) !=
+        if (camera_exit_condition_.wait_until(lock, *next) !=
             std::cv_status::timeout) {
             continue;
         }
@@ -503,17 +543,21 @@ void HallParkingService::cameraExitLoop() {
 
         const auto now = std::chrono::steady_clock::now();
         std::vector<parking::ParkingSensorEvent> due;
-        for (auto it = pending_camera_exits_.begin();
-             it != pending_camera_exits_.end();) {
-            if (it->second.deadline > now) {
-                ++it;
-                continue;
-            }
-            auto event = it->second.event;
+        for (const auto& signal : iva_occupancy_coordinator_.takeDue(now)) {
+            const auto slot = std::find_if(
+                slot_configs_.begin(), slot_configs_.end(),
+                [&signal](const parking::ParkingSlotConfig& config) {
+                    return config.enabled && config.slotId == signal.slotId;
+                });
+            if (slot == slot_configs_.end()) continue;
+            parking::ParkingSensorEvent event;
+            event.slotId = slot->slotId;
+            event.sensorId = slot->sensorId;
+            event.state = parking::ParkingSensorState::Vacant;
             event.occurredAt = std::chrono::system_clock::now();
             event.receivedMonotonic = now;
+            event.sourceTransport = "camera-mqtt";
             due.push_back(std::move(event));
-            it = pending_camera_exits_.erase(it);
         }
         // DB 조회는 MQTT가 호출하는 public method와 같은 mutex를 잡지 않은
         // background 구간에서 수행한다.

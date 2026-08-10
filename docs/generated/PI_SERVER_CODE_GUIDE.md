@@ -3,7 +3,7 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 153
+- 분석 파일 수: 155
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
@@ -671,6 +671,15 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 - `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolve(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### include/event/IvaOccupancyCoordinator.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `IvaCoordinationResult event::IvaOccupancyCoordinator::handle(IvaOccupancySignal signal, std::chrono::steady_clock::time_point now=std::chrono::steady_clock::now())` — IVA 액션 한 건을 점유 전이 또는 출차 예약으로 반영한다.
+- `event::IvaOccupancyCoordinator::IvaOccupancyCoordinator(const std::vector< parking::ParkingSlotConfig > &slots, std::chrono::milliseconds exitConfirmDelay)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::chrono::steady_clock::time_point > event::IvaOccupancyCoordinator::nextDeadline() const` — 가장 빠른 출차 확인 시각을 반환한다.
+- `std::vector< IvaOccupancySignal > event::IvaOccupancyCoordinator::takeDue(std::chrono::steady_clock::time_point now)` — 확인 시각이 지난 출차 신호를 큐에서 제거해 반환한다.
+
 ### include/event/IvaSlotOccupancyAggregator.hpp
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
@@ -1070,7 +1079,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `HallParkingWorkQueue::PushResult sensor::HallParkingWorkQueue::push(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::canEnqueueWorkLocked(const parking::ParkingSensorEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::enqueueWorkLocked(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingService::handleCameraOccupancy(const std::string &slot_id, bool occupied)` — 정규화된 IVA ENTER/EXIT를 기존 세션·정리 흐름으로 연결한다.
+- `bool sensor::HallParkingService::handleCameraIvaSignal(const event::IvaOccupancySignal &signal)` — WiseAI IVA 액션을 기존 세션·정리 흐름으로 연결한다.
 - `bool sensor::HallParkingService::handleLine(const std::string &line, const std::string &transport="mqtt-test")` — SENSOR:HALLxx:OCCUPIED/VACANT 메시지 한 줄을 처리한다.
 - `bool sensor::HallParkingService::handleOccupied(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::handleVacant(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition, std::optional< std::int64_t > expected_session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1443,6 +1452,15 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolve(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### src/event/IvaOccupancyCoordinator.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `IvaCoordinationResult event::IvaOccupancyCoordinator::handle(IvaOccupancySignal signal, std::chrono::steady_clock::time_point now=std::chrono::steady_clock::now())` — IVA 액션 한 건을 점유 전이 또는 출차 예약으로 반영한다.
+- `event::IvaOccupancyCoordinator::IvaOccupancyCoordinator(const std::vector< parking::ParkingSlotConfig > &slots, std::chrono::milliseconds exitConfirmDelay)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::chrono::steady_clock::time_point > event::IvaOccupancyCoordinator::nextDeadline() const` — 가장 빠른 출차 확인 시각을 반환한다.
+- `std::vector< IvaOccupancySignal > event::IvaOccupancyCoordinator::takeDue(std::chrono::steady_clock::time_point now)` — 확인 시각이 지난 출차 신호를 큐에서 제거해 반환한다.
+
 ### src/event/IvaSlotOccupancyAggregator.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
@@ -1763,7 +1781,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `HallParkingWorkQueue::PushResult sensor::HallParkingWorkQueue::push(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::canEnqueueWorkLocked(const parking::ParkingSensorEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::enqueueWorkLocked(HallParkingWorkItem item)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::HallParkingService::handleCameraOccupancy(const std::string &slot_id, bool occupied)` — 정규화된 IVA ENTER/EXIT를 기존 세션·정리 흐름으로 연결한다.
+- `bool sensor::HallParkingService::handleCameraIvaSignal(const event::IvaOccupancySignal &signal)` — WiseAI IVA 액션을 기존 세션·정리 흐름으로 연결한다.
 - `bool sensor::HallParkingService::handleLine(const std::string &line, const std::string &transport="mqtt-test")` — SENSOR:HALLxx:OCCUPIED/VACANT 메시지 한 줄을 처리한다.
 - `bool sensor::HallParkingService::handleOccupied(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool sensor::HallParkingService::handleVacant(const parking::ParkingSensorEvent &event, const parking::ParkingTransitionResult &transition, std::optional< std::int64_t > expected_session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.

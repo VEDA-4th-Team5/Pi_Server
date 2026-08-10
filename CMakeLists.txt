@@ -132,6 +132,7 @@ add_executable(camera-iva-event-test
     src/event/CameraEventParser.cpp
     src/event/IvaEventResolver.cpp
     src/event/IvaSlotOccupancyAggregator.cpp
+    src/event/IvaOccupancyCoordinator.cpp
     src/util/TimeUtil.cpp)
 target_include_directories(camera-iva-event-test PRIVATE include)
 target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
@@ -298,6 +299,8 @@ add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
 add_executable(hall-timer-integration-test
     tests/integration/HallTimerIntegrationTest.cpp
     src/sensor/HallParkingService.cpp
+    src/event/IvaSlotOccupancyAggregator.cpp
+    src/event/IvaOccupancyCoordinator.cpp
     src/parking/EvidenceCaptureWorker.cpp
     src/snapshot/SnapshotStorage.cpp
     src/event/SystemEventReporter.cpp
@@ -317,6 +320,8 @@ add_test(NAME hall-timer-integration-test
 add_executable(camera-iva-occupancy-integration-test
     tests/integration/CameraIvaOccupancyIntegrationTest.cpp
     src/sensor/HallParkingService.cpp
+    src/event/IvaSlotOccupancyAggregator.cpp
+    src/event/IvaOccupancyCoordinator.cpp
     src/parking/EvidenceCaptureWorker.cpp
     src/snapshot/SnapshotStorage.cpp
     src/event/SystemEventReporter.cpp

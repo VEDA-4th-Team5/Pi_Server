@@ -1,10 +1,12 @@
 #include "app/AppConfig.hpp"
 #include "event/CameraEventParser.hpp"
 #include "event/IvaEventResolver.hpp"
+#include "event/IvaOccupancyCoordinator.hpp"
 #include "event/IvaSlotOccupancyAggregator.hpp"
 #include "parking/ParkingSlotConfig.hpp"
 
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -130,6 +132,28 @@ int main() {
                           !customExit.is_active && customExit.action == "EXIT",
                       "custom EXIT publication with whitespace must be parsed");
 
+    const auto rawExit = event::CameraEventParser::parse(
+        "E4:30:22:F2:D1:A0/onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name1",
+        R"({"UtcTime":"2026-08-10T01:28:24.698Z","Source":{"VideoSourceToken":"vs-0","RuleName":"name1"},"Data":{"State":"true","ObjectId":"41808","Action":"Exit"}})",
+        "ch01");
+    success &= expect(rawExit.event_type == "camera_iva_area_exit" &&
+                          rawExit.action == "EXIT" && !rawExit.is_active &&
+                          rawExit.object_id == "41808" &&
+                          rawExit.rule_name == "name1" &&
+                          rawExit.timestamp == "2026-08-10T01:28:24.698Z",
+                      "raw WiseAI EXIT must preserve ObjectId and normalize "
+                      "State=true to vacant action");
+
+    const auto rawIntrusion = event::CameraEventParser::parse(
+        "E4:30:22:F2:D1:A0/onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name1",
+        R"({"UtcTime":"2026-08-10T01:28:40.128Z","Source":{"VideoSourceToken":"vs-0","RuleName":"name1"},"Data":{"State":"true","ObjectId":41808,"Action":"Intrusion"}})",
+        "ch01");
+    success &= expect(
+        rawIntrusion.event_type == "camera_iva_area_intrusion" &&
+            rawIntrusion.action == "INTRUSION" && rawIntrusion.is_active &&
+            rawIntrusion.object_id == "41808",
+        "raw WiseAI INTRUSION must preserve numeric ObjectId");
+
     auto tokenMismatch = event::CameraEventParser::parse(
         "cam01/onvif-ej/iva/vs-0/EV01/enter",
         R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-1","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"ENTER","active":true})",
@@ -184,6 +208,46 @@ int main() {
     success &= expect(!aggregator.update(
                           "EV04", "cam01", "vs-0", "name4", true),
                       "duplicate IVA state must not emit another transition");
+
+    using namespace std::chrono_literals;
+    event::IvaOccupancyCoordinator coordinator(aggregateSlots, 20s);
+    const auto enterIgnored = coordinator.handle(
+        {"EV01", "cam01", "vs-0", "name1", "41808",
+         event::IvaOccupancyAction::Enter});
+    success &= expect(
+        enterIgnored.code == event::IvaCoordinationCode::IgnoredEnter,
+        "ENTER must not create occupancy under INTRUSION-only policy");
+    const auto occupied = coordinator.handle(
+        {"EV01", "cam01", "vs-0", "name1", "41808",
+         event::IvaOccupancyAction::Intrusion});
+    success &= expect(occupied.code == event::IvaCoordinationCode::Occupied,
+                      "INTRUSION must create occupancy");
+    const auto started = std::chrono::steady_clock::now();
+    auto customExitSignal = event::IvaOccupancySignal{
+        "EV01", "cam01", "vs-0", "name1", "",
+        event::IvaOccupancyAction::Exit};
+    customExitSignal.authoritativeExit = false;
+    const auto ignoredCustomExit = coordinator.handle(
+        customExitSignal, started);
+    success &= expect(
+        ignoredCustomExit.code ==
+            event::IvaCoordinationCode::IgnoredCustomExit &&
+            !coordinator.nextDeadline().has_value(),
+        "fixed custom EXIT must not schedule departure");
+    const auto exitPending = coordinator.handle(
+        {"EV01", "cam01", "vs-0", "name1", "41808",
+         event::IvaOccupancyAction::Exit}, started);
+    success &= expect(
+        exitPending.code == event::IvaCoordinationCode::ExitPending &&
+            coordinator.takeDue(started + 19s).empty(),
+        "EXIT must remain pending before the confirmation deadline");
+    const auto canceled = coordinator.handle(
+        {"EV01", "cam01", "vs-0", "name1", "41808",
+         event::IvaOccupancyAction::Intrusion}, started + 16s);
+    success &= expect(
+        canceled.code == event::IvaCoordinationCode::ExitCanceled &&
+            coordinator.takeDue(started + 25s).empty(),
+        "same-object INTRUSION must cancel the pending EXIT");
 
     const std::string bundledNotifications = R"(
       <wsnt:Notify>

@@ -115,27 +115,34 @@ data/snapshots/ch1/
 
 ```bash
 export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
-export CAMERA_IVA_EXIT_CONFIRM_MS=10000
+export CAMERA_IVA_EXIT_CONFIRM_MS=20000
 ```
 
 ```text
-name1 active=true
+name1 Action=Intrusion
 → 대기 중인 동일 슬롯 EXIT 취소
 → ACTIVE 세션이 없으면 PARKING_SESSION 생성
 
-동일 active 반복
+동일 Intrusion 반복
 → 기존 session 유지, 중복 촬영/세션 생성 금지
 
-name1 active=false
-→ 기본 10초 출차 확인 예약
-→ 확인 중 ENTER가 오면 취소
+name1 Action=Exit
+→ 기본 20초 출차 확인 예약
+→ 확인 중 INTRUSION이 오면 취소
 → 확인 만료 후 동일 슬롯 session 종료
+
+smart-parking-iva-v1 고정 Publication Action=EXIT
+→ 실제 WiseAI 분석 결과가 아니므로 진단 로그만 남기고 무시
+→ 세션 종료·사진 삭제 금지
+
+name1 Action=Enter
+→ 경계 통과 진단 이벤트로만 기록하고 점유·촬영에는 사용하지 않음
 
 BestShot/Plate 이벤트
 → 현재 ACTIVE session에 이미지와 OCR 결과만 attach
 ```
 
-`CAMERA_IVA_EXIT_CONFIRM_MS`는 1000~60000ms 범위이며 기본값은 10000ms다.
+`CAMERA_IVA_EXIT_CONFIRM_MS`는 1000~60000ms 범위이며 기본값은 20000ms다.
 반복 EXIT는 최초 deadline을 뒤로 미루지 않는다. 확인이 끝난 출차는 Hall VACANT와
 동일한 정리 정책을 사용한다. `violation_at IS NULL`이면 예약/OCR/이미지/IMAGE_LOG를
 정리하고, `violation_at IS NOT NULL`이면 위반 증거를 보존한다.
@@ -149,31 +156,35 @@ BestShot/Plate 이벤트
 .../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name4
 ```
 
-`name1`~`name4`는 각각 `EV01`~`EV04`다. 각 영역의 비활성 이벤트는 대응하는
-슬롯의 VACANT 후보로 전달한다.
+`name1`~`name4`는 각각 `EV01`~`EV04`다. `Data.Action=Intrusion`만 대응 슬롯의
+OCCUPIED로 전달하고 `Data.Action=Exit`는 VACANT 후보로 전달한다. WiseAI의
+`Data.State=true`는 액션 발생 상태이므로 EXIT payload에서도 점유 true로 해석하지
+않는다. `ObjectId`는 EXIT와 후속 INTRUSION의 상관관계 로그에 보존한다.
 
 아래 고정 Publication은 카메라 설정 진단용으로만 보존하며 운영 점유 입력으로
 사용하지 않는다. 같은 Intrusion Event Rule에 연결하면 ENTER와 EXIT가 동시에
 발행될 수 있기 때문이다.
 
 ```text
-ENTER diagnostic topic: test/disabled/EV01/enter
-EXIT diagnostic topic:  test/disabled/EV01/exit
+INTRUSION topic: cam01/onvif-ej/iva/vs-0/EV01/intrusion
+EXIT topic:      cam01/onvif-ej/iva/vs-0/EV01/exit
 QoS: 1
 Retain: false
 Default topic prefix: false
 ```
 
 ```json
-{"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"ENTER","active":true}
+{"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"name1","slot_id":"EV01","event_type":"IVA_AREA","action":"INTRUSION","active":true}
 ```
 
 ```json
-{"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"EV01","slot_id":"EV01","event_type":"IVA_AREA","action":"EXIT","active":false}
+{"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"name1","slot_id":"EV01","event_type":"IVA_AREA","action":"EXIT","active":false}
 ```
 
 커스텀 JSON 파서는 이전 프로토콜 호환을 위해 유지한다. 네이티브 운영 경로는
 `camera_id + video_source_token + rule_name`과 슬롯별 OR 집계 결과를 사용한다.
+커스텀 INTRUSION은 보조 입차 입력으로 허용하지만 고정 커스텀 EXIT에는 출차
+권한을 부여하지 않는다. 출차는 Raw WiseAI `Data.Action=Exit`만 인정한다.
 
 ## Snapshot API 기반 현재 촬영 흐름
 
@@ -201,9 +212,9 @@ Snapshot API가 반환하는 것은 호출 시점의 현재 프레임이다. IVA
 
 ## 현재 처리 정책
 
-- `HALL` 모드에서는 IVA ENTER/INTRUSION을 촬영 후보로만 처리한다.
-- `CAMERA_IVA` 모드에서는 영역 OR 결과가 true면 세션을 만들고 모든 영역이
-  false일 때 EXIT 확인 후 세션을 닫는다.
+- `HALL` 모드에서도 IVA INTRUSION만 촬영 후보로 처리하고 ENTER는 무시한다.
+- `CAMERA_IVA` 모드에서는 INTRUSION 영역 OR 결과가 true면 세션을 만들고 모든
+  영역에서 EXIT가 확인되면 출차 확인 후 세션을 닫는다.
 - 선택되지 않은 점유 입력은 무시하여 Hall과 IVA가 동시에 세션을 만들지 않는다.
 - 같은 슬롯의 짧은 반복 이벤트는 `IVA_DUPLICATE_SUPPRESSION_MS` 동안 억제한다.
 - 유효한 IVA 이벤트는 BestShot과 연결할 pending slot을 만든다.
@@ -237,7 +248,9 @@ ctest --test-dir cmake-build \
 - 모호한 camera/token/rule 설정 거부
 - `name1 → EV01`, `name2 → EV02`, `name3 → EV03`, `name4 → EV04`
   1:1 점유 매핑
-- EXIT 확인 전 세션 유지 및 ENTER 재수신 취소
+- ENTER 무시 및 INTRUSION 전용 세션 시작
+- WiseAI JSON `ObjectId`, `UtcTime`, `Action` 구조 파싱
+- EXIT 확인 전 세션 유지 및 INTRUSION 재수신 취소
 - 조기 EXIT의 이미지·IMAGE_LOG 삭제
 - `violation_at`이 있는 EXIT의 증거 보존
 - `session_id` 기반 이미지 디렉터리

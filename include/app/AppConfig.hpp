@@ -54,7 +54,7 @@ struct AppConfig {
     // 주차 점유 상태를 확정하는 입력 주체. HALL 또는 CAMERA_IVA를 사용한다.
     // 두 입력이 동시에 세션을 만들지 않도록 한 실행에서는 하나만 선택한다.
     std::string parking_occupancy_source;
-    // CAMERA_IVA 모드에서 EXIT를 즉시 확정하지 않고 ENTER 재수신을 기다리는 시간.
+    // CAMERA_IVA 모드에서 EXIT를 즉시 확정하지 않고 후속 INTRUSION을 기다리는 시간.
     int camera_iva_exit_confirm_ms;
 
     // 확정된 입차 T0를 기준으로 30초/60초 MQTT 촬영 요청을 예약한다.

@@ -19,6 +19,8 @@ struct CameraEvent {
     // smart-parking-iva-v1 고정 Publication payload에서 선언한 값이다.
     std::string declared_camera_id;
     std::string action;
+    // 동일 차량의 WiseAI Exit/Intrusion 순서를 상관관계로 추적할 때 사용한다.
+    std::string object_id;
     bool is_smart_parking_iva{false};
     bool protocol_valid{true};
     std::string protocol_error;
