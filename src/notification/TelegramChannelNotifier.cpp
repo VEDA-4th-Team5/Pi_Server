@@ -10,7 +10,7 @@ namespace notification {
 
 TelegramChannelNotifier::TelegramChannelNotifier(const Config& config,
                                                const TelegramApiClient& api_client)
-    : config_(config), api_client_(api_client) {
+    : config_(config), api_client_(api_client), formatter_() {
 }
 
 TelegramChannelNotifier::~TelegramChannelNotifier() {
@@ -60,7 +60,7 @@ bool TelegramChannelNotifier::enqueue(TelegramMessage message) {
     return true;
 }
 
-bool TelegramChannelNotifier::sendWithRetry(const TelegramMessage& message,
+bool TelegramChannelNotifier::sendWithRetry(const TelegramMessage&,
                                           const std::string& text) {
     for (int attempt = 0; attempt <= config_.retry_count; ++attempt) {
         if (api_client_.sendMessage(text)) return true;

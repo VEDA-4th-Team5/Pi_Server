@@ -29,7 +29,7 @@ TelegramApiClient::TelegramApiClient(const Config& config) : config_(config) {
     }
 }
 
-bool TelegramApiClient::sendMessage(const std::string& text) {
+bool TelegramApiClient::sendMessage(const std::string& text) const {
     if (!config_.enabled || config_.bot_token.empty() || config_.channel.empty()) {
         return false;
     }
