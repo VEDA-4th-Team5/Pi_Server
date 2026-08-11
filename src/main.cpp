@@ -57,7 +57,7 @@ extern "C" {
 #include <vector>
 
 namespace {
-// signal handler?� 모든 ?�업 ?�레?��? ?�께 보는 ?�역 종료 ?�래그이??
+// signal handler와 모든 작업 스레드가 함께 보는 전역 종료 플래그이다.
 std::atomic<bool> g_running{true};
 
 void signalHandler(int) {
@@ -69,7 +69,7 @@ std::vector<std::shared_ptr<camera::CameraChannel>> createCameraChannels(
 ) {
     std::vector<std::shared_ptr<camera::CameraChannel>> channels;
 
-    // shared_ptr�??��?�?RTSP, MQTT, BestShot 모듈??같�? 채널 ?�태�?공유?�다.
+    // shared_ptr를 쓰므로 RTSP, MQTT, BestShot 모듈이 같은 채널 상태를 공유한다.
     for (const auto& rtsp_config : config.rtsp_channels) {
         auto channel = std::make_shared<camera::CameraChannel>();
 
@@ -80,8 +80,8 @@ std::vector<std::shared_ptr<camera::CameraChannel>> createCameraChannels(
         channels.push_back(channel);
     }
 
-    // Snapshot API ?�용 모드?�서??slot/channel 매핑???�용???�리 채널?�
-    // ?�요?�다. RTSP URL???�는 채널?� ?�신 ?�레?�에 ?�기지 ?�는??
+    // Snapshot API 전용 모드에서도 slot/channel 매핑에 사용할 논리 채널은
+    // 필요하다. RTSP URL이 없는 채널은 수신 스레드에 넘기지 않는다.
     if (config.camera_snapshot_api_enabled) {
         for (const auto& area : config.iva_areas) {
             const bool exists = std::any_of(
@@ -159,8 +159,8 @@ std::chrono::steady_clock::time_point restoreMonotonicStart(
     return steady_now - elapsed;
 }
 
-// EVDA-138?�서 카메???�답 규약???�정?�기 ???�용?�는 MQTT ?�청 초안?�다.
-// publish ?�공?� Broker ?�수�??��??�며 ?�제 카메??촬영 ?�공???�하지 ?�는??
+// EVDA-138에서 카메라 응답 규약이 확정되기 전 사용하는 MQTT 요청 초안이다.
+// publish 성공은 Broker 접수만 의미하며 실제 카메라 촬영 성공을 뜻하지 않는다.
 std::string buildCaptureRequestPayload(
     const parking::CaptureRequest& request) {
     std::ostringstream output;
@@ -246,8 +246,8 @@ std::string buildQtParkingEvent(
     return output.str();
 }
 
-// Qt??alarm_kind만으�?UI 경고 종류�??�단?�고, error_code�??�세 ?�인??
-// ?�시?�다. DB EVENT_LOG???�세 event_type?� 바꾸지 ?�는??
+// Qt는 alarm_kind만으로 UI 경고 종류를 판단하고, error_code로 상세 원인을
+// 표시한다. DB EVENT_LOG의 상세 event_type은 바꾸지 않는다.
 std::string buildQtSystemEvent(const event::SystemEvent& system_event) {
     const std::string timestamp = util::nowIsoString();
     const std::string event_type =
@@ -287,19 +287,19 @@ std::string buildQtSystemEvent(const event::SystemEvent& system_event) {
 }
 
 int main() {
-    // OpenCV가 ?��??�으�??�용?�는 FFmpeg??TCP ?�송�??�?�아?�을 지?�한??
-    // UDP보다 지?��? 조금 ?????��?�?CCTV ?�트림의 ?�킷 ?�실?????�정?�이??
+    // OpenCV가 내부적으로 사용하는 FFmpeg에 TCP 전송과 타임아웃을 지정한다.
+    // UDP보다 지연은 조금 늘 수 있지만 CCTV 스트림의 패킷 손실에 더 안정적이다.
     setenv(
         "OPENCV_FFMPEG_CAPTURE_OPTIONS",
         "rtsp_transport;tcp|stimeout;5000000|max_delay;500000",
         0
     );
 
-    // FFmpeg ?� ?�리 Logger �?거치지 ?�고 직접 stderr �??�다("[h264 @ ...]
-    // mmco: unref short failure" �?. ?�상 ?�레?�마???�오므�??�제 로그�?
-    // ??��버린?? LOG_FFMPEG=false �?libavutil 쪽에???�예 막는??
-    // 주의: OpenCV 가 ?�체 FFmpeg ???�적 링크??빌드?�면 별도 libavutil ??
-    // ?��?�????�정????먹을 ???�다.
+    // FFmpeg 은 우리 Logger 를 거치지 않고 직접 stderr 로 쓴다("[h264 @ ...]
+    // mmco: unref short failure" 류). 손상 프레임마다 나오므로 실제 로그를
+    // 덮어버린다. LOG_FFMPEG=false 면 libavutil 쪽에서 아예 막는다.
+    // 주의: OpenCV 가 자체 FFmpeg 을 정적 링크한 빌드라면 별도 libavutil 을
+    // 쓰므로 이 설정이 안 먹을 수 있다.
     if (!util::logEnabled("FFMPEG")) {
         av_log_set_level(AV_LOG_QUIET);
     }
@@ -356,8 +356,8 @@ int main() {
         return 1;
     }
 
-    // 초기???�서: DB -> ?�택??RTSP -> BestShot -> MQTT. Snapshot API ?�용
-    // 모드??RTSP 최초 ?�레?�을 기다리�? ?�는??
+    // 초기화 순서: DB -> 선택적 RTSP -> BestShot -> MQTT. Snapshot API 전용
+    // 모드는 RTSP 최초 프레임을 기다리지 않는다.
     database::EventDatabase database;
 
     if (!database.open(config.db_path)) {
@@ -385,8 +385,8 @@ int main() {
         return 1;
     }
 
-    // ?�서/?�신 ?�레?�는 DB/MQTT I/O�?직접 기다리�? ?�고 bounded reporter queue??
-    // 기록?�다. MQTT bridge???�에???�성?��?�?atomic pointer�?준�??�태�?공유?�다.
+    // 센서/통신 스레드는 DB/MQTT I/O를 직접 기다리지 않고 bounded reporter queue에
+    // 기록한다. MQTT bridge는 뒤에서 생성되므로 atomic pointer로 준비 상태만 공유한다.
     std::atomic<mqtt::MqttEventBridge*> system_event_mqtt_bridge{nullptr};
     event::SystemEventReporter system_event_reporter(
         [&database, &system_event_mqtt_bridge](
@@ -538,8 +538,8 @@ int main() {
             [&database, &evidence_worker_for_timer](
                 std::int64_t session_id, const std::string& slot_id,
                 const std::string&) {
-                // ??증거 worker가 T0 기�? ?��?지�??��? ?�?�했?�면 같�? ?�일??
-                // ?�사?�한?? ?�전 DB/촬영 ?�패 ?�션�?기존 Snapshot?�로 보완?�다.
+                // 새 증거 worker가 T0 기준 이미지를 이미 저장했다면 같은 파일을
+                // 재사용한다. 이전 DB/촬영 실패 세션만 기존 Snapshot으로 보완한다.
                 if (const auto existing = database.findEvidenceImagePath(
                         session_id, "OVERSTAY_EVIDENCE")) {
                     return *existing;
@@ -622,7 +622,7 @@ int main() {
                     session_id, slot_id, plate_number);
             }
         };
-    // 링크??촬영 runtime보다 ?�에???�리므�??�인?�만 미리 ?�아?�고 배선?�다.
+    // 링크는 촬영 runtime보다 뒤에서 열리므로 포인터만 미리 잡아두고 배선한다.
     device::SensorLinkManager* sensor_link_for_led = nullptr;
     std::unique_ptr<parking::PlateIlluminator> plate_illuminator;
     if (config.plate_led_enabled) {
@@ -645,8 +645,8 @@ int main() {
                       std::to_string(config.plate_led_night_end_hour) +
                       "h settle=" +
                       std::to_string(config.plate_led_settle_ms) + "ms");
-        // 조명?� Pi가 직접 ?�출??거는 ?�약 촬영 경로?�만 붙는?? ??�??�나?�도
-        // 꺼져 ?�으�?명령????건도 ?��?지 ?�으므�?조용???�어가지 ?�는??
+        // 조명은 Pi가 직접 노출을 거는 예약 촬영 경로에만 붙는다. 둘 중 하나라도
+        // 꺼져 있으면 명령이 한 건도 나가지 않으므로 조용히 넘어가지 않는다.
         if (!config.capture_sched_enabled || !config.hall_capture_ocr_enabled) {
             util::logWarn(
                 "plate LED will never fire: PLATE_LED_ENABLED=true but "
@@ -667,11 +667,11 @@ int main() {
             const ocr::HallCaptureResult& result) {
             if (!hall_ocr_coordinator) return;
             if (plate_illuminator) {
-                // 번호?�을 ?��? 못한 ?�션�??��? ?�약 촬영??LED 보정?�로 ?�시
-                // ?�도?�다. ?�청 ?�패????거�???조명?�로 ?�리�? ?�는??
+                // 번호판을 읽지 못한 세션만 남은 예약 촬영을 LED 보정으로 다시
+                // 시도한다. 요청 실패나 큐 거부는 조명으로 풀리지 않는다.
                 if (result.plate_unreadable)
                     plate_illuminator->markPlateUnreadable(result.session_id);
-                // 번호?�을 ?�보?�으�??��? 촬영?� 증거 ?�?�용?�라 조명???�다.
+                // 번호판을 확보했으면 남은 촬영은 증거 저장용이라 조명이 없다.
                 else if (result.recognized)
                     plate_illuminator->markResolved(result.session_id);
             }
@@ -739,8 +739,8 @@ int main() {
                                hall_capture_executor->execute(request);
                     });
         } else {
-            // 촬영??카메?��? ?�행?��?�?Pi???�출 ?�점??모른?? ?�등?�도
-            // ?�출�??�긋?�기 ?�문????경로?�서??조명???��? ?�는??
+            // 촬영을 카메라가 수행하므로 Pi는 노출 시점을 모른다. 점등해도
+            // 노출과 어긋나기 때문에 이 경로에서는 조명을 쓰지 않는다.
             capture_runtime =
                 std::make_unique<parking::CaptureSchedulerRuntime>(
                     *capture_scheduler,
@@ -764,9 +764,9 @@ int main() {
             const parking::EvidenceCaptureResult& result) {
             if (!result.stored) return;
             if (result.reason == parking::EvidenceReason::OccupancyStart) {
-                // 30/60�??� OCR???�성?�되�?차량???�리�??��? ?�의 ROI�?
-                // ?�용?�다. ?��?줄러가 꺼진 ?�경?�서??기존 ?�작 증거 OCR�?
-                // fallback?�여 번호???�식 기능???�라지지 ?�게 ?�다.
+                // 30/60초 홀 OCR이 활성화되면 차량이 자리를 잡은 뒤의 ROI를
+                // 사용한다. 스케줄러가 꺼진 환경에서는 기존 시작 증거 OCR로
+                // fallback하여 번호판 인식 기능이 사라지지 않게 한다.
                 if (!(config.hall_capture_ocr_enabled &&
                       config.capture_sched_enabled)) {
                     ocr_worker.enqueue(static_cast<int>(result.sessionId),
@@ -911,8 +911,8 @@ int main() {
             "RTSP capture disabled: Camera Snapshot API is the image source");
     }
 
-    // ?�시???�에 ?�성??ACTIVE ?�션?� 메모�?evidence queue가 ?�라졌으므�?
-    // ?�래 entry_time(T0)??steady_clock?�로 ?�산??timer보다 먼�? 복원?�다.
+    // 재시작 전에 생성된 ACTIVE 세션은 메모리 evidence queue가 사라졌으므로
+    // 원래 entry_time(T0)을 steady_clock으로 환산해 timer보다 먼저 복원한다.
     std::size_t restored_evidence{};
     std::size_t failed_evidence_restore{};
     for (const auto& record : database.listLogs()) {
@@ -947,8 +947,8 @@ int main() {
                   std::to_string(restored_evidence) + " failed=" +
                   std::to_string(failed_evidence_restore));
 
-    // ?�정 변경으�?즉시 만료?�는 ?�성 ?�션???�제 FrameBuffer�??�용?????�도�?
-    // 최초 RTSP frame�?evidence 복원??준비된 ?�음 ?��? PUT ?�청??받는??
+    // 설정 변경으로 즉시 만료되는 활성 세션도 실제 FrameBuffer를 사용할 수 있도록
+    // 최초 RTSP frame과 evidence 복원이 준비된 다음 외부 PUT 요청을 받는다.
     if (config.http_api_enabled) {
         http::ServerConfig http_config;
         http_config.listen_address = config.http_listen_address;
@@ -1028,9 +1028,9 @@ int main() {
             std::to_string(config.capture_max_retries));
     }
 
-    // MQTT publisher가 준비된 ?�에�?발행 콜백??�????�으므�?mqtt_bridge
-    // ?�작 ?�후???�성?�다. ?�재 최종 ?�단?� ?��? ?�고 ?�보 ?�벤?�만 ?�린??
-    // (관?�실 ?�람???�정) ??event::FireAlarmManager 계약?��?
+    // MQTT publisher가 준비된 뒤에만 발행 콜백을 걸 수 있으므로 mqtt_bridge
+    // 시작 이후에 생성한다. 화재 최종 판단은 하지 않고 후보 이벤트만 올린다
+    // (관제실 사람이 확정) — event::FireAlarmManager 계약대로.
     if (config.fire_alarm_enabled) {
         fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
             config.camera_id,
@@ -1044,8 +1044,8 @@ int main() {
                     separator == std::string::npos ? "unmapped"
                                                    : topic.substr(separator + 1);
 
-                // ?�재 ?�용 ?�픽?� 최신 ?�태 복원??retained 메시지?? 주차 ?�태
-                // ?�픽?�는 ?�재�??��? ?�고 ?�합 ?�벤???�픽�??�께 발행?�다.
+                // 화재 전용 토픽은 최신 상태 복원용 retained 메시지다. 주차 상태
+                // 토픽에는 화재를 섞지 않고 통합 이벤트 토픽만 함께 발행한다.
                 const bool fire_state_published =
                     mqtt_bridge.publishApplicationEvent(topic, payload, 1, true);
                 const bool event_published = mqtt_bridge.publishQtEvent(
@@ -1065,9 +1065,9 @@ int main() {
             " bindings=" + std::to_string(fire_alarm_manager->bindingCount()));
     }
 
-    // 촬영 runtime�?MQTT publisher가 준비된 ???�제 UART/LoRa ?�력???�다.
-    // ?�재?� ?�?�서??같�? STM32 UART 링크�?공유?��?�?SensorLinkManager??
-    // ?�나�??�고, ?�신 ?�인???�두??FIRE:/SENSOR:)�?갈라 보낸??
+    // 촬영 runtime과 MQTT publisher가 준비된 뒤 실제 UART/LoRa 입력을 연다.
+    // 화재와 홀센서는 같은 STM32 UART 링크를 공유하므로 SensorLinkManager는
+    // 하나만 열고, 수신 라인을 접두사(FIRE:/SENSOR:)로 갈라 보낸다.
     const sensor::SensorProtocolParser fire_line_parser;
     std::unique_ptr<device::SensorLinkManager> sensor_link;
     if ((hall_service || fire_alarm_manager) &&
@@ -1138,17 +1138,17 @@ int main() {
     util::logInfo("waiting for camera MQTT events...");
     util::logInfo("press Ctrl+C to stop");
 
-    // ?�제 ?�업?� �?모듈???�업 ?�레?��? ?�행?�고 main?� 종료 ?�호�?기다린다.
+    // 실제 작업은 각 모듈의 작업 스레드가 수행하고 main은 종료 신호를 기다린다.
     while (g_running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    // ?�성????��?�로 ?�리?�여 ?�용 중인 ?�원??먼�? ?�라지??것을 막는??
-    // 촬영 runtime?� LED 명령?�로 sensor_link�??��?�?링크보다 먼�? 멈춘??
+    // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
+    // 촬영 runtime은 LED 명령으로 sensor_link를 쓰므로 링크보다 먼저 멈춘다.
     if (capture_runtime) capture_runtime->stop();
     if (sensor_link) sensor_link->stop();
     fire_alarm_manager.reset();
-    // reporter queue�?MQTT가 ?�아 ?�을 ??모두 비운 ??bridge ?�명??종료?�다.
+    // reporter queue를 MQTT가 살아 있을 때 모두 비운 뒤 bridge 수명을 종료한다.
     if (telegram_notifier) telegram_notifier->stop();
     telegram_notifier.reset();
     system_event_reporter.stop();
