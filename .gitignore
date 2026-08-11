@@ -27,3 +27,4 @@ modules.order
 data/snapshots/
 data/bestshots/
 *.log
+.env.telegram.local
