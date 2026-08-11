@@ -17,7 +17,7 @@ public:
     };
 
     explicit TelegramApiClient(const Config& config);
-    bool sendMessage(const std::string& text);
+    bool sendMessage(const std::string& text) const;
 
     bool isEnabled() const { return config_.enabled; }
     const std::string& channel() const { return config_.channel; }
