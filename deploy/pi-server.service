@@ -1,0 +1,27 @@
+[Unit]
+Description=Pi Server (parking/fire/IVA main service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hun
+Group=hun
+WorkingDirectory=/home/hun/Pi_server_develop
+ExecStart=/home/hun/Pi_server_develop/run_server.sh
+Restart=on-failure
+RestartSec=5
+
+# main.cpp handles SIGTERM/SIGINT for graceful shutdown; RTSP teardown can
+# take up to ~30s, so give it real headroom before the default SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# stdout/stderr also go to journalctl -u pi-server, in addition to the
+# file logging run_server.sh already does via `tee`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pi-server
+
+[Install]
+WantedBy=multi-user.target
