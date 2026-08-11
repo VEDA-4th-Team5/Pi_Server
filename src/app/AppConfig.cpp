@@ -75,6 +75,28 @@ bool getEnvBoolOrDefault(const char* key, bool default_value) {
     return default_value;
 }
 
+bool getEnvOrLocalBoolOrDefault(const char* key,
+                                bool default_value,
+                                const char* path) {
+    const std::string value = trim(getEnvOrLocalSetting(
+        key, default_value ? "true" : "false", path));
+    if (value == "1" || value == "true" || value == "TRUE" || value == "on") return true;
+    if (value == "0" || value == "false" || value == "FALSE" || value == "off") return false;
+    return default_value;
+}
+
+int getEnvOrLocalIntOrDefault(const char* key,
+                              int default_value,
+                              const char* path) {
+    const std::string value = getEnvOrLocalSetting(key, "", path);
+    if (value.empty()) return default_value;
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return default_value;
+    }
+}
+
 double parseDoubleOrDefault(const std::string& value, double default_value) {
     if (value.empty()) return default_value;
     try {
@@ -228,22 +250,28 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("GEMINI_CONNECT_TIMEOUT_SEC", 5);
     config.gemini_request_timeout_sec =
         getEnvIntOrDefault("GEMINI_REQUEST_TIMEOUT_SEC", 30);
-    config.telegram_enabled =
-        getEnvBoolOrDefault("TELEGRAM_ENABLED", false);
+    constexpr const char* telegram_local_settings = ".env.telegram.local";
+    config.telegram_enabled = getEnvOrLocalBoolOrDefault(
+        "TELEGRAM_ENABLED", false, telegram_local_settings);
     config.telegram_bot_token = getEnvOrLocalSetting(
-        "TELEGRAM_BOT_TOKEN", "", ".env.telegram.local");
+        "TELEGRAM_BOT_TOKEN", "", telegram_local_settings);
     config.telegram_channel = getEnvOrLocalSetting(
-        "TELEGRAM_CHANNEL", "", ".env.telegram.local");
-    config.telegram_connect_timeout_ms =
-        std::max(1, getEnvIntOrDefault("TELEGRAM_CONNECT_TIMEOUT_MS", 3000));
-    config.telegram_request_timeout_ms =
-        std::max(1, getEnvIntOrDefault("TELEGRAM_REQUEST_TIMEOUT_MS", 10000));
-    config.telegram_retry_count =
-        std::max(0, getEnvIntOrDefault("TELEGRAM_RETRY_COUNT", 2));
-    config.telegram_retry_delay_ms =
-        std::max(1, getEnvIntOrDefault("TELEGRAM_RETRY_DELAY_MS", 500));
-    config.telegram_queue_capacity =
-        std::max(1, getEnvIntOrDefault("TELEGRAM_QUEUE_CAPACITY", 256));
+        "TELEGRAM_CHANNEL", "", telegram_local_settings);
+    config.telegram_connect_timeout_ms = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_CONNECT_TIMEOUT_MS", 3000,
+                                     telegram_local_settings));
+    config.telegram_request_timeout_ms = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_REQUEST_TIMEOUT_MS", 10000,
+                                     telegram_local_settings));
+    config.telegram_retry_count = std::max(
+        0, getEnvOrLocalIntOrDefault("TELEGRAM_RETRY_COUNT", 2,
+                                     telegram_local_settings));
+    config.telegram_retry_delay_ms = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_RETRY_DELAY_MS", 500,
+                                     telegram_local_settings));
+    config.telegram_queue_capacity = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_QUEUE_CAPACITY", 256,
+                                     telegram_local_settings));
 
     config.parking_timer_enabled =
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
