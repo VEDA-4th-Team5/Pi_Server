@@ -97,7 +97,7 @@ crop한다. original과 enhanced에 같은 좌표를 적용하며 Gemini OCR에�
   다운로드 후 crop만 수행한다.
 - `CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false`이면 Pi 서버는 RTSP 수신과 최초 프레임
   대기를 생략한다. API 실패는 해당 촬영 실패로 기록하되 서버 전체를 종료하지 않는다.
-- 현재 실기기는 OpenAPI에 HTTP Digest 인증을 요구하며 계정은 `.env.camera.local`에서만 읽는다.
+- 현재 실기기는 OpenAPI에 HTTP Digest 인증을 요구하며 계정은 `.env.private`에서만 읽는다.
 - 기본값은 안전을 위해 `CAMERA_SNAPSHOT_API_ENABLED=false`다. CAP 검증 후 운영 환경에서 활성화한다.
 
 ### IVA 세션 촬영 구현

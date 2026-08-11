@@ -6,7 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 set -a
-[[ -f ./.env.camera.local ]] && source ./.env.camera.local
+[[ -f ./.env.public ]] && source ./.env.public
+[[ -f ./.env.private ]] && source ./.env.private
 set +a
 
 if [[ ! -f ./cmake-build/CMakeCache.txt ]]; then

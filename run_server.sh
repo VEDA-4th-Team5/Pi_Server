@@ -5,9 +5,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-# 최초 실행에서도 별도 준비 스크립트 없이 화재 센서 기본 설정을 만든다.
-[[ -f ./.env.fire.local ]] || ./tools/fire_setup.sh
-
 if [[ "${1:-}" == "restart" ]]; then
     pkill -INT -x pi-server 2>/dev/null || true
     # RTSP read timeout 때문에 정상 종료에 최대 약 30초가 걸릴 수 있다.
@@ -31,13 +28,16 @@ fi
 # 소스 변경이 실행 바이너리에 빠지는 일을 막기 위해 매번 증분 빌드한다.
 cmake --build cmake-build --target pi-server -j2
 
+# 공개 설정은 git으로 함께 배포되고, 계정/키만 로컬 .env.private에 둔다.
 set -a
-[[ -f ./.env.camera.local ]] && source ./.env.camera.local
-[[ -f ./.env.fire.local ]] && source ./.env.fire.local
-[[ -f ./.env.gemini.local ]] && source ./.env.gemini.local
-[[ -f ./.env.iva.local ]] && source ./.env.iva.local
-[[ -f ./.env.log.local ]] && source ./.env.log.local
+[[ -f ./.env.public ]] && source ./.env.public
+[[ -f ./.env.private ]] && source ./.env.private
 set +a
+
+if [[ ! -f ./.env.private ]]; then
+    echo "WARNING: .env.private 없음 - Gemini 키와 카메라 주소/계정이 빈 값입니다." >&2
+    echo "         README.md의 '실행' 절을 보고 팀에서 공유받은 값으로 만드세요." >&2
+fi
 
 export CAPTURE_SCHED_ENABLED="${CAPTURE_SCHED_ENABLED:-true}"
 export HALL_CAPTURE_OCR_ENABLED="${HALL_CAPTURE_OCR_ENABLED:-true}"

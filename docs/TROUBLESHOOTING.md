@@ -176,12 +176,12 @@ mosquitto_pub -h localhost -q 1 \
 
 - 상태: 설정 확인 필요
 - 증상: `parking/sensor/hall`에 메시지를 발행해도 DB 세션과 타이머가 시작되지 않는다.
-- 원인 사례: `.env.fire.local`의 `HALL_MQTT_INPUT_ENABLED=false`.
+- 원인 사례: `.env.public`의 `HALL_MQTT_INPUT_ENABLED=false`.
 
 확인:
 
 ```bash
-grep '^HALL_MQTT_INPUT_ENABLED' .env.fire.local .env.example 2>/dev/null
+grep '^HALL_MQTT_INPUT_ENABLED' .env.public 2>/dev/null
 ```
 
 실제 서버 흐름을 시험하려면 서버 시작 전에 다음을 적용한다.

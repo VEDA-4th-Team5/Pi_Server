@@ -87,9 +87,8 @@ ctest --test-dir cmake-build --output-on-failure
 
 ## 실행
 
-현재 로컬 카메라·Gemini 설정과 STM32 UART 자동 탐색을 적용해 실행합니다.
-최초 실행 시 `.env.fire.local`을 자동 생성하며, 실행할 때마다 변경된 소스만
-증분 빌드한 후 서버를 시작합니다.
+`.env.public`과 `.env.private`를 읽고 STM32 UART 자동 탐색을 적용해 실행합니다.
+실행할 때마다 변경된 소스만 증분 빌드한 후 서버를 시작합니다.
 
 ```bash
 ./run_server.sh
@@ -101,19 +100,43 @@ ctest --test-dir cmake-build --output-on-failure
 ./run_server.sh restart
 ```
 
-비밀정보는 다음 로컬 파일에서 관리하며 Git에 커밋하지 않습니다.
+### 설정 파일 (EVDA-203)
+
+설정은 두 파일로 나뉩니다.
+
+| 파일 | 내용 | Git |
+|---|---|---|
+| `.env.public` | 민감정보가 없는 전체 설정 | 커밋함 |
+| `.env.private` | 실제 계정·키만 | `.gitignore` |
+
+`.env.private`에 들어가는 값은 다음이 전부입니다.
 
 ```text
-.env.camera.local
-.env.iva.local
-.env.gemini.local
+GEMINI_API_KEY
+CAMERA_RTSP            # URL에 카메라 계정·비밀번호가 포함됨
+CAMERA_API_USERNAME
+CAMERA_API_PASSWORD
+CAMERA_OPEN_API_BASE   # 카메라 실제 주소
+CAMERA_IMAGE_BASE      # 카메라 실제 주소
 ```
+
+`.env.private.example`을 복사해서 시작하면 됩니다.
+
+```bash
+cp .env.private.example .env.private
+```
+
+**새로 클론했다면** `.env.private`를 직접 만들고 팀에서 공유받은 값을 채워야
+합니다. 없으면 서버는 뜨지만 OCR과 카메라 접속이 동작하지 않습니다
+(`run_server.sh`가 경고를 출력합니다).
+
+설정을 바꿀 때는 `.env.public`을 고쳐서 커밋하십시오. 이 파일이 Git으로 함께
+배포되므로 팀원이 `git pull`만 하면 같은 설정으로 맞춰집니다.
 
 ```bash
 set -a
-source ./.env.camera.local
-[ -f ./.env.iva.local ] && source ./.env.iva.local
-source ./.env.gemini.local
+source ./.env.public
+[ -f ./.env.private ] && source ./.env.private
 set +a
 
 ./cmake-build/pi-server
