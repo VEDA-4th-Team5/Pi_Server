@@ -345,6 +345,16 @@ target_compile_definitions(parking-timer-tests PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
 
+add_executable(slot-transition-admission-test
+    tests/integration/SlotTransitionActorAdmissionTest.cpp)
+target_link_libraries(slot-transition-admission-test PRIVATE parking-timer-core)
+target_compile_options(slot-transition-admission-test PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+target_compile_definitions(slot-transition-admission-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME slot-transition-admission-test
+    COMMAND slot-transition-admission-test)
+
 # 카메라/UART 없이 홀센서 입력부터 OCR 대역과 장기점유 타이머까지 잇는 통합 테스트.
 add_executable(hall-timer-integration-test
     tests/integration/HallTimerIntegrationTest.cpp
