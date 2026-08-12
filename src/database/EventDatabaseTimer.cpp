@@ -267,19 +267,69 @@ void EventDatabase::migrateRuntimeSchema() {
     if (!opened_ || db_ == nullptr) {
         throw std::runtime_error("cannot migrate a closed SQLite database");
     }
-    executeSqlUnlocked(
-        "CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS ("
-        "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
-    if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
-        !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
-        executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
-    }
-    if (tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+    runtime_schema_ready_ = false;
+    occupancy_schema_ready_ = false;
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
         executeSqlUnlocked(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_image_evidence_session_reason "
-            "ON IMAGE_LOG(session_id, evidence_reason) "
-            "WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;");
+            "CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS ("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS FIRE_ALARM_STATE ("
+            "channel_id TEXT PRIMARY KEY,sensor_id TEXT UNIQUE NOT NULL,"
+            "retained_topic TEXT UNIQUE NOT NULL,desired_lifecycle TEXT NOT NULL,"
+            "active_alarm_id TEXT,last_event_id TEXT NOT NULL,"
+            "fire_revision INTEGER NOT NULL,protocol_mode TEXT NOT NULL,"
+            "active_boot_id TEXT,last_source_sequence TEXT,"
+            "last_signal_json TEXT NOT NULL,updated_at TEXT NOT NULL);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS FIRE_MQTT_OUTBOX ("
+            "delivery_key TEXT PRIMARY KEY,sink_kind TEXT NOT NULL,"
+            "logical_key TEXT NOT NULL,sensor_id TEXT NOT NULL,"
+            "channel_id TEXT NOT NULL,event_id TEXT NOT NULL,"
+            "alarm_id TEXT NOT NULL,fire_revision INTEGER NOT NULL,"
+            "topic TEXT NOT NULL,payload_json TEXT NOT NULL,qos INTEGER NOT NULL,"
+            "retain INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,"
+            "next_attempt_at TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '',"
+            "delivery_state TEXT NOT NULL,acked_revision INTEGER,"
+            "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
+            "FOREIGN KEY(channel_id) REFERENCES FIRE_ALARM_STATE(channel_id));");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS SENSOR_RETIRED_BOOT_ID ("
+            "source_kind TEXT NOT NULL,sensor_id TEXT NOT NULL,boot_id TEXT NOT NULL,"
+            "retired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "PRIMARY KEY(source_kind,sensor_id,boot_id));");
+
+        const bool has_parking_slot =
+            tableHasColumn(db_, "PARKING_SLOT", "slot_id");
+        const bool has_parking_session =
+            tableHasColumn(db_, "PARKING_SESSION", "session_id");
+        if (has_parking_slot != has_parking_session) {
+            throw std::runtime_error(
+                "parking runtime schema is incomplete: PARKING_SLOT and "
+                "PARKING_SESSION must be present together");
+        }
+        if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
+            !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+            executeSqlUnlocked(
+                "ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
+        }
+        if (tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_image_evidence_session_reason "
+                "ON IMAGE_LOG(session_id, evidence_reason) "
+                "WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;");
+        }
+        executeSqlUnlocked("COMMIT;");
+        runtime_schema_ready_ = true;
+        occupancy_schema_ready_ = has_parking_slot;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        runtime_schema_ready_ = false;
+        occupancy_schema_ready_ = false;
+        throw;
     }
 }
 

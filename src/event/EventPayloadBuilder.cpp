@@ -63,7 +63,9 @@ std::string EventPayloadBuilder::buildFireJson(
     const FireSignal& signal,
     const FireAlarmLifecycle lifecycle,
     const std::string& event_id,
-    const std::string& alarm_id
+    const std::string& alarm_id,
+    const std::uint64_t fire_revision,
+    const std::string& delivery_id
 ) {
     std::ostringstream oss;
 
@@ -84,7 +86,9 @@ std::string EventPayloadBuilder::buildFireJson(
     // 시연에서는 FLAME01~04 가짜 입력을 ch01~04 독립 상태로 연결한다.
     oss << "{";
     oss << "\"event_id\":\"" << util::jsonEscape(event_id) << "\",";
+    oss << "\"delivery_id\":\"" << util::jsonEscape(delivery_id) << "\",";
     oss << "\"alarm_id\":\"" << util::jsonEscape(alarm_id) << "\",";
+    oss << "\"fire_revision\":" << fire_revision << ",";
     oss << "\"camera_id\":\"" << util::jsonEscape(camera_id) << "\",";
     oss << "\"channel_id\":\"" << util::jsonEscape(channel_id) << "\",";
     oss << "\"event_channel_id\":\"\",";

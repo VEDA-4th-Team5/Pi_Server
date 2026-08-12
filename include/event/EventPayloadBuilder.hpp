@@ -3,6 +3,7 @@
 #include "event/CameraEvent.hpp"
 #include "event/FireAlarmEvent.hpp"
 
+#include <cstdint>
 #include <string>
 
 namespace event {
@@ -24,7 +25,9 @@ public:
         const FireSignal& signal,
         FireAlarmLifecycle lifecycle,
         const std::string& event_id,
-        const std::string& alarm_id
+        const std::string& alarm_id,
+        std::uint64_t fire_revision,
+        const std::string& delivery_id
     );
 
     static std::string buildFireEventId(const FireSignal& signal);

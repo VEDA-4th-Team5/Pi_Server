@@ -81,6 +81,8 @@ public:
     bool open(const std::string& db_path);
     /** @brief 열린 DB 연결을 닫는다. */
     void close();
+    [[nodiscard]] bool runtimeSchemaReady() const noexcept;
+    [[nodiscard]] bool occupancySchemaReady() const noexcept;
     /** @brief 정규화된 카메라 이벤트와 선택적 Snapshot을 IMAGE_LOG/EVENT_LOG에 기록한다. */
     bool insertEvent(const EventRecord& record);
     /** @brief 센서·통신 운영 이벤트를 기존 EVENT_LOG schema에 저장한다. */
@@ -222,6 +224,8 @@ private:
     static std::string readTextFile(const std::filesystem::path& path);
 
     bool opened_;
+    bool runtime_schema_ready_{};
+    bool occupancy_schema_ready_{};
     std::string db_path_;
     mutable std::mutex db_mutex_;
     sqlite3* db_{};

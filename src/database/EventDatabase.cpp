@@ -22,6 +22,8 @@ bool EventDatabase::open(const std::string& db_path) {
         db_close();
         opened_ = false;
     }
+    runtime_schema_ready_ = false;
+    occupancy_schema_ready_ = false;
 
     db_path_ = db_path;
     if (db_open(db_path_.c_str()) < 0) {
@@ -37,10 +39,24 @@ bool EventDatabase::open(const std::string& db_path) {
 
 void EventDatabase::close() {
     std::lock_guard<std::mutex> lock(db_mutex_);
-    if (!opened_) return;
-    db_close();
-    db_ = nullptr;
-    opened_ = false;
+    runtime_schema_ready_ = false;
+    occupancy_schema_ready_ = false;
+    if (opened_) {
+        db_close();
+        db_ = nullptr;
+        opened_ = false;
+    }
+}
+
+bool EventDatabase::runtimeSchemaReady() const noexcept {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    return opened_ && db_ != nullptr && runtime_schema_ready_;
+}
+
+bool EventDatabase::occupancySchemaReady() const noexcept {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    return opened_ && db_ != nullptr && runtime_schema_ready_ &&
+           occupancy_schema_ready_;
 }
 
 bool EventDatabase::insertEvent(const EventRecord& record) {

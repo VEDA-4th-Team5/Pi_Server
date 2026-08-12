@@ -165,15 +165,16 @@ add_test(NAME mqtt-tracked-transport-test COMMAND mqtt-tracked-transport-test)
 
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
-    src/event/FireAlarmManager.cpp
+    src/event/FireAlarmService.cpp
+    src/event/FirePersistence.cpp
     src/event/EventPayloadBuilder.cpp
-    src/sensor/FireSensorMessage.cpp
     src/sensor/SensorProtocolParser.cpp
     src/util/Logger.cpp
     src/util/StringUtil.cpp
     src/util/TimeUtil.cpp)
 target_include_directories(fire-alarm-test PRIVATE include)
 target_compile_options(fire-alarm-test PRIVATE -Wall -Wextra)
+target_link_libraries(fire-alarm-test PRIVATE parking-timer-core)
 add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
 
 # STM32 UART 통신만 단독으로 확인하기 위한 경량 실행 파일.
@@ -193,21 +194,6 @@ target_link_libraries(uart-fire-listener PRIVATE Threads::Threads)
 # STM32 UART -> FireAlarmManager -> 실제 MQTT 브로커까지 카메라/DB/OCR 없이
 # 검증하는 도구. main.cpp 는 건드리지 않고, 여기서 검증된 배선을 그대로
 # main.cpp 로 옮기는 방식으로 통합한다.
-add_executable(fire-pipeline-tool
-    tests/integration/FirePipelineTool.cpp
-    src/app/AppConfig.cpp
-    src/event/FireAlarmManager.cpp
-    src/event/EventPayloadBuilder.cpp
-    src/sensor/SensorLinkManager.cpp
-    src/sensor/SensorProtocolParser.cpp
-    src/sensor/FireSensorMessage.cpp
-    src/util/Logger.cpp
-    src/util/StringUtil.cpp
-    src/util/TimeUtil.cpp)
-target_include_directories(fire-pipeline-tool PRIVATE include)
-target_compile_options(fire-pipeline-tool PRIVATE -Wall -Wextra)
-target_link_libraries(fire-pipeline-tool PRIVATE mosquitto Threads::Threads)
-
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
@@ -284,8 +270,10 @@ add_custom_target(parking-alert-module
 # ---- parking timer (timer_ 프로젝트 통합분) ----
 add_library(parking-timer-core STATIC
     src/database/EventDatabase.cpp
+    src/database/EventDatabaseFire.cpp
     src/database/EventDatabaseTimer.cpp
     src/database/db_manager.c
+    src/event/FirePersistence.cpp
     src/util/Logger.cpp
     src/timer/EventManager.cpp
     src/timer/ParkingSlotManager.cpp
