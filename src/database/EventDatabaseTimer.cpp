@@ -513,6 +513,38 @@ void EventDatabase::migrateRuntimeSchema() {
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_occupancy_live_deadline_slot "
             "ON OCCUPANCY_EXIT_DEADLINE(slot_id) "
             "WHERE state IN ('SCHEDULED','ADMITTED');");
+        // The occupancy reducer closes any committed camera correlation when
+        // its exact parking session ends.  The table is therefore part of the
+        // durable transition contract even before correlation consumers are
+        // wired into the runtime.
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS PARKING_CORRELATION_BINDING ("
+            "correlation_id TEXT PRIMARY KEY,"
+            "source_command_id TEXT NOT NULL UNIQUE,"
+            "occupancy_attempt_id TEXT NOT NULL,"
+            "session_id INTEGER,slot_id TEXT NOT NULL,"
+            "camera_id TEXT NOT NULL,video_source_token TEXT NOT NULL,"
+            "rule_name TEXT NOT NULL,object_id TEXT NOT NULL,"
+            "channel_id TEXT NOT NULL,"
+            "binding_revision INTEGER NOT NULL CHECK(binding_revision>0),"
+            "state TEXT NOT NULL CHECK(state IN "
+            "('PENDING','COMMITTED','ENDED','FAILED','EXPIRED','QUARANTINED')),"
+            "created_at_epoch_ms INTEGER NOT NULL,"
+            "expires_at_epoch_ms INTEGER NOT NULL,"
+            "updated_at_epoch_ms INTEGER NOT NULL,ended_at_epoch_ms INTEGER,"
+            "CHECK(state!='COMMITTED' OR (session_id IS NOT NULL AND "
+            "occupancy_attempt_id!='')),"
+            "UNIQUE(occupancy_attempt_id,camera_id,video_source_token,"
+            "rule_name,object_id),"
+            "FOREIGN KEY(session_id) REFERENCES PARKING_SESSION(session_id),"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id));");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_parking_correlation_bestshot_lookup "
+            "ON PARKING_CORRELATION_BINDING(camera_id,channel_id,object_id,"
+            "state,expires_at_epoch_ms,correlation_id);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_parking_correlation_session "
+            "ON PARKING_CORRELATION_BINDING(session_id,state,correlation_id);");
         if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
             !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
             executeSqlUnlocked(
