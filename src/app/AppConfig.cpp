@@ -250,28 +250,27 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("GEMINI_CONNECT_TIMEOUT_SEC", 5);
     config.gemini_request_timeout_sec =
         getEnvIntOrDefault("GEMINI_REQUEST_TIMEOUT_SEC", 30);
-    constexpr const char* telegram_local_settings = ".env.telegram.local";
     config.telegram_enabled = getEnvOrLocalBoolOrDefault(
-        "TELEGRAM_ENABLED", false, telegram_local_settings);
+        "TELEGRAM_ENABLED", false, ".env.public");
     config.telegram_bot_token = getEnvOrLocalSetting(
-        "TELEGRAM_BOT_TOKEN", "", telegram_local_settings);
+        "TELEGRAM_BOT_TOKEN", "", ".env.private");
     config.telegram_channel = getEnvOrLocalSetting(
-        "TELEGRAM_CHANNEL", "", telegram_local_settings);
+        "TELEGRAM_CHANNEL", "", ".env.private");
     config.telegram_connect_timeout_ms = std::max(
         1, getEnvOrLocalIntOrDefault("TELEGRAM_CONNECT_TIMEOUT_MS", 3000,
-                                     telegram_local_settings));
+                                     ".env.public"));
     config.telegram_request_timeout_ms = std::max(
         1, getEnvOrLocalIntOrDefault("TELEGRAM_REQUEST_TIMEOUT_MS", 10000,
-                                     telegram_local_settings));
+                                     ".env.public"));
     config.telegram_retry_count = std::max(
         0, getEnvOrLocalIntOrDefault("TELEGRAM_RETRY_COUNT", 2,
-                                     telegram_local_settings));
+                                     ".env.public"));
     config.telegram_retry_delay_ms = std::max(
         1, getEnvOrLocalIntOrDefault("TELEGRAM_RETRY_DELAY_MS", 500,
-                                     telegram_local_settings));
+                                     ".env.public"));
     config.telegram_queue_capacity = std::max(
         1, getEnvOrLocalIntOrDefault("TELEGRAM_QUEUE_CAPACITY", 256,
-                                     telegram_local_settings));
+                                     ".env.public"));
 
     config.parking_timer_enabled =
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);

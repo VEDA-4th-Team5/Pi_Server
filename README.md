@@ -118,6 +118,8 @@ CAMERA_API_USERNAME
 CAMERA_API_PASSWORD
 CAMERA_OPEN_API_BASE   # 카메라 실제 주소
 CAMERA_IMAGE_BASE      # 카메라 실제 주소
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHANNEL
 ```
 
 `.env.private.example`을 복사해서 시작하면 됩니다.
