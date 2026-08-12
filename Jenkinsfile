@@ -26,6 +26,7 @@ pipeline {
             when {
                 expression {
                     env.GIT_BRANCH == 'origin/main' ||
+                    env.GIT_BRANCH == 'origin/release' ||
                     env.GIT_BRANCH.startsWith('origin/release/')
                 }
             }
