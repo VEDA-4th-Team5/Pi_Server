@@ -6,7 +6,7 @@
 // 통합이 끝나는 구조를 위한 것이다. 이 도구 자체는 카메라 RTSP 대기 없이
 // AppConfig::loadFromEnv() 의 화재/MQTT 관련 값만 그대로 재사용한다.
 //
-// 사용법 (예: .env.fire.local 을 source 한 뒤):
+// 사용법 (예: .env.public 을 source 한 뒤):
 //   fire-pipeline-tool
 //
 // 확인:
@@ -118,7 +118,7 @@ int main() {
     if (!config.fire_alarm_enabled) {
         util::logError(
             "FIRE_ALARM_ENABLED=false — set it before running this tool "
-            "(예: set -a; source .env.fire.local; set +a)");
+            "(예: set -a; source .env.public; set +a)");
         return 1;
     }
 
