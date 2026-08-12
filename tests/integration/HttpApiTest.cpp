@@ -138,11 +138,13 @@ int main() {
                       "invalid PUT did not change setting");
     auto roi_list = client.Get("/api/v1/settings/parking-slots/roi");
     success &= expect(roi_list && roi_list->status == 200 &&
-        nlohmann::json::parse(roi_list->body).at("count") == 2,
+        nlohmann::json::parse(roi_list->body).at("count") == 2 &&
+        nlohmann::json::parse(roi_list->body).at("items").at(0).at("revision") == 1,
         "ROI list endpoint");
     auto roi_get = client.Get("/api/v1/settings/parking-slots/ev01/roi");
     success &= expect(roi_get && roi_get->status == 200 &&
-        nlohmann::json::parse(roi_get->body).at("roi").at("width") == 1.0,
+        nlohmann::json::parse(roi_get->body).at("roi").at("width") == 1.0 &&
+        nlohmann::json::parse(roi_get->body).at("revision") == 1,
         "ROI GET endpoint normalizes slot id");
     const auto missing_roi = client.Get(
         "/api/v1/settings/parking-slots/EV03/roi");
@@ -154,12 +156,17 @@ int main() {
         R"({"x":0.25,"y":0.2,"width":0.5,"height":0.6})",
         "application/json");
     success &= expect(roi_put && roi_put->status == 200 &&
-        nlohmann::json::parse(roi_put->body).at("appliedImmediately") == true,
+        nlohmann::json::parse(roi_put->body).at("appliedImmediately") == true &&
+        nlohmann::json::parse(roi_put->body).at("revision") == 2,
         "ROI PUT applies immediately");
     const auto applied_roi = roi_settings.roiForSlot("EV01");
     success &= expect(applied_roi && applied_roi->x == 0.25 &&
                       applied_roi->height == 0.6,
                       "ROI PUT updated in-memory value");
+    const auto applied_roi_trace = roi_settings.resolveForUse("EV01");
+    success &= expect(applied_roi_trace && applied_roi_trace->revision == 2 &&
+                      applied_roi_trace->value.x == 0.25,
+                      "ROI PUT updated the revisioned runtime value");
     for (const std::string body : {
              R"({"x":-0.1,"y":0,"width":0.5,"height":0.5})",
              R"({"x":0.8,"y":0,"width":0.5,"height":0.5})",
@@ -255,7 +262,8 @@ int main() {
     settings::ParkingRoiSettingsService reloaded_roi(database, roi_bootstrap);
     success &= expect(reloaded_roi.initialize() &&
                       reloaded_roi.roiForSlot("EV01")->x == 0.25 &&
-                      reloaded_roi.roiForSlot("EV01")->height == 0.6,
+                      reloaded_roi.roiForSlot("EV01")->height == 0.6 &&
+                      reloaded_roi.resolveForUse("EV01")->revision == 2,
                       "ROI persisted across settings reload");
     database.close();
     const auto failed_update = overstay_settings.update(2400);
@@ -265,7 +273,8 @@ int main() {
     const auto failed_roi = roi_settings.update(
         "EV01", {0.1, 0.1, 0.2, 0.2});
     success &= expect(!failed_roi.success &&
-                      roi_settings.roiForSlot("EV01")->x == 0.25,
+                      roi_settings.roiForSlot("EV01")->x == 0.25 &&
+                      roi_settings.resolveForUse("EV01")->revision == 2,
                       "DB failure preserved in-memory ROI");
     fs::remove_all(root);
     if (success) std::cout << "HTTP API integration test passed\n";

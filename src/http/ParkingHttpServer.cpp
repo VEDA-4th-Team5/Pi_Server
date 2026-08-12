@@ -132,7 +132,7 @@ bool ParkingHttpServer::start() {
         uses_tls_ = false;
     }
     registerRoutes();
-    if (!server_->bind_to_port(config_.listen_address, config_.port)) {
+    if (!server_->bind_to_port(config_.listen_address.c_str(), config_.port)) {
         util::logError("HTTP API bind failed: " + config_.listen_address + ":" +
                        std::to_string(config_.port));
         server_.reset();
@@ -222,7 +222,8 @@ void ParkingHttpServer::registerRoutes() {
                 json items = json::array();
                 for (const auto& setting : roi_settings_->list()) {
                     items.push_back({{"slotId", setting.slotId},
-                                     {"roi", roiJson(setting.roi)}});
+                                     {"roi", roiJson(setting.roi)},
+                                     {"revision", setting.revision}});
                 }
                 sendJson(res, {{"items", items}, {"count", items.size()}});
             });
@@ -231,13 +232,15 @@ void ParkingHttpServer::registerRoutes() {
             [this](const httplib::Request& req, httplib::Response& res) {
                 const std::string slot_id =
                     normalizedSlotId(req.matches[1].str());
-                const auto roi = roi_settings_->roiForSlot(slot_id);
-                if (!roi) {
+                const auto applied = roi_settings_->resolveForUse(slot_id);
+                if (!applied) {
                     sendError(res, 404, "SLOT_NOT_FOUND",
                               "ROI가 설정된 주차면을 찾을 수 없습니다.");
                     return;
                 }
-                sendJson(res, {{"slotId", slot_id}, {"roi", roiJson(*roi)}});
+                sendJson(res, {{"slotId", slot_id},
+                               {"roi", roiJson(applied->value)},
+                               {"revision", applied->revision}});
             });
         server_->Put(
             R"(/api/v1/settings/parking-slots/([^/]+)/roi)",
@@ -287,7 +290,8 @@ void ParkingHttpServer::registerRoutes() {
                 }
                 sendJson(res, {{"success", true}, {"slotId", slot_id},
                                {"appliedImmediately", true},
-                               {"roi", roiJson(result.roi)}});
+                               {"roi", roiJson(result.roi)},
+                               {"revision", result.revision}});
             });
     }
     server_->Get("/api/v1/parking-slots", [this](const httplib::Request&, httplib::Response& res) {
@@ -358,7 +362,8 @@ void ParkingHttpServer::registerRoutes() {
         if (!input.good() && !input.eof()) {
             sendError(res, 500, "IMAGE_READ_FAILED", "이미지 파일을 읽지 못했습니다."); return;
         }
-        res.set_content(std::move(body), mimeType(candidate));
+        const std::string content_type = mimeType(candidate);
+        res.set_content(std::move(body), content_type.c_str());
     });
     server_->set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404) sendError(res, 404, "ENDPOINT_NOT_FOUND", "API 경로를 찾을 수 없습니다.");
