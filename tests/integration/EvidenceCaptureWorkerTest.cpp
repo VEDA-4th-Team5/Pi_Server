@@ -101,6 +101,9 @@ int main() {
 
         std::mutex result_mutex;
         std::vector<parking::EvidenceCaptureResult> results;
+        std::mutex roi_mutex;
+        parking::AppliedParkingRoi current_roi{
+            "EV01", {0.25, 0.25, 0.5, 0.5}, 7};
         parking::EvidenceCaptureWorker::Config config;
         config.overstayDelay = 60ms;
         config.maxPendingJobs = 2;
@@ -118,6 +121,14 @@ int main() {
                     request.channel->channel_id, request.sessionId,
                     request.slotId, parking::toString(reason), request.roi,
                     originalJpeg, enhancedJpeg);
+            },
+            [&roi_mutex, &current_roi](const std::string& slot_id)
+                -> std::optional<parking::AppliedParkingRoi> {
+                std::lock_guard lock(roi_mutex);
+                if (slot_id == "EV04") return std::nullopt;
+                auto applied = current_roi;
+                applied.slotId = slot_id;
+                return applied;
             });
         require(worker.start(), "worker did not start");
 
@@ -128,12 +139,45 @@ int main() {
                     std::chrono::steady_clock::now()}),
                 "session1 schedule failed");
         require(waitUntil([&] {
+                    std::lock_guard lock(result_mutex);
+                    for (const auto& result : results) {
+                        if (result.sessionId == session1 && result.stored &&
+                            result.reason ==
+                                parking::EvidenceReason::OccupancyStart) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }, 1s), "session1 start evidence was not stored");
+        {
+            std::lock_guard lock(roi_mutex);
+            current_roi = {"EV01", {0.0, 0.0, 0.25, 0.25}, 8};
+        }
+        require(waitUntil([&] {
                     std::vector<database::ImageView> images;
                     return database.listSessionImages(
                                static_cast<int>(session1), images) &&
-                           countReason(images, "OCCUPANCY_START_EVIDENCE") == 1 &&
+                           countReason(images, "OCCUPANCY_START_EVIDENCE") ==
+                               1 &&
                            countReason(images, "OVERSTAY_EVIDENCE") == 1;
-                }, 1s), "start/overstay evidence was not stored");
+                }, 1s), "session1 overstay evidence was not stored");
+        {
+            std::lock_guard lock(result_mutex);
+            bool start_revision_verified{};
+            bool overstay_revision_verified{};
+            for (const auto& result : results) {
+                if (result.sessionId != session1 || !result.stored) continue;
+                if (result.reason == parking::EvidenceReason::OccupancyStart) {
+                    start_revision_verified = result.roiRevision == 7 &&
+                        result.roi.x == 0.25 && result.roi.width == 0.5;
+                } else if (result.reason == parking::EvidenceReason::Overstay) {
+                    overstay_revision_verified = result.roiRevision == 8 &&
+                        result.roi.x == 0.0 && result.roi.width == 0.25;
+                }
+            }
+            require(start_revision_verified && overstay_revision_verified,
+                    "evidence results did not preserve applied ROI revisions");
+        }
         require(worker.scheduleSession({session1, "EV01", channel,
                     {0.0, 0.0, 1.0, 1.0},
                     std::chrono::steady_clock::now()}),
@@ -158,8 +202,13 @@ int main() {
                         "_slot_EV01_") != std::string::npos,
                     "camera API evidence filename lost session id");
             const cv::Mat stored = cv::imread(image.original_path);
-            require(stored.cols == 320 && stored.rows == 240,
-                    "full-frame ROI must preserve source dimensions");
+            if (image.evidence_reason == "OCCUPANCY_START_EVIDENCE") {
+                require(stored.cols == 160 && stored.rows == 120,
+                        "start evidence did not use revision 7 ROI");
+            } else {
+                require(stored.cols == 80 && stored.rows == 60,
+                        "overstay evidence did not use revision 8 ROI");
+            }
         }
 
         const auto session2 = database.createHallSession(
@@ -245,8 +294,8 @@ int main() {
                 "restored fixture session was not closed");
 
         const auto session3 = database.createHallSession(
-            "EV03", "HALL03", "2026-07-27T09:20:00");
-        require(worker.scheduleSession({session3, "EV03", channel,
+            "EV04", "HALL04", "2026-07-27T09:20:00");
+        require(worker.scheduleSession({session3, "EV04", channel,
                     {0.0, 0.0, 0.0, 1.0},
                     std::chrono::steady_clock::now()}),
                 "invalid ROI test schedule failed");
@@ -264,9 +313,9 @@ int main() {
         worker.cancelSession(session3);
 
         const auto session4 = database.createHallSession(
-            "EV04", "HALL04", "2026-07-27T09:30:00");
+            "EV03", "HALL03", "2026-07-27T09:30:00");
         database.close();
-        require(worker.scheduleSession({session4, "EV04", channel,
+        require(worker.scheduleSession({session4, "EV03", channel,
                     {0.0, 0.0, 1.0, 1.0},
                     std::chrono::steady_clock::now()}),
                 "closed DB test schedule failed");

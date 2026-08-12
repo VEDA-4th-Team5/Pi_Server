@@ -789,26 +789,16 @@ int main() {
         },
         camera_snapshot_api
             ? parking::EvidenceCaptureWorker::Capture{
-                [&camera_snapshot_api, &snapshot_storage, &config,
-                 &roi_settings](
+                [&camera_snapshot_api, &snapshot_storage, &config](
                     const parking::EvidenceCaptureRequest& request,
                     const parking::EvidenceReason reason) {
-                    const auto current_roi =
-                        roi_settings.roiForSlot(request.slotId);
-                    if (!current_roi) {
-                        util::logError(
-                            "evidence ROI is not configured: session=" +
-                            std::to_string(request.sessionId) + " slot=" +
-                            request.slotId);
-                        return snapshot::StoredImagePair{};
-                    }
                     camera::CameraGeneratedImages generated;
                     if (camera_snapshot_api->generate(
                             request.snapshotApiChannel, generated)) {
                         auto paths = snapshot_storage.saveCameraApiHallCapture(
                             request.channel ? request.channel->channel_id : "",
                             request.sessionId, request.slotId,
-                            parking::toString(reason), *current_roi,
+                            parking::toString(reason), request.roi,
                             generated.originalJpeg, generated.enhancedJpeg);
                         if (!paths.originalPath.empty() &&
                             !paths.enhancedPath.empty()) {
@@ -838,10 +828,13 @@ int main() {
                     return snapshot::StoredImagePair{
                         snapshot_storage.saveEvidenceSnapshot(
                             request.channel, request.sessionId, request.slotId,
-                            parking::toString(reason), *current_roi),
+                            parking::toString(reason), request.roi),
                         {}};
                 }}
-            : parking::EvidenceCaptureWorker::Capture{});
+            : parking::EvidenceCaptureWorker::Capture{},
+        [&roi_settings](const std::string& slot_id) {
+            return roi_settings.resolveForUse(slot_id);
+        });
     if (!evidence_worker->start()) {
         if (http_server) http_server->stop();
         system_event_reporter.stop();

@@ -27,12 +27,14 @@ EvidenceCaptureWorker::EvidenceCaptureWorker(
     database::EventDatabase& database,
     Config config,
     Completion completion,
-    Capture capture)
+    Capture capture,
+    RoiResolver roi_resolver)
     : storage_(storage),
       database_(database),
       config_(std::move(config)),
       completion_(std::move(completion)),
-      capture_(std::move(capture)) {
+      capture_(std::move(capture)),
+      roi_resolver_(std::move(roi_resolver)) {
     if (config_.overstayDelay <= std::chrono::seconds::zero() ||
         config_.maxPendingJobs < 2) {
         throw std::invalid_argument("invalid evidence capture worker config");
@@ -310,10 +312,27 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
     const std::string channel_id = job.request.channel
         ? job.request.channel->channel_id : std::string{};
     EvidenceCaptureResult result{session_id, job.request.slotId, channel_id,
-                                 job.reason, {}, {}, false, false, {}};
+                                 job.reason, {}, {}, job.request.roi,
+                                 job.request.roiRevision, false, false, {}};
     if (canceled(session_id)) return;
 
     try {
+        if (roi_resolver_) {
+            const auto applied = roi_resolver_(job.request.slotId);
+            if (!applied) {
+                result.message = "runtime ROI is not configured";
+                util::logError("Evidence capture skipped: session=" +
+                    std::to_string(session_id) + " slot=" +
+                    job.request.slotId + " reason=" + reason +
+                    " error=" + result.message);
+                emit(std::move(result));
+                return;
+            }
+            job.request.roi = applied->value;
+            job.request.roiRevision = applied->revision;
+            result.roi = applied->value;
+            result.roiRevision = applied->revision;
+        }
         snapshot::StoredImagePair paths;
         if (capture_) {
             paths = capture_(job.request, job.reason);
@@ -377,7 +396,8 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
             "capture success session=" + std::to_string(session_id) +
             " slot=" + job.request.slotId + " channel=" + channel_id +
             " reason=" + reason + " path=" + paths.originalPath +
-            " enhanced=" + paths.enhancedPath);
+            " enhanced=" + paths.enhancedPath +
+            " roi_revision=" + std::to_string(result.roiRevision));
         emit(std::move(result));
     } catch (const std::exception& error) {
         for (const auto* path : {&result.imagePath,
