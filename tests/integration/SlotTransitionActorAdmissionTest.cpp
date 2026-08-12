@@ -392,6 +392,115 @@ void testSourceRedeliveryIgnoresOnlyLocalSchedulingTime() {
             "same camera identity accepted a changed object");
 }
 
+void testHallCloseFailureRetriesExactSession() {
+    TemporaryDatabase temporary;
+    database::EventDatabase database(temporary.path);
+    initialize(database);
+    SqliteProbe probe(temporary.path);
+    database::SessionTransitionStore store(database);
+    auto actor = makeActor(store);
+    require(actor.start(), "close-retry actor did not start");
+
+    requireSubmitted(actor.submit(hallCommand(
+        "hall-close-entry", 201, "OCCUPIED", 20000)),
+        "Hall entry admission failed");
+    require(actor.waitUntilIdle(3s), "Hall entry did not commit");
+    const auto original_session = probe.integer(
+        "SELECT session_id FROM PARKING_SESSION WHERE slot_id='P01' "
+        "AND status='ACTIVE';");
+
+    probe.execute(
+        "CREATE TRIGGER fail_hall_close BEFORE UPDATE OF status ON "
+        "PARKING_SESSION WHEN NEW.status='ENDED' "
+        "BEGIN SELECT RAISE(ABORT,'injected hall close failure'); END;");
+    requireSubmitted(actor.submit(hallCommand(
+        "hall-close-retry", 202, "VACANT", 21000)),
+        "Hall VACANT admission failed");
+    require(waitUntil([&] {
+        return probe.integer(
+            "SELECT attempt_count FROM OCCUPANCY_COMMAND_INBOX WHERE "
+            "command_id='hall-close-retry';") >= 1;
+    }), "Hall close failure was not deferred for automatic retry");
+    require(probe.integer(
+                "SELECT session_id FROM PARKING_SESSION WHERE slot_id='P01' "
+                "AND status='ACTIVE' AND exit_time IS NULL;") ==
+                original_session,
+            "failed Hall close changed the authoritative active session");
+    require(probe.text(
+                "SELECT status FROM PARKING_SLOT WHERE slot_id='P01';") ==
+                "OCCUPIED",
+            "failed Hall close split slot state from its active session");
+    require(probe.integer(
+                "SELECT CAST(last_sequence AS INTEGER) FROM "
+                "OCCUPANCY_SENSOR_SEQUENCE_STATE WHERE sensor_id='hall-p01';") ==
+                201,
+            "failed Hall close consumed its sequence");
+
+    probe.execute("DROP TRIGGER fail_hall_close;");
+    require(actor.waitUntilIdle(3s),
+            "Hall close command did not retry after trigger removal");
+    require(probe.integer(
+                "SELECT session_id FROM PARKING_SESSION WHERE slot_id='P01' "
+                "AND status='ENDED';") == original_session,
+            "Hall close retry did not end the exact original session");
+    require(probe.text(
+                "SELECT exit_command_id FROM PARKING_SESSION WHERE "
+                "session_id=" + std::to_string(original_session) + ";") ==
+                "hall-close-retry",
+            "Hall close retry lost its exact command identity");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM PARKING_SESSION WHERE slot_id='P01';") ==
+                1,
+            "Hall close retry created or closed an unrelated session");
+    require(probe.integer(
+                "SELECT CAST(last_sequence AS INTEGER) FROM "
+                "OCCUPANCY_SENSOR_SEQUENCE_STATE WHERE sensor_id='hall-p01';") ==
+                202,
+            "successful Hall close retry did not commit its sequence");
+    require(actor.stopAndDrain(2s), "close-retry actor did not stop");
+}
+
+void testInvalidVacantTimestampDoesNotCloseState() {
+    TemporaryDatabase temporary;
+    database::EventDatabase database(temporary.path);
+    initialize(database);
+    SqliteProbe probe(temporary.path);
+    database::SessionTransitionStore store(database);
+    auto actor = makeActor(store);
+    require(actor.start(), "invalid-timestamp actor did not start");
+
+    requireSubmitted(actor.submit(hallCommand(
+        "hall-invalid-entry", 301, "OCCUPIED", 30000)),
+        "invalid-timestamp setup entry failed");
+    require(actor.waitUntilIdle(3s), "invalid-timestamp setup did not settle");
+    const auto active_session = probe.integer(
+        "SELECT session_id FROM PARKING_SESSION WHERE slot_id='P01' "
+        "AND status='ACTIVE';");
+
+    requireSubmitted(actor.submit(hallCommand(
+        "hall-invalid-vacant", 302, "VACANT", 29999)),
+        "invalid VACANT admission failed");
+    require(actor.waitUntilIdle(3s), "invalid VACANT did not become terminal");
+    require(probe.integer(
+                "SELECT session_id FROM PARKING_SESSION WHERE slot_id='P01' "
+                "AND status='ACTIVE' AND exit_time IS NULL;") == active_session,
+            "invalid VACANT timestamp closed the active session");
+    require(probe.text(
+                "SELECT status FROM PARKING_SLOT WHERE slot_id='P01';") ==
+                "OCCUPIED",
+            "invalid VACANT timestamp changed the slot projection");
+    require(probe.text(
+                "SELECT status FROM OCCUPANCY_COMMAND_INBOX WHERE "
+                "command_id='hall-invalid-vacant';") == "REJECTED_INVALID",
+            "invalid VACANT did not receive a terminal rejection");
+    require(probe.integer(
+                "SELECT CAST(last_sequence AS INTEGER) FROM "
+                "OCCUPANCY_SENSOR_SEQUENCE_STATE WHERE sensor_id='hall-p01';") ==
+                301,
+            "invalid VACANT consumed its sequence watermark");
+    require(actor.stopAndDrain(2s), "invalid-timestamp actor did not stop");
+}
+
 }  // namespace
 
 int main() {
@@ -399,6 +508,8 @@ int main() {
         testAsyncAdmissionFailurePreservesSlotHead();
         testTransportQueueFullLeavesCameraStateUntouched();
         testSourceRedeliveryIgnoresOnlyLocalSchedulingTime();
+        testHallCloseFailureRetriesExactSession();
+        testInvalidVacantTimestampDoesNotCloseState();
         std::cout << "Slot transition admission integration tests passed\n";
         return 0;
     } catch (const std::exception& error) {
