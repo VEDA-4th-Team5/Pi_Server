@@ -53,9 +53,11 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
             return false;
         }
         const CaptureStage stage = toStage(request.reason);
+        CaptureRequest applied_request = request;
         snapshot::NormalizedRoi roi{
             request.target.roiX, request.target.roiY,
             request.target.roiWidth, request.target.roiHeight};
+        std::uint64_t roi_revision = request.target.roiRevision;
         if (roi_resolver_) {
             const auto current = roi_resolver_(request.slotId);
             if (!current) {
@@ -63,8 +65,14 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
                                request.slotId);
                 return false;
             }
-            roi = *current;
+            roi = current->value;
+            roi_revision = current->revision;
         }
+        applied_request.target.roiX = roi.x;
+        applied_request.target.roiY = roi.y;
+        applied_request.target.roiWidth = roi.width;
+        applied_request.target.roiHeight = roi.height;
+        applied_request.target.roiRevision = roi_revision;
 
         if (snapshotApiClient_ != nullptr) {
             camera::CameraGeneratedImages generated;
@@ -86,7 +94,7 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
 
                 const auto result = coordinator_.onCaptureImage(
                     {sessionId, request.slotId, stage, paths.originalPath,
-                     paths.enhancedPath});
+                     paths.enhancedPath, roi, roi_revision});
                 if (result == CaptureImageResult::Stored) {
                     util::logLine(
                         "CAMERA_SNAPSHOT_API",
@@ -115,7 +123,8 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
                           request.slotId + " session=" + request.sessionId);
         }
 
-        const bool mqttPublished = draftPublisher_ && draftPublisher_(request);
+        const bool mqttPublished =
+            draftPublisher_ && draftPublisher_(applied_request);
         if (!mqttPublished) {
             util::logWarn("capture MQTT draft publish failed; local RTSP "
                           "capture continues slot=" + request.slotId +
@@ -131,7 +140,7 @@ bool HallCaptureExecutor::execute(const CaptureRequest& request) noexcept {
         if (path.empty()) return false;
 
         const auto result = coordinator_.onCaptureImage(
-            {sessionId, request.slotId, stage, path, {}});
+            {sessionId, request.slotId, stage, path, {}, roi, roi_revision});
         if (result == CaptureImageResult::Stored) return true;
 
         std::error_code ignored;

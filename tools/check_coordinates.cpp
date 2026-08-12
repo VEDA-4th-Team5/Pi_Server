@@ -524,9 +524,10 @@ int runWebServer(cv::Mat image, const Options& options,
         httplib::Client piClient(options.piApiBase);
         piClient.set_connection_timeout(2, 0);
         piClient.set_read_timeout(3, 0);
+        const std::string api_path =
+            "/api/v1/settings/parking-slots/" + slot + "/roi";
         const auto applied = piClient.Put(
-            "/api/v1/settings/parking-slots/" + slot + "/roi",
-            json.str(), "application/json");
+            api_path.c_str(), json.str(), "application/json");
         if (!applied) {
             res.status = 502;
             res.set_content(report +
@@ -557,7 +558,7 @@ int runWebServer(cv::Mat image, const Options& options,
         std::cout << "open=http://<PI_IP>:" << options.webPort << '\n'
                   << "warning=the calibration page has no authentication\n";
     }
-    return server.listen(options.bindAddress, options.webPort)
+    return server.listen(options.bindAddress.c_str(), options.webPort)
                ? EXIT_SUCCESS
                : EXIT_FAILURE;
 }

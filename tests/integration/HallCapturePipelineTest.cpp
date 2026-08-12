@@ -77,7 +77,8 @@ int main() {
                 const auto result = database.insertHallCaptureImage(
                     image.sessionId, image.originalPath, image.enhancedPath,
                     parking::toEnhancementType(image.stage),
-                    parking_timer::utcNow());
+                    parking_timer::utcNow(), image.roi,
+                    image.roiRevision);
                 if (result == database::EvidenceInsertResult::Inserted)
                     return parking::ImageStoreResult::Inserted;
                 if (result == database::EvidenceInsertResult::Duplicate)
@@ -94,14 +95,17 @@ int main() {
 
         int draftPublishes{};
         snapshot::NormalizedRoi currentRoi{0.25, 0.25, 0.5, 0.5};
+        std::uint64_t currentRevision{1};
         parking::HallCaptureExecutor executor(
             channels, storage, coordinator,
             [&draftPublishes](const parking::CaptureRequest&) {
                 ++draftPublishes;
                 return false;  // MQTT 실패와 실제 로컬 촬영 성공은 독립이다.
             }, nullptr, false, nullptr,
-            [&currentRoi](const std::string&) {
-                return std::optional<snapshot::NormalizedRoi>{currentRoi};
+            [&currentRoi, &currentRevision](const std::string& slot_id) {
+                return std::optional<parking::AppliedParkingRoi>{
+                    parking::AppliedParkingRoi{
+                        slot_id, currentRoi, currentRevision}};
             });
 
         const auto sessionId = database.createHallSession(
@@ -112,6 +116,7 @@ int main() {
                     sessionId, parking::CaptureReason::HallOccupied30s)),
                 "local 30s capture failed when MQTT draft publish failed");
         currentRoi = {0.0, 0.0, 0.25, 0.25};
+        currentRevision = 2;
         require(executor.execute(request(
                     sessionId, parking::CaptureReason::HallOccupied60s)),
                 "local 60s capture failed");
@@ -127,6 +132,9 @@ int main() {
         require(images[0].enhancement_type == "HALL_30S" &&
                     images[1].enhancement_type == "HALL_60S",
                 "capture stages were not stored in order");
+        require(images[0].roi_revision == 1 &&
+                    images[1].roi_revision == 2,
+                "capture IMAGE_LOG did not preserve applied ROI revisions");
         require(ocrSessions == std::vector<std::int64_t>{sessionId},
                 "60s image must wait while 30s OCR is in flight");
         for (const auto& image : images)

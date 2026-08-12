@@ -27,6 +27,8 @@ ParkingSensorEventAdapter::adapt(
     event.state = message.state;
     event.occurredAt = message.occurredAt;
     event.sourceSequence = message.sequence;
+    event.sourceProtocolVersion = message.protocolVersion;
+    event.sourceBootId = message.bootId;
     event.sourceTransport = message.transport;
     event.receivedMonotonic = message.receivedMonotonic;
     return event;

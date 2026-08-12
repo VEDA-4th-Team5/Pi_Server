@@ -3,6 +3,7 @@
 #include "camera/CameraChannel.hpp"
 #include "camera/CameraSnapshotApiClient.hpp"
 #include "parking/CaptureRequest.hpp"
+#include "parking/AppliedParkingRoi.hpp"
 #include "parking/HallCaptureCoordinator.hpp"
 #include "parking/PlateIlluminator.hpp"
 #include "snapshot/SnapshotStorage.hpp"
@@ -19,7 +20,7 @@ namespace parking {
 class HallCaptureExecutor {
 public:
     using DraftPublisher = std::function<bool(const CaptureRequest&)>;
-    using RoiResolver = std::function<std::optional<snapshot::NormalizedRoi>(
+    using RoiResolver = std::function<std::optional<AppliedParkingRoi>(
         const std::string& slot_id)>;
 
     HallCaptureExecutor(

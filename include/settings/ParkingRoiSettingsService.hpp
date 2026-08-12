@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/AppConfig.hpp"
+#include "parking/AppliedParkingRoi.hpp"
 #include "snapshot/NormalizedRoi.hpp"
 
 #include <mutex>
@@ -18,12 +19,14 @@ namespace settings {
 struct ParkingRoiSetting {
     std::string slotId;
     snapshot::NormalizedRoi roi{};
+    std::uint64_t revision{};
 };
 
 struct ParkingRoiUpdateResult {
     bool success{};
     bool slotFound{};
     snapshot::NormalizedRoi roi{};
+    std::uint64_t revision{};
     std::string error;
 };
 
@@ -39,6 +42,8 @@ public:
     bool initialize();
     [[nodiscard]] std::optional<snapshot::NormalizedRoi> roiForSlot(
         const std::string& slot_id) const;
+    [[nodiscard]] std::optional<parking::AppliedParkingRoi> resolveForUse(
+        const std::string& slot_id) const;
     [[nodiscard]] std::vector<ParkingRoiSetting> list() const;
     /** @brief DB 저장 성공 후에만 실행 중 좌표를 즉시 교체한다. */
     ParkingRoiUpdateResult update(const std::string& slot_id,
@@ -48,15 +53,16 @@ public:
 
 private:
     static std::string settingKey(const std::string& slot_id);
-    static std::string serialize(const snapshot::NormalizedRoi& roi);
-    static std::optional<snapshot::NormalizedRoi> parse(
+    static std::string serialize(const parking::AppliedParkingRoi& roi);
+    static std::optional<parking::AppliedParkingRoi> parse(
+        const std::string& slot_id,
         const std::string& value);
 
     database::EventDatabase& database_;
     std::unordered_set<std::string> known_slots_;
     std::unordered_map<std::string, snapshot::NormalizedRoi> bootstrap_;
     mutable std::shared_mutex roi_mutex_;
-    std::unordered_map<std::string, snapshot::NormalizedRoi> rois_;
+    std::unordered_map<std::string, parking::AppliedParkingRoi> rois_;
     std::mutex update_mutex_;
 };
 

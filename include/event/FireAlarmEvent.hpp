@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sensor/SensorProtocolVersion.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -21,6 +23,9 @@ struct FireSignal {
     std::chrono::system_clock::time_point occurredAt{
         std::chrono::system_clock::now()};
     std::optional<std::uint64_t> sourceSequence;
+    sensor::SensorProtocolVersion sourceProtocolVersion{
+        sensor::SensorProtocolVersion::LegacyV1};
+    std::optional<std::string> sourceBootId;
     std::string sourceTransport{"unknown"};
 
     // 관제실에 근거로 함께 전달할 수신 원문.

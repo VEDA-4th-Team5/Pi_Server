@@ -1,6 +1,7 @@
   #pragma once
 
   #include <chrono>
+  #include <cstdint>
   #include <functional>
   #include <optional>
   #include <string>
@@ -47,6 +48,7 @@
       double roiWidth{1.0};
       double roiHeight{1.0};
       int snapshotApiChannel{0};
+      std::uint64_t roiRevision{};
   };
 
   /**

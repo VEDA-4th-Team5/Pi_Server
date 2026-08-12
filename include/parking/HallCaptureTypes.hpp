@@ -1,6 +1,7 @@
 #pragma once
 
 #include "parking/CaptureRequest.hpp"
+#include "snapshot/NormalizedRoi.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -29,6 +30,8 @@ struct CapturedImage {
     CaptureStage stage{CaptureStage::First30s};
     std::string originalPath;
     std::string enhancedPath;
+    snapshot::NormalizedRoi roi{};
+    std::uint64_t roiRevision{};
 };
 
 struct HallOcrOutcome {

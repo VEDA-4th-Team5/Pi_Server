@@ -50,6 +50,12 @@ public:
     TimerManager(const TimerManager&) = delete;
     TimerManager& operator=(const TimerManager&) = delete;
 
+    /** @brief Starts the deadline worker after the runtime teardown guard exists. */
+    [[nodiscard]] bool start() noexcept;
+
+    /** @brief Stops and joins the deadline worker. Safe to call repeatedly. */
+    void stop() noexcept;
+
     /** @brief 불변 session ID의 위반 deadline을 큐에 등록하고 worker를 깨운다. */
     void schedule(std::int64_t log_id,
                   std::string slot_id,
@@ -99,6 +105,7 @@ private:
     ErrorCallback error_callback_;
     EvidenceProvider evidence_provider_;
     std::mutex* transition_mutex_{};
+    std::mutex lifecycle_mutex_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::priority_queue<TimerItem, std::vector<TimerItem>, LaterDeadline> queue_;

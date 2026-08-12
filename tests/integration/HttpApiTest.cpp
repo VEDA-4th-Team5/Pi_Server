@@ -1,5 +1,7 @@
+#include "app/RuntimeShutdown.hpp"
 #include "database/EventDatabase.hpp"
 #include "http/ParkingHttpServer.hpp"
+#include "mqtt/MqttEndpoint.hpp"
 #include "settings/OverstayThresholdService.hpp"
 #include "settings/ParkingRoiSettingsService.hpp"
 
@@ -9,17 +11,90 @@
 
 #include <cstdlib>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
 
 namespace {
+using namespace std::chrono_literals;
+
+class ManualEvent {
+public:
+    void signal() {
+        {
+            std::lock_guard lock(mutex_);
+            signaled_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    bool waitFor(const std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(lock, timeout,
+                                   [this] { return signaled_; });
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool signaled_{false};
+};
+
+class FakeMqttTransport final : public mqtt::IMqttTransport {
+public:
+    bool start(const mqtt::MqttConnectionOptions&,
+               const std::vector<mqtt::MqttSubscription>&,
+               MessageCallback message_callback,
+               ObserverCallbacks observer_callbacks) override {
+        message_callback_ = std::move(message_callback);
+        observer_callbacks_ = std::move(observer_callbacks);
+        return true;
+    }
+
+    mqtt::MqttPublishResult publish(const std::string&, const std::string&,
+                                    int, bool) override {
+        return {true, 1};
+    }
+
+    bool stopAndJoin() noexcept override {
+        stopped_ = true;
+        return true;
+    }
+
+    void emit(const std::string& payload) {
+        if (message_callback_) message_callback_("test/topic", payload);
+    }
+
+    bool stopped() const noexcept { return stopped_; }
+
+private:
+    MessageCallback message_callback_;
+    ObserverCallbacks observer_callbacks_;
+    bool stopped_{};
+};
+
+bool waitForState(http::ParkingHttpServer& server,
+                  const http::HttpServerState expected) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (server.state() != expected) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
+
 bool initializeDatabase(const fs::path& path, const fs::path& image_path) {
     sqlite3* database = nullptr;
     if (sqlite3_open(path.c_str(), &database) != SQLITE_OK) return false;
@@ -111,15 +186,26 @@ int main() {
     auto health = client.Get("/api/v1/health");
     success &= expect(health && health->status == 200, "health endpoint");
     auto threshold = client.Get("/api/v1/settings/overstay-threshold");
+    const auto initial_threshold = threshold
+        ? nlohmann::json::parse(threshold->body) : nlohmann::json{};
     success &= expect(threshold && threshold->status == 200 &&
-        nlohmann::json::parse(threshold->body).at("thresholdSeconds") == 3600,
-        "default overstay threshold");
+        initial_threshold.at("thresholdSeconds") == 3600 &&
+        initial_threshold.at("effectiveSeconds") == 3600 &&
+        initial_threshold.at("appliedRevision").get<std::uint64_t>() > 0 &&
+        initial_threshold.at("runtimeApplied") == true &&
+        initial_threshold.at("runtimeHealthy") == true,
+        "default healthy overstay threshold");
     auto updated = client.Put("/api/v1/settings/overstay-threshold",
                               "{\"thresholdSeconds\":1800}",
                               "application/json");
+    const auto updated_threshold = updated
+        ? nlohmann::json::parse(updated->body) : nlohmann::json{};
     success &= expect(updated && updated->status == 200 &&
-        nlohmann::json::parse(updated->body).at("applyPolicy") ==
-            "ACTIVE_AND_NEW_SESSIONS",
+        updated_threshold.at("requestedSeconds") == 1800 &&
+        updated_threshold.at("effectiveSeconds") == 1800 &&
+        updated_threshold.at("runtimeApplied") == true &&
+        updated_threshold.at("runtimeHealthy") == true &&
+        updated_threshold.at("applyPolicy") == "ACTIVE_AND_NEW_SESSIONS",
         "PUT overstay threshold");
     threshold = client.Get("/api/settings/overstay-threshold");
     success &= expect(threshold && threshold->status == 200 &&
@@ -247,7 +333,178 @@ int main() {
     auto enhanced = client.Get("/api/v1/images/9/enhanced");
     success &= expect(enhanced && enhanced->status == 404,
                       "missing enhanced image is explicit");
-    server.stop();
+
+    std::atomic<int> failed_runtime_calls{0};
+    overstay_settings.setApplyCallback(
+        [&](const std::chrono::milliseconds) {
+            ++failed_runtime_calls;
+            throw std::runtime_error("injected runtime apply failure");
+        });
+    auto runtime_failed = client.Put(
+        "/api/v1/settings/overstay-threshold",
+        "{\"thresholdSeconds\":1860}", "application/json");
+    const auto failed_body = runtime_failed
+        ? nlohmann::json::parse(runtime_failed->body) : nlohmann::json{};
+    success &= expect(runtime_failed && runtime_failed->status == 503 &&
+                      failed_runtime_calls.load() == 1 &&
+                      failed_body.at("success") == false &&
+                      failed_body.at("runtimeApplied") == false &&
+                      failed_body.at("runtimeHealthy") == false,
+                      "runtime apply failure is not reported as success");
+    threshold = client.Get("/api/v1/settings/overstay-threshold");
+    const auto unhealthy_body = threshold
+        ? nlohmann::json::parse(threshold->body) : nlohmann::json{};
+    success &= expect(threshold && threshold->status == 200 &&
+                      unhealthy_body.at("thresholdSeconds") == 1860 &&
+                      unhealthy_body.at("runtimeApplied") == false &&
+                      unhealthy_body.at("runtimeHealthy") == false,
+                      "GET exposes unhealthy runtime policy");
+
+    overstay_settings.setApplyCallback(
+        [](const std::chrono::milliseconds) {});
+    auto runtime_recovered = client.Put(
+        "/api/v1/settings/overstay-threshold",
+        "{\"thresholdSeconds\":1860}", "application/json");
+    const auto recovered_body = runtime_recovered
+        ? nlohmann::json::parse(runtime_recovered->body) : nlohmann::json{};
+    success &= expect(runtime_recovered && runtime_recovered->status == 200 &&
+                      recovered_body.at("runtimeApplied") == true &&
+                      recovered_body.at("runtimeHealthy") == true,
+                      "same-value retry recovers unhealthy runtime policy");
+    updated = client.Put("/api/v1/settings/overstay-threshold",
+                         "{\"thresholdSeconds\":1800}", "application/json");
+    success &= expect(updated && updated->status == 200,
+                      "threshold restored after runtime failure test");
+
+    ManualEvent apply_entered;
+    ManualEvent release_apply;
+    std::atomic<bool> apply_timed_out{false};
+    std::atomic<int> apply_calls{0};
+    std::atomic<bool> put_completed{false};
+    std::atomic<bool> put_succeeded{false};
+    std::atomic<bool> stop_returned{false};
+    std::atomic<bool> shutdown_succeeded{false};
+    std::atomic<int> evidence_teardown{0};
+    std::atomic<int> timer_teardown{0};
+    std::atomic<int> target_teardown{0};
+    auto mqtt_transport = std::make_unique<FakeMqttTransport>();
+    auto* const mqtt_transport_probe = mqtt_transport.get();
+    mqtt::MqttEndpoint mqtt_endpoint(std::move(mqtt_transport));
+    std::atomic<int> mqtt_application_calls{0};
+    success &= expect(
+        mqtt_endpoint.bindApplicationHandler(
+            [&](const std::string&, const std::string&) {
+                ++mqtt_application_calls;
+            }) &&
+            mqtt_endpoint.start(
+                {"http-mqtt-cut-test", "127.0.0.1", 1883, 60}, {}),
+        "MQTT endpoint fixture start");
+    mqtt_transport_probe->emit("before-close");
+    success &= expect(mqtt_application_calls.load() == 1,
+                      "MQTT endpoint fixture did not accept initial ingress");
+    overstay_settings.setApplyCallback(
+        [&](const std::chrono::milliseconds) {
+            ++apply_calls;
+            apply_entered.signal();
+            if (!release_apply.waitFor(5s)) apply_timed_out.store(true);
+        });
+    std::thread held_put([&] {
+        httplib::Client held_client(
+            std::string(test_tls ? "https://" : "http://") +
+            "127.0.0.1:" + std::to_string(config.port));
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        if (test_tls)
+            held_client.enable_server_certificate_verification(false);
+#endif
+        const auto response = held_client.Put(
+            "/api/v1/settings/overstay-threshold",
+            "{\"thresholdSeconds\":1860}", "application/json");
+        put_succeeded.store(response && response->status == 200);
+        put_completed.store(true);
+    });
+    success &= expect(apply_entered.waitFor(2s),
+                      "held HTTP PUT entered its runtime callback");
+
+    app::RuntimeShutdownHooks shutdown_hooks;
+    shutdown_hooks.stopHttp = [&] {
+        server.closeIngress();
+        mqtt_endpoint.closeIngress();
+        if (!server.stop()) throw std::runtime_error("HTTP stop failed");
+    };
+    shutdown_hooks.quiesceMqttApplication = [&] {
+        if (!mqtt_endpoint.quiesceIngress())
+            throw std::runtime_error("MQTT application drain failed");
+    };
+    shutdown_hooks.drainEvidence = [&] { ++evidence_teardown; };
+    shutdown_hooks.drainTimer = [&] { ++timer_teardown; };
+    shutdown_hooks.destroyCallbackTargets = [&] { ++target_teardown; };
+    shutdown_hooks.stopMqtt = [&] {
+        if (!mqtt_endpoint.stop())
+            throw std::runtime_error("MQTT stop failed");
+    };
+    app::RuntimeShutdown runtime_shutdown(std::move(shutdown_hooks));
+    std::thread stopper([&] {
+        shutdown_succeeded.store(runtime_shutdown.shutdown());
+        stop_returned.store(true, std::memory_order_release);
+    });
+    success &= expect(waitForState(server, http::HttpServerState::Quiescing),
+                      "HTTP server entered Quiescing state");
+    success &= expect(
+        mqtt_endpoint.state() == mqtt::MqttEndpointState::Quiescing,
+        "MQTT admission stayed open while HTTP drain was blocked");
+    success &= expect(!stop_returned.load(std::memory_order_acquire),
+                      "HTTP stop returned while an accepted handler was active");
+    success &= expect(!put_completed.load(),
+                      "held HTTP request completed before callback release");
+    success &= expect(evidence_teardown.load() == 0 &&
+                      timer_teardown.load() == 0 &&
+                      target_teardown.load() == 0,
+                      "runtime dependencies were torn down before HTTP join");
+    mqtt_transport_probe->emit("late-while-http-held");
+    success &= expect(mqtt_application_calls.load() == 1,
+                      "MQTT mutation entered after the combined admission cut");
+
+    std::atomic<bool> late_rejected{false};
+    std::thread late_put([&] {
+        httplib::Client late_client(
+            std::string(test_tls ? "https://" : "http://") +
+            "127.0.0.1:" + std::to_string(config.port));
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        if (test_tls)
+            late_client.enable_server_certificate_verification(false);
+#endif
+        const auto response = late_client.Put(
+            "/api/v1/settings/overstay-threshold",
+            "{\"thresholdSeconds\":1920}", "application/json");
+        late_rejected.store(!response || response->status == 503);
+    });
+    release_apply.signal();
+    held_put.join();
+    late_put.join();
+    stopper.join();
+    success &= expect(!apply_timed_out.load(),
+                      "HTTP shutdown test callback reached its watchdog");
+    success &= expect(put_succeeded.load(),
+                      "accepted HTTP PUT did not finish during shutdown");
+    success &= expect(late_rejected.load() && apply_calls.load() == 1 &&
+                      overstay_settings.thresholdSeconds() == 1860,
+                      "request admitted after HTTP Quiescing mutated runtime");
+    success &= expect(stop_returned.load() &&
+                      server.state() == http::HttpServerState::Stopped &&
+                      mqtt_endpoint.state() ==
+                          mqtt::MqttEndpointState::Stopped &&
+                      mqtt_transport_probe->stopped(),
+                      "HTTP/MQTT endpoints did not finish in Stopped state");
+    success &= expect(shutdown_succeeded.load() &&
+                      evidence_teardown.load() == 1 &&
+                      timer_teardown.load() == 1 &&
+                      target_teardown.load() == 1,
+                      "runtime teardown did not resume exactly once after HTTP join");
+    success &= expect(runtime_shutdown.shutdown(),
+                      "runtime shutdown was not idempotent");
+    overstay_settings.setApplyCallback({});
+    success &= expect(overstay_settings.update(1800).success,
+                      "threshold restore after HTTP shutdown");
     settings::OverstayThresholdService reloaded_settings(database);
     success &= expect(reloaded_settings.initialize() &&
                       reloaded_settings.thresholdSeconds() == 1800,
@@ -257,11 +514,17 @@ int main() {
                       reloaded_roi.roiForSlot("EV01")->x == 0.25 &&
                       reloaded_roi.roiForSlot("EV01")->height == 0.6,
                       "ROI persisted across settings reload");
+    std::atomic<int> db_failure_apply_calls{0};
+    overstay_settings.setApplyCallback(
+        [&](const std::chrono::milliseconds) {
+            ++db_failure_apply_calls;
+        });
     database.close();
     const auto failed_update = overstay_settings.update(2400);
     success &= expect(!failed_update.success &&
-                      overstay_settings.thresholdSeconds() == 1800,
-                      "DB failure preserved in-memory threshold");
+                      overstay_settings.thresholdSeconds() == 1800 &&
+                      db_failure_apply_calls.load() == 0,
+                      "DB failure preserved threshold and released no runtime apply");
     const auto failed_roi = roi_settings.update(
         "EV01", {0.1, 0.1, 0.2, 0.2});
     success &= expect(!failed_roi.success &&

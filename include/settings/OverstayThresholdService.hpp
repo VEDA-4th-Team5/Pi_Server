@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -14,7 +15,17 @@ struct ThresholdUpdateResult {
     bool success{};
     int previousSeconds{};
     int thresholdSeconds{};
+    std::uint64_t appliedRevision{};
+    bool runtimeApplied{};
+    bool runtimeHealthy{};
     std::string error;
+};
+
+struct OverstayThresholdStatus {
+    int thresholdSeconds{};
+    std::uint64_t appliedRevision{};
+    bool runtimeApplied{};
+    bool runtimeHealthy{};
 };
 
 /** @brief 장기점유 판정·증거 촬영의 단일 기준값을 DB와 메모리에 보관한다. */
@@ -32,6 +43,7 @@ public:
     /** @brief DB 값을 로드하며 없으면 bootstrap 기본값을 영구 저장한다. */
     bool initialize();
     [[nodiscard]] int thresholdSeconds() const noexcept;
+    [[nodiscard]] OverstayThresholdStatus status() const;
     [[nodiscard]] static bool isValid(int seconds) noexcept;
     /** @brief DB 저장 성공 후에만 메모리와 런타임 타이머에 새 값을 적용한다. */
     ThresholdUpdateResult update(int seconds);
@@ -42,7 +54,10 @@ private:
     database::EventDatabase& database_;
     int bootstrap_seconds_;
     std::atomic<int> threshold_seconds_{kDefaultSeconds};
-    std::mutex update_mutex_;
+    mutable std::mutex update_mutex_;
+    std::uint64_t applied_revision_{1};
+    bool runtime_applied_{true};
+    bool runtime_healthy_{true};
     ApplyCallback apply_callback_;
 };
 

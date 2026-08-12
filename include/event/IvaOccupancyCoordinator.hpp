@@ -29,6 +29,16 @@ struct IvaOccupancySignal {
     // Raw WiseAI Action은 실제 분석 결과다. 고정 Publication EXIT는 false로
     // 전달하여 실제 출차로 오인하지 않도록 한다.
     bool authoritativeExit{true};
+    // Stable transport identity and source time are carried into the durable
+    // slot actor. Tests/legacy callers may leave them empty/default.
+    std::string sourceIdentity;
+    bool occurredAtFromSource{};
+    std::chrono::system_clock::time_point occurredAt{
+        std::chrono::system_clock::now()};
+    std::string channelId;
+    // CAMERA_IVA owns occupancy.  HALL observations are correlation-only and
+    // may bind only to the already committed Hall occupancy attempt.
+    bool occupancyAuthority{true};
 };
 
 enum class IvaCoordinationCode {

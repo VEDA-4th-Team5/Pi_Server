@@ -1,5 +1,9 @@
 #pragma once
 
+#include "event/FirePersistence.hpp"
+#include "parking/ParkingCorrelation.hpp"
+#include "parking/SlotTransitionTypes.hpp"
+#include "snapshot/NormalizedRoi.hpp"
 #include "parking_timer/Types.hpp"
 
 #include <cstdint>
@@ -31,6 +35,8 @@ struct EventRecord {
     std::string raw_payload;
     std::string payload_json;
     std::string created_at;
+    snapshot::NormalizedRoi applied_roi{};
+    std::uint64_t roi_revision{};
 };
 
 /** @brief HTTP API가 사용하는 주차면과 현재 활성 세션의 읽기 모델이다. */
@@ -56,6 +62,8 @@ struct ImageView {
     std::string evidence_reason;
     std::string ocr_result;
     std::string captured_at;
+    std::optional<snapshot::NormalizedRoi> applied_roi;
+    std::uint64_t roi_revision{};
 };
 
 enum class EvidenceInsertResult {
@@ -80,6 +88,8 @@ public:
     bool open(const std::string& db_path);
     /** @brief 열린 DB 연결을 닫는다. */
     void close();
+    [[nodiscard]] bool runtimeSchemaReady() const noexcept;
+    [[nodiscard]] bool occupancySchemaReady() const noexcept;
     /** @brief 정규화된 카메라 이벤트와 선택적 Snapshot을 IMAGE_LOG/EVENT_LOG에 기록한다. */
     bool insertEvent(const EventRecord& record);
     /** @brief 센서·통신 운영 이벤트를 기존 EVENT_LOG schema에 저장한다. */
@@ -129,6 +139,73 @@ public:
     /** @brief 런타임 설정을 원자적으로 추가하거나 갱신한다. */
     bool upsertSystemSetting(const std::string& key, const std::string& value);
 
+    /** Atomically creates or validates the complete configured Fire topology. */
+    event::FireStoreMutationResult initializeFireTopology(
+        const std::vector<event::FireChannelBootstrap>& topology);
+    /** Compare-and-swap state mutation plus zero or two Fire delivery intents. */
+    event::FireStoreMutationResult applyFireStateMutation(
+        const event::FireStateMutation& mutation);
+    std::optional<event::FireAlarmStateRecord> getFireAlarmState(
+        const std::string& channel_id) const;
+    std::vector<event::FireAlarmStateRecord> listFireAlarmStates() const;
+    std::optional<event::FireOutboxRecord> getFireDelivery(
+        const std::string& delivery_key) const;
+    std::vector<event::FireOutboxRecord> listFireRetainedDeliveries() const;
+    std::vector<event::FireOutboxRecord> listFireLifecycleDeliveries() const;
+    std::vector<event::FireOutboxRecord> listPendingFireLifecycleDeliveries(
+        const std::optional<std::string>& channel_id = std::nullopt) const;
+    bool markFireDeliveryInFlight(const std::string& delivery_key,
+                                  std::uint64_t fire_revision);
+    bool markFireDeliveryPending(const std::string& delivery_key,
+                                 std::uint64_t fire_revision,
+                                 const std::string& error);
+    bool acknowledgeFireDelivery(const std::string& delivery_key,
+                                 std::uint64_t fire_revision);
+    bool resetFireInFlightDeliveries();
+    [[nodiscard]] bool isSensorBootIdRetired(
+        const std::string& source_kind,
+        const std::string& sensor_id,
+        const std::string& boot_id) const;
+
+    parking::SlotAdmissionResult admitSlotTransitionCommand(
+        const parking::SlotTransitionCommand& command,
+        std::size_t pending_capacity);
+    std::size_t admitDueSlotDeadlines(
+        std::int64_t now_epoch_ms,
+        std::size_t pending_capacity,
+        const std::vector<std::string>& blocked_slots = {});
+    std::vector<parking::DurableSlotCommand>
+    listRunnableSlotTransitionCommands(std::int64_t now_epoch_ms) const;
+    parking::CommittedOccupancyTransition applySlotTransitionCommand(
+        const std::string& command_id);
+    std::vector<parking::CommittedOccupancyTransition>
+    listPendingSlotTransitionEffects(std::int64_t now_epoch_ms) const;
+    bool completeSlotTransitionEffects(const std::string& command_id);
+    bool deferSlotTransitionEffects(const std::string& command_id,
+                                    std::int64_t next_attempt_at_epoch_ms,
+                                    const std::string& error) noexcept;
+    bool deferSlotTransitionCommand(const std::string& command_id,
+                                    std::int64_t next_attempt_at_epoch_ms,
+                                    const std::string& error) noexcept;
+    std::optional<std::int64_t> nextScheduledSlotDeadlineEpochMs() const;
+    std::size_t pendingSlotTransitionCommandCount() const;
+    std::size_t pendingSlotTransitionEffectCount() const;
+    std::size_t pendingSlotTransitionDrainCount(
+        std::int64_t shutdown_cutoff_epoch_ms) const;
+
+    parking::ParkingCorrelationMatch resolveParkingCorrelation(
+        const std::string& camera_id,
+        const std::string& channel_id,
+        const std::string& object_id,
+        std::int64_t now_epoch_ms) const;
+    parking::BestShotAttachResult attachBestShotIfActive(
+        const parking::CommittedCorrelationLease& lease,
+        parking::BestShotEvidenceKind kind,
+        const std::string& image_ref,
+        const std::string& image_path,
+        const std::string& plate_text,
+        std::int64_t now_epoch_ms);
+
     /** @brief 서버 시작 시 운영 DB에 안전한 멱등 migration만 적용한다. */
     void migrateRuntimeSchema();
     /** @brief 홀센서 입차의 ACTIVE 세션을 만들고 실제 SQLite ID를 반환한다. */
@@ -141,7 +218,9 @@ public:
         const std::string& original_path,
         const std::string& evidence_reason,
         const std::string& captured_at,
-        const std::string& enhanced_path = {});
+        const std::string& enhanced_path = {},
+        snapshot::NormalizedRoi applied_roi = {},
+        std::uint64_t roi_revision = 0);
     /** @brief 이미 저장된 세션 증거 이미지 경로를 조회한다. */
     std::optional<std::string> findEvidenceImagePath(
         std::int64_t session_id,
@@ -152,7 +231,9 @@ public:
         const std::string& original_path,
         const std::string& enhanced_path,
         const std::string& enhancement_type,
-        const std::string& captured_at);
+        const std::string& captured_at,
+        snapshot::NormalizedRoi applied_roi = {},
+        std::uint64_t roi_revision = 0);
     /** @brief OCR 시도 소진을 UNKNOWN으로 한 번만 EVENT_LOG에 기록한다. */
     bool markPlateOcrUnresolved(std::int64_t session_id,
                                 const std::string& slot_id,
@@ -193,6 +274,8 @@ private:
     static std::string readTextFile(const std::filesystem::path& path);
 
     bool opened_;
+    bool runtime_schema_ready_{};
+    bool occupancy_schema_ready_{};
     std::string db_path_;
     mutable std::mutex db_mutex_;
     sqlite3* db_{};

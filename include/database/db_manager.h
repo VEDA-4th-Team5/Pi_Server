@@ -33,6 +33,12 @@ typedef struct DbImageRow {
     char evidence_reason[DB_TEXT_SMALL];
     char ocr_result[DB_TEXT_SMALL];
     char captured_at[DB_TEXT_SMALL];
+    int has_applied_roi;
+    double roi_x;
+    double roi_y;
+    double roi_width;
+    double roi_height;
+    unsigned long long roi_revision;
 } DbImageRow;
 
 typedef int (*DbParkingSlotVisitor)(const DbParkingSlotRow *row, void *context);
@@ -56,6 +62,11 @@ int db_end_parking_session(int session_id);
 int db_insert_image_log(int session_id, const char *original_path,
                         const char *enhanced_path, const char *enhancement_type,
                         const char *ocr_result);
+int db_insert_image_log_with_roi(
+    int session_id, const char *original_path, const char *enhanced_path,
+    const char *enhancement_type, const char *ocr_result,
+    double roi_x, double roi_y, double roi_width, double roi_height,
+    unsigned long long roi_revision);
 /* 카메라·센서·주차 상태 이벤트를 EVENT_LOG에 기록한다. */
 int db_insert_event_log(int session_id, const char *slot_id,
                         const char *event_type, const char *message);

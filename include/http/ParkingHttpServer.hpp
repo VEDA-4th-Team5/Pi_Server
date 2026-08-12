@@ -1,7 +1,11 @@
 #pragma once
 
+#include "app/CallbackLeaseGate.hpp"
+
+#include <chrono>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -11,6 +15,8 @@ namespace settings { class OverstayThresholdService; }
 namespace settings { class ParkingRoiSettingsService; }
 
 namespace http {
+
+enum class HttpServerState { Constructed, Running, Quiescing, Stopped };
 
 struct ServerConfig {
     std::string listen_address{"0.0.0.0"};
@@ -30,10 +36,15 @@ public:
     ParkingHttpServer(const ParkingHttpServer&) = delete;
     ParkingHttpServer& operator=(const ParkingHttpServer&) = delete;
     bool start();
-    void stop();
+    void closeIngress() noexcept;
+    [[nodiscard]] bool stop(
+        std::chrono::milliseconds timeout = std::chrono::seconds(30)) noexcept;
     bool usesTls() const;
+    [[nodiscard]] HttpServerState state() const noexcept;
 
 private:
+    void closeIngressLocked() noexcept;
+    void stopListenerLocked() noexcept;
     void registerRoutes();
     database::EventDatabase& database_;
     settings::OverstayThresholdService* overstay_settings_{};
@@ -41,6 +52,10 @@ private:
     ServerConfig config_;
     std::unique_ptr<httplib::Server> server_;
     std::thread worker_;
+    app::CallbackLeaseGate request_gate_;
+    mutable std::mutex lifecycle_mutex_;
+    std::mutex stop_mutex_;
+    HttpServerState state_{HttpServerState::Constructed};
     bool uses_tls_{false};
 };
 
