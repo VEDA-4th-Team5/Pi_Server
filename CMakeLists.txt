@@ -306,8 +306,10 @@ add_library(parking-timer-core STATIC
     src/database/EventDatabaseFire.cpp
     src/database/EventDatabaseOccupancy.cpp
     src/database/EventDatabaseTimer.cpp
+    src/database/SessionTransitionStore.cpp
     src/database/db_manager.c
     src/event/FirePersistence.cpp
+    src/parking/SlotTransitionActor.cpp
     src/parking/SlotTransitionTypes.cpp
     src/util/Logger.cpp
     src/timer/EventManager.cpp
