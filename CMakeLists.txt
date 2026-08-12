@@ -219,6 +219,34 @@ target_compile_options(system-event-reporter-test PRIVATE -Wall -Wextra -Wpedant
 target_link_libraries(system-event-reporter-test PRIVATE Threads::Threads)
 add_test(NAME system-event-reporter-test COMMAND system-event-reporter-test)
 
+add_executable(plate-normalizer-test
+    tests/unit/PlateNormalizerTest.cpp
+    src/ocr/PlateNormalizer.cpp)
+target_include_directories(plate-normalizer-test PRIVATE include)
+target_compile_options(plate-normalizer-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME plate-normalizer-test COMMAND plate-normalizer-test)
+
+add_executable(event-payload-builder-test
+    tests/unit/EventPayloadBuilderTest.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(event-payload-builder-test PRIVATE include)
+target_compile_options(event-payload-builder-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME event-payload-builder-test COMMAND event-payload-builder-test)
+
+add_executable(telegram-notification-test
+    tests/unit/TelegramNotificationTest.cpp
+    src/notification/TelegramApiClient.cpp
+    src/notification/TelegramChannelNotifier.cpp
+    src/notification/TelegramMessageFormatter.cpp
+    src/util/Logger.cpp
+    src/util/UrlMasker.cpp)
+target_include_directories(telegram-notification-test PRIVATE include)
+target_compile_options(telegram-notification-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(telegram-notification-test PRIVATE PkgConfig::CURL Threads::Threads)
+add_test(NAME telegram-notification-test COMMAND telegram-notification-test)
+
 add_executable(parking-link-tool
     tools/parking_link_tool.cpp
     src/device/UartDriver.cpp
