@@ -178,6 +178,38 @@ target_compile_options(fire-alarm-test PRIVATE -Wall -Wextra)
 target_link_libraries(fire-alarm-test PRIVATE parking-timer-core)
 add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
 
+add_executable(fire-delivery-integration-test
+    tests/integration/FireDeliveryIntegrationTest.cpp
+    src/event/FireAlarmService.cpp
+    src/event/FireDeliveryCoordinator.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-delivery-integration-test PRIVATE include)
+target_compile_options(fire-delivery-integration-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(fire-delivery-integration-test PRIVATE
+    parking-timer-core Threads::Threads)
+add_test(NAME fire-delivery-integration-test
+    COMMAND fire-delivery-integration-test)
+
+add_executable(fire-broker-restart-process-test
+    tests/integration/FireBrokerRestartProcessTest.cpp
+    src/event/FireAlarmService.cpp
+    src/event/FireDeliveryCoordinator.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/mqtt/MqttEndpoint.cpp
+    src/mqtt/MosquittoTransport.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-broker-restart-process-test PRIVATE include)
+target_compile_options(fire-broker-restart-process-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(fire-broker-restart-process-test PRIVATE
+    parking-timer-core mosquitto Threads::Threads)
+add_test(NAME fire-broker-restart-process-test
+    COMMAND fire-broker-restart-process-test)
+
 # STM32 UART 통신만 단독으로 확인하기 위한 경량 실행 파일.
 # 카메라/MQTT/DB 없이 src/sensor 코드만 빌드한다. gemini-ocr-test, db-manager-test,
 # http-api-test 와 같은 자리 — src/ 는 프로덕션 코드만, 수동 진단 도구는
