@@ -45,6 +45,13 @@ target_compile_options(gemini-ocr-client-test PRIVATE -Wall -Wextra)
 target_link_libraries(gemini-ocr-client-test PRIVATE PkgConfig::CURL)
 add_test(NAME gemini-ocr-client-test COMMAND gemini-ocr-client-test)
 
+add_executable(app-config-test
+    tests/unit/AppConfigTest.cpp
+    src/app/AppConfig.cpp)
+target_include_directories(app-config-test PRIVATE include)
+target_compile_options(app-config-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME app-config-test COMMAND app-config-test)
+
 add_executable(db-manager-test
     tests/integration/DbManagerTest.c
     src/database/db_manager.c)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sensor/SensorProtocolVersion.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -21,6 +23,8 @@ struct FireSensorMessage {
     std::chrono::system_clock::time_point occurredAt{
         std::chrono::system_clock::now()};
     std::optional<std::uint64_t> sequence;
+    SensorProtocolVersion protocolVersion{SensorProtocolVersion::LegacyV1};
+    std::optional<std::string> bootId;
     std::string transport{"text-test"};
 
     // 관제실이 판단 근거를 볼 수 있도록 수신한 원문을 그대로 보관한다.

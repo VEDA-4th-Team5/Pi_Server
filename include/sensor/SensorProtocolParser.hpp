@@ -13,9 +13,11 @@ namespace sensor {
 //   SENSOR:<sensor_id>:<OCCUPIED|VACANT>
 //   SENSOR:<sensor_id>:<state>:<sequence>
 //   SENSOR:<sensor_id>:<state>:<sequence>:<unix_epoch_ms>
+//   SENSOR2:<sensor_id>:<state>:<boot_id>:<sequence>[:unix_epoch_ms]
 //   FIRE:<sensor_id>:<DETECTED|CLEARED>
 //   FIRE:<sensor_id>:<state>:<sequence>
 //   FIRE:<sensor_id>:<state>:<sequence>:<unix_epoch_ms>
+//   FIRE2:<sensor_id>:<state>:<boot_id>:<sequence>[:unix_epoch_ms]
 //
 // The final STM32 binary protocol may use a different parser. Both parsers
 // must produce the same SensorProtocolMessage / FireSensorMessage.
