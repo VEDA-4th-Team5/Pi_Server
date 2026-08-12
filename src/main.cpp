@@ -27,7 +27,6 @@
 #include "ocr/OcrWorker.hpp"
 #include "sensor/FireSensorMessage.hpp"
 #include "sensor/ParkingSensorEventAdapter.hpp"
-#include "sensor/SensorLinkManager.hpp"
 #include "sensor/SensorProtocolParser.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 #include "sensor/HallParkingService.hpp"

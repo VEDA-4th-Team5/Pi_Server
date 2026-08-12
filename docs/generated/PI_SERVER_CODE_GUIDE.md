@@ -3,7 +3,7 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 155
+- 분석 파일 수: 160
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
@@ -733,11 +733,50 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool mqtt::MqttEventBridge::publishApplicationEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — 카메라 촬영 요청 등 서버 application 메시지를 발행한다.
 - `bool mqtt::MqttEventBridge::publishQtEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — Qt 관제 클라이언트용 상태·이벤트를 발행한다.
 - `bool mqtt::MqttEventBridge::start()` — Broker 연결, topic 구독과 network loop를 시작한다.
-- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::vector< parking::ParkingSlotConfig > parking_slot_configs, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={}, IvaOccupancyHandler iva_occupancy_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::vector< parking::ParkingSlotConfig > parking_slot_configs, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={}, IvaOccupancyHandler iva_occupancy_handler={}, notification::TelegramChannelNotifier *telegram_notifier=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void mqtt::MqttEventBridge::onMessage(mosquitto *mosq, const mosquitto_message *message)` — 수신 메시지를 정규화하고 이벤트별 처리 흐름을 실행한다.
 - `void mqtt::MqttEventBridge::onMessageStatic(mosquitto *mosq, void *userdata, const mosquitto_message *message)` — Mosquitto C callback에서 객체의 메시지 처리 함수로 연결한다.
 - `void mqtt::MqttEventBridge::processCameraEvent(event::CameraEvent camera_event)` — 분리된 카메라 이벤트 한 건을 기존 IVA/일반 이벤트 흐름으로 처리한다.
 - `void mqtt::MqttEventBridge::stop()` — Mosquitto loop와 연결을 종료하고 자원을 해제한다.
+
+## include/notification
+
+### include/notification/TelegramApiClient.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `bool notification::TelegramApiClient::isEnabled() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramApiClient::sendMessage(const std::string &text) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `const std::string & notification::TelegramApiClient::channel() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramApiClient::TelegramApiClient(const Config &config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/notification/TelegramChannelNotifier.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `TelegramChannelNotifier & notification::TelegramChannelNotifier::operator=(const TelegramChannelNotifier &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::enqueue(TelegramMessage message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::running() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::sendWithRetry(const TelegramMessage &message, const std::string &text)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramChannelNotifier::TelegramChannelNotifier(const Config &config, const TelegramApiClient &api_client)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramChannelNotifier::TelegramChannelNotifier(const TelegramChannelNotifier &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramChannelNotifier::~TelegramChannelNotifier()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void notification::TelegramChannelNotifier::run()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void notification::TelegramChannelNotifier::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/notification/TelegramMessage.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- 함수 없음: 타입·상수·구조체 선언 또는 데이터 전용 파일
+
+### include/notification/TelegramMessageFormatter.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `std::string notification::TelegramMessageFormatter::format(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string notification::TelegramMessageFormatter::truncate(const std::string &text)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ## include/ocr
 
@@ -1105,22 +1144,6 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 - `sensor::ParkingSensorEventAdapter::ParkingSensorEventAdapter(const parking::SensorSlotIndex &slotIndex)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< parking::ParkingSensorEvent > sensor::ParkingSensorEventAdapter::adapt(const SensorProtocolMessage &message, std::string *error=nullptr) const` — 미등록 sensor_id면 nullopt와 선택적 오류 문자열을 반환한다.
-
-### include/sensor/SensorLinkManager.hpp
-
-공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
-
-- `SensorLinkManager & sensor::SensorLinkManager::operator=(const SensorLinkManager &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool sensor::SensorLinkManager::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `int sensor::SensorLinkManager::openDevice() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `sensor::SensorLinkManager::SensorLinkManager(SensorLinkConfig config, std::atomic< bool > &running)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `sensor::SensorLinkManager::SensorLinkManager(const SensorLinkManager &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `sensor::SensorLinkManager::~SensorLinkManager()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::dispatchLine(const std::string &line) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::run()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::setFireHandler(FireHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::setParkingHandler(ParkingHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/sensor/SensorProtocolMessage.hpp
 
@@ -1524,11 +1547,40 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool mqtt::MqttEventBridge::publishApplicationEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — 카메라 촬영 요청 등 서버 application 메시지를 발행한다.
 - `bool mqtt::MqttEventBridge::publishQtEvent(const std::string &topic, const std::string &payload, int qos=1, bool retain=false)` — Qt 관제 클라이언트용 상태·이벤트를 발행한다.
 - `bool mqtt::MqttEventBridge::start()` — Broker 연결, topic 구독과 network loop를 시작한다.
-- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::vector< parking::ParkingSlotConfig > parking_slot_configs, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={}, IvaOccupancyHandler iva_occupancy_handler={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `mqtt::MqttEventBridge::MqttEventBridge(const app::AppConfig &config, std::vector< std::shared_ptr< camera::CameraChannel > > &channels, database::EventDatabase &database, snapshot::SnapshotStorage &snapshot_storage, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::vector< parking::ParkingSlotConfig > parking_slot_configs, SensorMessageHandler sensor_message_handler={}, FireAckHandler fire_ack_handler={}, IvaOccupancyHandler iva_occupancy_handler={}, notification::TelegramChannelNotifier *telegram_notifier=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void mqtt::MqttEventBridge::onMessage(mosquitto *mosq, const mosquitto_message *message)` — 수신 메시지를 정규화하고 이벤트별 처리 흐름을 실행한다.
 - `void mqtt::MqttEventBridge::onMessageStatic(mosquitto *mosq, void *userdata, const mosquitto_message *message)` — Mosquitto C callback에서 객체의 메시지 처리 함수로 연결한다.
 - `void mqtt::MqttEventBridge::processCameraEvent(event::CameraEvent camera_event)` — 분리된 카메라 이벤트 한 건을 기존 IVA/일반 이벤트 흐름으로 처리한다.
 - `void mqtt::MqttEventBridge::stop()` — Mosquitto loop와 연결을 종료하고 자원을 해제한다.
+
+## src/notification
+
+### src/notification/TelegramApiClient.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `bool notification::TelegramApiClient::sendMessage(const std::string &text) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramApiClient::TelegramApiClient(const Config &config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/notification/TelegramChannelNotifier.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `bool notification::TelegramChannelNotifier::enqueue(TelegramMessage message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::running() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::sendWithRetry(const TelegramMessage &message, const std::string &text)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool notification::TelegramChannelNotifier::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramChannelNotifier::TelegramChannelNotifier(const Config &config, const TelegramApiClient &api_client)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `notification::TelegramChannelNotifier::~TelegramChannelNotifier()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void notification::TelegramChannelNotifier::run()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void notification::TelegramChannelNotifier::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/notification/TelegramMessageFormatter.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `std::string notification::TelegramMessageFormatter::format(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string notification::TelegramMessageFormatter::truncate(const std::string &text)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ## src/ocr
 
@@ -1805,20 +1857,6 @@ transport 메시지를 주차 도메인 이벤트로 변환한다.
 
 - `sensor::ParkingSensorEventAdapter::ParkingSensorEventAdapter(const parking::SensorSlotIndex &slotIndex)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< parking::ParkingSensorEvent > sensor::ParkingSensorEventAdapter::adapt(const SensorProtocolMessage &message, std::string *error=nullptr) const` — 미등록 sensor_id면 nullopt와 선택적 오류 문자열을 반환한다.
-
-### src/sensor/SensorLinkManager.cpp
-
-Raspberry Pi 서버의 런타임 구현을 담당한다.
-
-- `bool sensor::SensorLinkManager::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `int sensor::SensorLinkManager::openDevice() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `sensor::SensorLinkManager::SensorLinkManager(SensorLinkConfig config, std::atomic< bool > &running)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `sensor::SensorLinkManager::~SensorLinkManager()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::dispatchLine(const std::string &line) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::run()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::setFireHandler(FireHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::setParkingHandler(ParkingHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `void sensor::SensorLinkManager::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/sensor/SensorProtocolParser.cpp
 
