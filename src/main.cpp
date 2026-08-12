@@ -974,7 +974,12 @@ int main() {
     }
 
     ocr_worker.start();
-    bestshot_receiver.start();
+    if (config.bestshot_enabled) {
+        bestshot_receiver.start();
+        util::logInfo("BestShot receiver enabled");
+    } else {
+        util::logInfo("BestShot receiver disabled (BESTSHOT_ENABLED=false)");
+    }
 
     std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
     mqtt::MqttEventBridge mqtt_bridge(
@@ -1004,7 +1009,7 @@ int main() {
     if (!mqtt_bridge.start()) {
         g_running.store(false);
         if (telegram_notifier) telegram_notifier->stop();
-        bestshot_receiver.stop();
+        if (config.bestshot_enabled) bestshot_receiver.stop();
         hall_service.reset();
         evidence_worker->stop();
         ocr_worker.stop();
@@ -1153,7 +1158,7 @@ int main() {
     system_event_reporter.stop();
     system_event_mqtt_bridge.store(nullptr, std::memory_order_release);
     mqtt_bridge.stop();
-    bestshot_receiver.stop();
+    if (config.bestshot_enabled) bestshot_receiver.stop();
     hall_service.reset();
     evidence_worker->stop();
     ocr_worker.stop();

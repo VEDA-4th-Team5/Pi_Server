@@ -200,6 +200,8 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("CAMERA_SNAPSHOT_MAX_RETRIES", 2), 0, 5);
     config.camera_snapshot_retry_delay_ms = std::max(
         1, getEnvIntOrDefault("CAMERA_SNAPSHOT_RETRY_DELAY_MS", 250));
+    config.bestshot_enabled =
+        getEnvBoolOrDefault("BESTSHOT_ENABLED", false);
 
     config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
     config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");

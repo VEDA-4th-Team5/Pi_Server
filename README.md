@@ -178,6 +178,10 @@ OpenCV 화질 개선을 실행하지 않는다. API가 비활성이면 기존 RT
 서버에 즉시 반영되어 다음 촬영부터 적용된다. 상세 설정과 실기기 검증 절차는
 [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md)에 있다.
 
+RTSP metadata의 Vehicle/Plate BestShot 경로는 `BESTSHOT_ENABLED=true`일 때만
+작업 스레드를 시작한다. 기본값은 `false`이며, IVA + Snapshot API
+운영에서는 중복 세션·이미지 경로를 막기 위해 비활성화한다.
+
 가짜 홀센서 입력:
 
 ```bash

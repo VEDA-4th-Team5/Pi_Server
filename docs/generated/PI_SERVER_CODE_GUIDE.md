@@ -83,7 +83,7 @@ AppConfig 환경변수 로드
 → 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
 → RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
-→ OcrWorker / BestShotReceiver 시작
+→ OcrWorker / 선택적 BestShotReceiver 시작 (`BESTSHOT_ENABLED=true`)
 → MqttEventBridge 연결
 → CaptureSchedulerRuntime 시작
 → UART/LoRa SensorLinkManager 시작
