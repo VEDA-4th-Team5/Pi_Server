@@ -420,6 +420,27 @@ target_link_libraries(http-api-test PRIVATE
     parking-timer-core PkgConfig::HTTPLIB sqlite3 Threads::Threads)
 add_test(NAME http-api-test COMMAND http-api-test)
 
+# Fire ACK MQTT 왕복 경로(토픽 파싱 -> JSON 검증 -> 콜백)를 실제 로컬
+# mosquitto 브로커로 검증한다. IVA 카메라 이벤트 경로는 범위 밖(후속 작업).
+add_executable(mqtt-event-bridge-test
+    tests/integration/MqttEventBridgeTest.cpp
+    src/mqtt/MqttEventBridge.cpp
+    src/app/AppConfig.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/parking/ParkingTriggerCoordinator.cpp
+    src/parking/ParkingSlotConfig.cpp
+    src/ocr/GeminiOcrClient.cpp
+    src/ocr/OcrWorker.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(mqtt-event-bridge-test PRIVATE include)
+target_compile_options(mqtt-event-bridge-test PRIVATE -Wall -Wextra)
+target_link_libraries(mqtt-event-bridge-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV PkgConfig::CURL mosquitto
+    Threads::Threads)
+target_compile_definitions(mqtt-event-bridge-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME mqtt-event-bridge-test COMMAND mqtt-event-bridge-test)
+
 add_executable(code-doc-generator EXCLUDE_FROM_ALL
     tools/code_doc_generator.cpp)
 target_compile_features(code-doc-generator PRIVATE cxx_std_20)
