@@ -28,4 +28,5 @@ modules.order
 .tmp_versions/
 data/snapshots/
 data/bestshots/
+data/fullframes/
 *.log
