@@ -431,7 +431,17 @@ add_executable(mqtt-event-bridge-test
     src/parking/ParkingSlotConfig.cpp
     src/ocr/GeminiOcrClient.cpp
     src/ocr/OcrWorker.cpp
-    src/util/TimeUtil.cpp)
+    src/ocr/PlateImageEnhancer.cpp
+    src/ocr/PlateNormalizer.cpp
+    src/event/CameraEventParser.cpp
+    src/event/IvaEventResolver.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/notification/TelegramChannelNotifier.cpp
+    src/notification/TelegramApiClient.cpp
+    src/notification/TelegramMessageFormatter.cpp
+    src/util/TimeUtil.cpp
+    src/util/StringUtil.cpp
+    src/util/UrlMasker.cpp)
 target_include_directories(mqtt-event-bridge-test PRIVATE include)
 target_compile_options(mqtt-event-bridge-test PRIVATE -Wall -Wextra)
 target_link_libraries(mqtt-event-bridge-test PRIVATE
