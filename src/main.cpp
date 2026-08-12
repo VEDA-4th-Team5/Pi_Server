@@ -6,7 +6,8 @@
 #include "database/EventDatabase.hpp"
 #include "device/SensorLinkManager.hpp"
 #include "event/FireAlarmEvent.hpp"
-#include "event/FireAlarmManager.hpp"
+#include "event/FireAlarmService.hpp"
+#include "event/FireDeliveryCoordinator.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
@@ -977,7 +978,13 @@ int main() {
     ocr_worker.start();
     bestshot_receiver.start();
 
-    std::unique_ptr<event::FireAlarmManager> fire_alarm_manager;
+    std::shared_ptr<event::FireAlarmService> fire_alarm_service;
+    std::shared_ptr<event::FireDeliveryCoordinator> fire_delivery_coordinator;
+    auto fire_coordinator_slot = std::make_shared<
+        std::weak_ptr<event::FireDeliveryCoordinator>>();
+    bool fire_alarm_service_started{};
+    bool fire_delivery_coordinator_started{};
+    bool mqtt_started{};
     mqtt::MqttEventBridge mqtt_bridge(
         config,
         channels,
@@ -989,11 +996,7 @@ int main() {
         [&hall_service](const std::string& line) {
             if (hall_service) hall_service->handleLine(line);
         },
-        [&fire_alarm_manager](const std::string& channel_id,
-                              const std::string& alarm_id) {
-            return fire_alarm_manager &&
-                   fire_alarm_manager->acknowledge(channel_id, alarm_id);
-        },
+        mqtt::MqttEventBridge::FireAckHandler{},
         [&hall_service](const event::IvaOccupancySignal& signal) {
             return hall_service &&
                    hall_service->handleCameraIvaSignal(signal);
@@ -1002,8 +1005,40 @@ int main() {
     );
     capture_mqtt_bridge = &mqtt_bridge;
 
-    if (!mqtt_bridge.start()) {
-        g_running.store(false);
+    const auto stop_fire_runtime = [&] {
+        mqtt_bridge.closeIngress();
+        if (!mqtt_bridge.quiesceIngress()) {
+            util::logError("MQTT application callback drain failed");
+        }
+        if (fire_alarm_service_started && fire_alarm_service) {
+            fire_alarm_service->closeIngress();
+            if (!fire_alarm_service->stop()) {
+                util::logError("Fire command commit drain failed");
+            }
+            fire_alarm_service_started = false;
+        }
+        if (fire_delivery_coordinator_started && fire_delivery_coordinator) {
+            if (mqtt_started && !fire_delivery_coordinator->drainDeliveries(
+                                    std::chrono::seconds(5))) {
+                util::logWarn(
+                    "Fire delivery deadline expired; durable outbox will "
+                    "resume after restart");
+            }
+            if (mqtt_started && !mqtt_bridge.quiesceTransportObservers()) {
+                util::logError("MQTT transport observer drain failed");
+            }
+            if (!fire_delivery_coordinator->stop()) {
+                util::logError("Fire delivery coordinator join failed");
+            }
+            fire_delivery_coordinator_started = false;
+        }
+    };
+
+    const auto abort_after_fire_setup = [&] {
+        g_running.store(false, std::memory_order_release);
+        stop_fire_runtime();
+        capture_mqtt_bridge = nullptr;
+        system_event_mqtt_bridge.store(nullptr, std::memory_order_release);
         if (telegram_notifier) telegram_notifier->stop();
         bestshot_receiver.stop();
         hall_service.reset();
@@ -1014,9 +1049,131 @@ int main() {
         rtsp_receiver.stop();
         if (http_server) http_server->stop();
         system_event_reporter.stop();
+        if (!mqtt_bridge.stop()) util::logError("MQTT transport join failed");
         database.close();
         return 1;
+    };
+
+    if (config.fire_alarm_enabled) {
+        const auto parsed = event::parseFireChannelBindingsStrict(
+            config.fire_sensor_channel_map, config.fire_topic_prefix);
+        if (!parsed.valid()) {
+            util::logError("Fire mapping rejected: " + parsed.error);
+            return abort_after_fire_setup();
+        }
+
+        event::FireAlarmService::Config fire_service_config;
+        fire_service_config.cameraId = config.camera_id;
+        fire_service_config.lifecycleTopicPrefix = "parking/v1/events";
+        fire_alarm_service = std::make_shared<event::FireAlarmService>(
+            database, std::move(fire_service_config), parsed.bindings,
+            [fire_coordinator_slot](const event::FireCommandResult& result) {
+                if (result.status == event::FireCommandStatus::DurablyCommitted ||
+                    result.status == event::FireCommandStatus::Idempotent) {
+                    if (const auto coordinator = fire_coordinator_slot->lock()) {
+                        coordinator->notifyOutboxChanged(result.channelId);
+                    }
+                } else if (result.status == event::FireCommandStatus::Failed) {
+                    util::logError("Fire domain command failed after admission: " +
+                                   result.error);
+                }
+            },
+            [fire_coordinator_slot](const std::string& channel_id,
+                                    const std::uint64_t revision) {
+                const auto coordinator = fire_coordinator_slot->lock();
+                return coordinator &&
+                       coordinator->isRevisionSynchronized(channel_id, revision);
+            },
+            [fire_coordinator_slot](const std::string& channel_id) {
+                const auto coordinator = fire_coordinator_slot->lock();
+                return coordinator && coordinator->beginDomainMutation(channel_id);
+            },
+            [fire_coordinator_slot](const std::string& channel_id) {
+                if (const auto coordinator = fire_coordinator_slot->lock()) {
+                    coordinator->completeDomainMutation(channel_id);
+                }
+            });
+        if (!fire_alarm_service->initialize()) {
+            util::logError("Fire durable state initialization failed: " +
+                           fire_alarm_service->configurationError());
+            return abort_after_fire_setup();
+        }
+
+        event::FireDeliveryCoordinator::Config delivery_config;
+        for (const auto& binding : parsed.bindings) {
+            delivery_config.channelIds.push_back(binding.channelId);
+        }
+        fire_delivery_coordinator =
+            std::make_shared<event::FireDeliveryCoordinator>(
+                database, std::move(delivery_config),
+                [&mqtt_bridge](const event::FireOutboxRecord& delivery,
+                               mqtt::MqttPublishCorrelation correlation,
+                               const mqtt::MqttConnectionEpoch expected_epoch) {
+                    return mqtt_bridge.publishTrackedFire(
+                        delivery.topic, delivery.payloadJson, delivery.retain,
+                        std::move(correlation), expected_epoch);
+                },
+                [&mqtt_bridge](const mqtt::MqttConnectionEpoch epoch) {
+                    if (!mqtt_bridge.abortActiveEpoch(epoch)) {
+                        util::logWarn(
+                            "MQTT Fire epoch abort raced with reconnect: " +
+                            std::to_string(epoch));
+                    }
+                });
+        *fire_coordinator_slot = fire_delivery_coordinator;
+
+        std::weak_ptr<event::FireAlarmService> weak_fire = fire_alarm_service;
+        std::weak_ptr<event::FireDeliveryCoordinator> weak_delivery =
+            fire_delivery_coordinator;
+        const bool facts_bound = mqtt_bridge.bindTransportFactHandler(
+            [weak_delivery](const mqtt::MqttTransportFact& fact) {
+                const auto target = weak_delivery.lock();
+                return target && target->enqueueTransportFact(fact);
+            });
+        const bool egress_bound = mqtt_bridge.bindRegularEgressAdmission(
+            [weak_delivery]() -> mqtt::RegularEgressPermit {
+                const auto target = weak_delivery.lock();
+                if (!target) return {};
+                const auto grant = target->beginRegularEgress();
+                if (!grant) return {};
+                return mqtt::RegularEgressPermit(
+                    grant->epoch, grant->generation,
+                    [target, grant = *grant] {
+                        return target->isRegularEgressGrantCurrent(grant);
+                    },
+                    [target] { target->completeRegularEgress(); });
+            });
+        const bool ack_bound = mqtt_bridge.bindFireAckHandler(
+            [weak_fire, weak_delivery](const std::string& channel_id,
+                                       const std::string& alarm_id) {
+                const auto service = weak_fire.lock();
+                const auto delivery = weak_delivery.lock();
+                if (!service || !delivery) return false;
+                const auto result = service->submitAcknowledge(
+                    channel_id, alarm_id);
+                return result.status == event::FireCommandStatus::Queued;
+            });
+        if (!facts_bound || !egress_bound || !ack_bound) {
+            util::logError("Fire MQTT callback binding failed while stopped");
+            return abort_after_fire_setup();
+        }
     }
+
+    if (fire_alarm_service && !fire_alarm_service->start()) {
+        util::logError("Fire domain command worker could not be started");
+        return abort_after_fire_setup();
+    }
+    fire_alarm_service_started = fire_alarm_service != nullptr;
+    if (fire_delivery_coordinator && !fire_delivery_coordinator->start()) {
+        util::logError("Fire delivery coordinator could not be started");
+        return abort_after_fire_setup();
+    }
+    fire_delivery_coordinator_started = fire_delivery_coordinator != nullptr;
+
+    if (!mqtt_bridge.start()) {
+        return abort_after_fire_setup();
+    }
+    mqtt_started = true;
     system_event_mqtt_bridge.store(&mqtt_bridge, std::memory_order_release);
 
     if (capture_runtime) {
@@ -1028,41 +1185,13 @@ int main() {
             std::to_string(config.capture_max_retries));
     }
 
-    // MQTT publisher가 준비된 뒤에만 발행 콜백을 걸 수 있으므로 mqtt_bridge
-    // 시작 이후에 생성한다. 화재 최종 판단은 하지 않고 후보 이벤트만 올린다
-    // (관제실 사람이 확정) — event::FireAlarmManager 계약대로.
-    if (config.fire_alarm_enabled) {
-        fire_alarm_manager = std::make_unique<event::FireAlarmManager>(
-            config.camera_id,
-            config.default_channel_id,
-            config.fire_topic_prefix,
-            event::parseFireSensorBindings(config.fire_sensor_channel_map),
-            [&mqtt_bridge](const std::string& topic,
-                           const std::string& payload) {
-                const auto separator = topic.find_last_of('/');
-                const std::string target =
-                    separator == std::string::npos ? "unmapped"
-                                                   : topic.substr(separator + 1);
-
-                // 화재 전용 토픽은 최신 상태 복원용 retained 메시지다. 주차 상태
-                // 토픽에는 화재를 섞지 않고 통합 이벤트 토픽만 함께 발행한다.
-                const bool fire_state_published =
-                    mqtt_bridge.publishApplicationEvent(topic, payload, 1, true);
-                const bool event_published = mqtt_bridge.publishQtEvent(
-                    "parking/v1/events/" + target, payload, 1, false);
-
-                if (!fire_state_published || !event_published) {
-                    util::logError(
-                        "fire alarm MQTT fan-out failed: channel=" + target +
-                        " state=" +
-                        (fire_state_published ? "ok" : "failed") +
-                        " event=" + (event_published ? "ok" : "failed"));
-                }
-                return fire_state_published && event_published;
-            });
+    // Fire service와 delivery coordinator는 MQTT 연결 전에 모두 준비한다.
+    // 연결 epoch·subscription readiness가 도착하면 coordinator가 durable outbox를
+    // publishTrackedFire()로 전송하고 PUBACK을 처리한다.
+    if (fire_alarm_service) {
         util::logInfo(
             "fire alarm enabled: topic_prefix=" + config.fire_topic_prefix +
-            " bindings=" + std::to_string(fire_alarm_manager->bindingCount()));
+            " bindings=" + std::to_string(fire_alarm_service->bindingCount()));
     }
 
     // 촬영 runtime과 MQTT publisher가 준비된 뒤 실제 UART/LoRa 입력을 연다.
@@ -1070,7 +1199,7 @@ int main() {
     // 하나만 열고, 수신 라인을 접두사(FIRE:/SENSOR:)로 갈라 보낸다.
     const sensor::SensorProtocolParser fire_line_parser;
     std::unique_ptr<device::SensorLinkManager> sensor_link;
-    if ((hall_service || fire_alarm_manager) &&
+    if ((hall_service || fire_alarm_service) &&
         sensor_link_mode != device::SensorLinkMode::Disabled) {
         device::SensorLinkManager::Config sensor_config;
         sensor_config.mode = sensor_link_mode;
@@ -1080,10 +1209,14 @@ int main() {
         sensor_config.reconnect_delay_ms = config.sensor_uart_reconnect_ms;
         sensor_link = std::make_unique<device::SensorLinkManager>(
             std::move(sensor_config),
-            [&hall_service, &fire_alarm_manager, &fire_line_parser, &config](
+            [&hall_service,
+             weak_fire = std::weak_ptr<event::FireAlarmService>(
+                 fire_alarm_service),
+             &fire_line_parser, &config](
                 const std::string& line, const std::string& transport) {
                 if (sensor::SensorProtocolParser::isFireLine(line)) {
-                    if (!fire_alarm_manager) return;
+                    const auto fire_target = weak_fire.lock();
+                    if (!fire_target) return;
                     std::string error;
                     auto message = fire_line_parser.parseFire(
                         line, std::chrono::system_clock::now(), &error);
@@ -1094,11 +1227,16 @@ int main() {
                     }
                     message->transport = transport.empty() ? "uart" : transport;
                     message->raw = line;
-                    fire_alarm_manager->onFireSignal(toFireSignal(*message));
+                    const auto admission = fire_target->submitSignal(
+                        toFireSignal(*message));
+                    if (admission.status != event::FireCommandStatus::Queued) {
+                        util::logError(
+                            "fire line was not queued for durable commit: " +
+                            admission.error);
+                    }
                     return;
                 }
-                if (hall_service &&
-                    config.parking_occupancy_source == "HALL") {
+                if (hall_service && config.parking_occupancy_source == "HALL") {
                     hall_service->handleLine(line, transport);
                 }
             }, system_event_sink);
@@ -1146,14 +1284,18 @@ int main() {
     // 생성의 역순으로 정리하여 사용 중인 자원이 먼저 사라지는 것을 막는다.
     // 촬영 runtime은 LED 명령으로 sensor_link를 쓰므로 링크보다 먼저 멈춘다.
     if (capture_runtime) capture_runtime->stop();
+    sensor_link_for_led = nullptr;
     if (sensor_link) sensor_link->stop();
-    fire_alarm_manager.reset();
+    stop_fire_runtime();
     // reporter queue를 MQTT가 살아 있을 때 모두 비운 뒤 bridge 수명을 종료한다.
     if (telegram_notifier) telegram_notifier->stop();
     telegram_notifier.reset();
     system_event_reporter.stop();
     system_event_mqtt_bridge.store(nullptr, std::memory_order_release);
-    mqtt_bridge.stop();
+    capture_mqtt_bridge = nullptr;
+    if (!mqtt_bridge.stop()) util::logError("MQTT transport join failed");
+    fire_delivery_coordinator.reset();
+    fire_alarm_service.reset();
     bestshot_receiver.stop();
     hall_service.reset();
     evidence_worker->stop();
