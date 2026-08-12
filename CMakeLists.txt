@@ -165,6 +165,7 @@ add_test(NAME mqtt-tracked-transport-test COMMAND mqtt-tracked-transport-test)
 
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
+    src/event/FireAlarmManager.cpp
     src/event/FireAlarmService.cpp
     src/event/FirePersistence.cpp
     src/event/EventPayloadBuilder.cpp
