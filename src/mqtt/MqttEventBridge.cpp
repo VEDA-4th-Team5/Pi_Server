@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <stdexcept>
 #include <sstream>
 #include <utility>
 
@@ -67,7 +68,8 @@ MqttEventBridge::MqttEventBridge(
     SensorMessageHandler sensor_message_handler,
     FireAckHandler fire_ack_handler,
     IvaOccupancyHandler iva_occupancy_handler,
-    notification::TelegramChannelNotifier* telegram_notifier
+    notification::TelegramChannelNotifier* telegram_notifier,
+    std::unique_ptr<IMqttTransport> transport
 )
     : config_(config),
       channels_(channels),
@@ -80,75 +82,78 @@ MqttEventBridge::MqttEventBridge(
       fire_ack_handler_(std::move(fire_ack_handler)),
       iva_occupancy_handler_(std::move(iva_occupancy_handler)),
       telegram_notifier_(telegram_notifier),
-      mosq_(nullptr) {
+      endpoint_(std::move(transport)) {
+    if (!endpoint_.bindApplicationHandler(
+            [this](const std::string& topic, const std::string& payload) {
+                onMessage(topic, payload);
+            })) {
+        throw std::runtime_error("MQTT application callback could not be bound");
+    }
+
+    IMqttTransport::ObserverCallbacks observers;
+    observers.onFact = [this](const MqttTransportFact& fact) {
+        if (transport_fact_handler_ && !transport_fact_handler_(fact)) {
+            util::logError("MQTT transport fact queue rejected an observation");
+        }
+    };
+    if (!endpoint_.bindTransportObservers(std::move(observers))) {
+        throw std::runtime_error("MQTT transport observers could not be bound");
+    }
+}
+
+MqttEventBridge::~MqttEventBridge() {
+    if (!stop()) std::terminate();
+}
+
+bool MqttEventBridge::bindFireAckHandler(FireAckHandler handler) {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (endpoint_.state() != MqttEndpointState::Constructed || !handler)
+        return false;
+    fire_ack_handler_ = std::move(handler);
+    return true;
+}
+
+bool MqttEventBridge::bindTransportFactHandler(
+    TransportFactHandler handler) {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (endpoint_.state() != MqttEndpointState::Constructed || !handler)
+        return false;
+    transport_fact_handler_ = std::move(handler);
+    return true;
+}
+
+bool MqttEventBridge::bindRegularEgressAdmission(
+    RegularEgressAdmission admission) {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (endpoint_.state() != MqttEndpointState::Constructed || !admission)
+        return false;
+    regular_egress_admission_ = std::move(admission);
+    return true;
 }
 
 bool MqttEventBridge::start() {
-    // libmosquitto 전역 초기화 후 이 서버 전용 client id로 broker에 접속한다.
-    mosquitto_lib_init();
-
-    std::string client_id = "pi-server-" + config_.camera_id;
-
-    mosq_ = mosquitto_new(client_id.c_str(), true, this);
-
-    if (!mosq_) {
-        util::logError("mosquitto_new failed");
+    std::lock_guard lock(lifecycle_mutex_);
+    if (config_.fire_alarm_enabled && !fire_ack_handler_) {
+        util::logError("MQTT start rejected: Fire ACK target is not bound");
         return false;
     }
-
-    mosquitto_message_callback_set(mosq_, MqttEventBridge::onMessageStatic);
-
-    int rc = mosquitto_connect(
-        mosq_,
-        config_.mqtt_host.c_str(),
-        config_.mqtt_port,
-        60
-    );
-
-    if (rc != MOSQ_ERR_SUCCESS) {
-        util::logError(std::string("MQTT connect failed: ") + mosquitto_strerror(rc));
-        return false;
-    }
-
+    std::vector<MqttSubscription> subscriptions;
+    // One server-specific client owns camera, Fire command, and event topics.
     if (config_.hall_mqtt_input_enabled &&
         config_.parking_occupancy_source == "HALL") {
-        rc = mosquitto_subscribe(
-            mosq_, nullptr, config_.hall_mqtt_topic.c_str(), 1);
-        if (rc != MOSQ_ERR_SUCCESS) {
-            util::logError(std::string("Hall MQTT subscribe failed: ") +
-                           mosquitto_strerror(rc));
-            return false;
-        }
+        subscriptions.push_back({config_.hall_mqtt_topic, 1});
     }
 
     if (config_.fire_alarm_enabled && fire_ack_handler_) {
-        const std::string command_filter =
-            config_.fire_command_topic_prefix + "/+";
-        rc = mosquitto_subscribe(
-            mosq_, nullptr, command_filter.c_str(), 1);
-        if (rc != MOSQ_ERR_SUCCESS) {
-            util::logError(std::string("Fire ACK MQTT subscribe failed: ") +
-                           mosquitto_strerror(rc));
-            return false;
-        }
+        subscriptions.push_back({config_.fire_command_topic_prefix + "/+", 1});
     }
 
-    rc = mosquitto_subscribe(
-        mosq_,
-        nullptr,
-        config_.mqtt_event_sub_topic.c_str(),
-        0
-    );
-
-    if (rc != MOSQ_ERR_SUCCESS) {
-        util::logError(std::string("MQTT subscribe failed: ") + mosquitto_strerror(rc));
-        return false;
-    }
-
-    rc = mosquitto_loop_start(mosq_);
-
-    if (rc != MOSQ_ERR_SUCCESS) {
-        util::logError(std::string("MQTT loop start failed: ") + mosquitto_strerror(rc));
+    subscriptions.push_back({config_.mqtt_event_sub_topic, 0});
+    if (!endpoint_.start(
+            {"pi-server-" + config_.camera_id, config_.mqtt_host,
+             config_.mqtt_port, 60},
+            subscriptions)) {
+        util::logError("MQTT transport start failed");
         return false;
     }
 
@@ -172,46 +177,41 @@ bool MqttEventBridge::start() {
     return true;
 }
 
-void MqttEventBridge::stop() {
-    if (mosq_) {
-        mosquitto_loop_stop(mosq_, true);
-        mosquitto_destroy(mosq_);
-        mosq_ = nullptr;
-    }
-
-    mosquitto_lib_cleanup();
+void MqttEventBridge::closeIngress() noexcept {
+    endpoint_.closeIngress();
 }
 
-void MqttEventBridge::onMessageStatic(
-    mosquitto* mosq,
-    void* userdata,
-    const mosquitto_message* message
-) {
-    if (!userdata) {
-        return;
-    }
-
-    auto* self = static_cast<MqttEventBridge*>(userdata);
-    self->onMessage(mosq, message);
+bool MqttEventBridge::quiesceIngress(const std::chrono::milliseconds timeout) {
+    const bool drained = endpoint_.quiesceIngress(timeout);
+    if (!drained) util::logError("MQTT application callback drain timed out");
+    return drained;
 }
 
-void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* message) {
-    (void)mosq;
+bool MqttEventBridge::quiesceTransportObservers(
+    const std::chrono::milliseconds timeout) {
+    const bool drained = endpoint_.quiesceTransportObservers(timeout);
+    if (!drained) util::logError("MQTT transport observer drain timed out");
+    return drained;
+}
 
-    if (!message || !message->topic) {
-        return;
-    }
+bool MqttEventBridge::abortActiveEpoch(
+    const MqttConnectionEpoch expected_epoch) noexcept {
+    return endpoint_.abortActiveEpoch(expected_epoch);
+}
 
-    std::string raw_topic = message->topic;
-    std::string raw_payload;
+bool MqttEventBridge::stop(const std::chrono::milliseconds timeout) {
+    const bool stopped = endpoint_.stop(timeout);
+    if (!stopped)
+        util::logError("MQTT transport callback join failed or timed out");
+    return stopped;
+}
 
-    if (message->payload && message->payloadlen > 0) {
-        raw_payload.assign(
-            static_cast<const char*>(message->payload),
-            message->payloadlen
-        );
-    }
+MqttEndpointState MqttEventBridge::state() const noexcept {
+    return endpoint_.state();
+}
 
+void MqttEventBridge::onMessage(const std::string& raw_topic,
+                                const std::string& raw_payload) {
 
     if (config_.hall_mqtt_input_enabled &&
         raw_topic == config_.hall_mqtt_topic) {
@@ -421,22 +421,24 @@ bool MqttEventBridge::publish(
     const int qos,
     const bool retain
 ) {
-    if (!mosq_) {
+    RegularEgressPermit permit;
+    RegularEgressAdmission admission;
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        admission = regular_egress_admission_;
+    }
+    if (admission) permit = admission();
+    if (admission && (!permit || !permit.isCurrent())) {
+        util::logWarn("MQTT regular publish rejected until Fire retained sync: " +
+                      topic);
         return false;
     }
 
-    int rc = mosquitto_publish(
-        mosq_,
-        nullptr,
-        topic.c_str(),
-        static_cast<int>(payload.size()),
-        payload.c_str(),
-        qos,
-        retain
-    );
-
-    if (rc != MOSQ_ERR_SUCCESS) {
-        util::logError(std::string("MQTT publish failed: ") + mosquitto_strerror(rc));
+    const auto result = permit
+        ? endpoint_.publishInEpoch(topic, payload, qos, retain, permit.epoch())
+        : endpoint_.publish(topic, payload, qos, retain);
+    if (!result.accepted) {
+        util::logError("MQTT publish was not accepted: topic=" + topic);
         return false;
     }
 
@@ -472,6 +474,16 @@ bool MqttEventBridge::publishApplicationEvent(const std::string& topic,
                                               const int qos,
                                               const bool retain) {
     return publish(topic, payload, qos, retain);
+}
+
+MqttTrackedPublishResult MqttEventBridge::publishTrackedFire(
+    const std::string& topic,
+    const std::string& payload,
+    const bool retain,
+    MqttPublishCorrelation correlation,
+    const MqttConnectionEpoch expected_epoch) {
+    return endpoint_.publishTracked(
+        topic, payload, retain, std::move(correlation), expected_epoch);
 }
 
 }
