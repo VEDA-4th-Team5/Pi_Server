@@ -71,6 +71,60 @@ CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS FIRE_ALARM_STATE (
+    channel_id TEXT PRIMARY KEY,
+    sensor_id TEXT UNIQUE NOT NULL,
+    retained_topic TEXT UNIQUE NOT NULL,
+    desired_lifecycle TEXT NOT NULL CHECK (
+        desired_lifecycle IN ('OPEN', 'ACKNOWLEDGED', 'RESOLVED')
+    ),
+    active_alarm_id TEXT,
+    last_event_id TEXT NOT NULL,
+    fire_revision INTEGER NOT NULL CHECK (fire_revision > 0),
+    protocol_mode TEXT NOT NULL CHECK (
+        protocol_mode IN ('UNSEEN', 'LEGACY', 'VERSIONED')
+    ),
+    active_boot_id TEXT,
+    last_source_sequence TEXT,
+    last_signal_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS FIRE_MQTT_OUTBOX (
+    delivery_key TEXT PRIMARY KEY,
+    sink_kind TEXT NOT NULL CHECK (
+        sink_kind IN ('RETAINED_STATE', 'LIFECYCLE_EVENT')
+    ),
+    logical_key TEXT NOT NULL,
+    sensor_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    alarm_id TEXT NOT NULL,
+    fire_revision INTEGER NOT NULL CHECK (fire_revision > 0),
+    topic TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    qos INTEGER NOT NULL DEFAULT 1 CHECK (qos = 1),
+    retain INTEGER NOT NULL CHECK (retain IN (0, 1)),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
+    delivery_state TEXT NOT NULL CHECK (
+        delivery_state IN ('PENDING', 'IN_FLIGHT', 'ACKED')
+    ),
+    acked_revision INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (channel_id) REFERENCES FIRE_ALARM_STATE(channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS SENSOR_RETIRED_BOOT_ID (
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('HALL', 'FIRE')),
+    sensor_id TEXT NOT NULL,
+    boot_id TEXT NOT NULL,
+    retired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_kind, sensor_id, boot_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_vehicle_plate ON VEHICLE(plate_number);
 CREATE INDEX IF NOT EXISTS idx_session_slot ON PARKING_SESSION(slot_id);
 CREATE INDEX IF NOT EXISTS idx_session_vehicle ON PARKING_SESSION(vehicle_id);

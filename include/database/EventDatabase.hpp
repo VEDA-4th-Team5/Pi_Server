@@ -1,5 +1,6 @@
 #pragma once
 
+#include "event/FirePersistence.hpp"
 #include "parking_timer/Types.hpp"
 
 #include <cstdint>
@@ -128,6 +129,34 @@ public:
     std::optional<std::string> getSystemSetting(const std::string& key) const;
     /** @brief 런타임 설정을 원자적으로 추가하거나 갱신한다. */
     bool upsertSystemSetting(const std::string& key, const std::string& value);
+
+    /** Atomically creates or validates the complete configured Fire topology. */
+    event::FireStoreMutationResult initializeFireTopology(
+        const std::vector<event::FireChannelBootstrap>& topology);
+    /** Compare-and-swap state mutation plus zero or two Fire delivery intents. */
+    event::FireStoreMutationResult applyFireStateMutation(
+        const event::FireStateMutation& mutation);
+    std::optional<event::FireAlarmStateRecord> getFireAlarmState(
+        const std::string& channel_id) const;
+    std::vector<event::FireAlarmStateRecord> listFireAlarmStates() const;
+    std::optional<event::FireOutboxRecord> getFireDelivery(
+        const std::string& delivery_key) const;
+    std::vector<event::FireOutboxRecord> listFireRetainedDeliveries() const;
+    std::vector<event::FireOutboxRecord> listFireLifecycleDeliveries() const;
+    std::vector<event::FireOutboxRecord> listPendingFireLifecycleDeliveries(
+        const std::optional<std::string>& channel_id = std::nullopt) const;
+    bool markFireDeliveryInFlight(const std::string& delivery_key,
+                                  std::uint64_t fire_revision);
+    bool markFireDeliveryPending(const std::string& delivery_key,
+                                 std::uint64_t fire_revision,
+                                 const std::string& error);
+    bool acknowledgeFireDelivery(const std::string& delivery_key,
+                                 std::uint64_t fire_revision);
+    bool resetFireInFlightDeliveries();
+    [[nodiscard]] bool isSensorBootIdRetired(
+        const std::string& source_kind,
+        const std::string& sensor_id,
+        const std::string& boot_id) const;
 
     /** @brief 서버 시작 시 운영 DB에 안전한 멱등 migration만 적용한다. */
     void migrateRuntimeSchema();
