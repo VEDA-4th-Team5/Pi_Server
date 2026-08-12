@@ -26,7 +26,8 @@ std::string trim(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
-// Gemini 비밀파일은 shell을 거치지 않고도 서버가 직접 읽을 수 있게 한다.
+// run_server.sh 로 실행하지 않을 때(systemd 등)도 서버가 설정 파일을 직접
+// 읽을 수 있게 한다. 공개 설정은 .env.public, 계정/키는 .env.private 이다.
 // 환경변수가 있으면 파일보다 우선하며, 단순 KEY='VALUE' 형식만 허용한다.
 std::string getEnvOrLocalSetting(const char* key,
                                  const std::string& default_value,
@@ -72,6 +73,28 @@ bool getEnvBoolOrDefault(const char* key, bool default_value) {
     if (value == "1" || value == "true" || value == "TRUE" || value == "on") return true;
     if (value == "0" || value == "false" || value == "FALSE" || value == "off") return false;
     return default_value;
+}
+
+bool getEnvOrLocalBoolOrDefault(const char* key,
+                                bool default_value,
+                                const char* path) {
+    const std::string value = trim(getEnvOrLocalSetting(
+        key, default_value ? "true" : "false", path));
+    if (value == "1" || value == "true" || value == "TRUE" || value == "on") return true;
+    if (value == "0" || value == "false" || value == "FALSE" || value == "off") return false;
+    return default_value;
+}
+
+int getEnvOrLocalIntOrDefault(const char* key,
+                              int default_value,
+                              const char* path) {
+    const std::string value = getEnvOrLocalSetting(key, "", path);
+    if (value.empty()) return default_value;
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return default_value;
+    }
 }
 
 double parseDoubleOrDefault(const std::string& value, double default_value) {
@@ -157,14 +180,14 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_ENABLED", false);
     config.camera_snapshot_api_rtsp_fallback =
         getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_RTSP_FALLBACK", false);
-    config.camera_open_api_base =
-        getEnvOrDefault("CAMERA_OPEN_API_BASE", "");
-    config.camera_image_base =
-        getEnvOrDefault("CAMERA_IMAGE_BASE", "");
+    config.camera_open_api_base = getEnvOrLocalSetting(
+        "CAMERA_OPEN_API_BASE", "", ".env.private");
+    config.camera_image_base = getEnvOrLocalSetting(
+        "CAMERA_IMAGE_BASE", "", ".env.private");
     config.camera_api_username = getEnvOrLocalSetting(
-        "CAMERA_API_USERNAME", "", ".env.camera.local");
+        "CAMERA_API_USERNAME", "", ".env.private");
     config.camera_api_password = getEnvOrLocalSetting(
-        "CAMERA_API_PASSWORD", "", ".env.camera.local");
+        "CAMERA_API_PASSWORD", "", ".env.private");
     config.camera_image_server_port = std::clamp(
         getEnvIntOrDefault("CAMERA_IMAGE_SERVER_PORT", 8080), 1024, 65535);
     config.camera_snapshot_connect_timeout_ms = std::max(
@@ -202,14 +225,14 @@ AppConfig AppConfig::loadFromEnv() {
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.db_path = getEnvOrDefault("EVENT_DB_PATH", "data/db/parking.db");
     config.gemini_api_key =
-        getEnvOrLocalSetting("GEMINI_API_KEY", "", ".env.gemini.local");
+        getEnvOrLocalSetting("GEMINI_API_KEY", "", ".env.private");
     config.gemini_model = getEnvOrLocalSetting(
-        "GEMINI_MODEL", "gemini-3-flash-preview", ".env.gemini.local");
+        "GEMINI_MODEL", "gemini-3-flash-preview", ".env.public");
     config.gemini_fallback_model = getEnvOrLocalSetting(
         "GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite-preview",
-        ".env.gemini.local");
+        ".env.public");
     config.plate_preprocess_mode = getEnvOrLocalSetting(
-        "PLATE_PREPROCESS_MODE", "pipeline", ".env.gemini.local");
+        "PLATE_PREPROCESS_MODE", "pipeline", ".env.public");
 
     config.preview_width = getEnvIntOrDefault("PREVIEW_WIDTH", 640);
     config.preview_height = getEnvIntOrDefault("PREVIEW_HEIGHT", 360);
@@ -227,6 +250,27 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvIntOrDefault("GEMINI_CONNECT_TIMEOUT_SEC", 5);
     config.gemini_request_timeout_sec =
         getEnvIntOrDefault("GEMINI_REQUEST_TIMEOUT_SEC", 30);
+    config.telegram_enabled = getEnvOrLocalBoolOrDefault(
+        "TELEGRAM_ENABLED", false, ".env.public");
+    config.telegram_bot_token = getEnvOrLocalSetting(
+        "TELEGRAM_BOT_TOKEN", "", ".env.private");
+    config.telegram_channel = getEnvOrLocalSetting(
+        "TELEGRAM_CHANNEL", "", ".env.private");
+    config.telegram_connect_timeout_ms = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_CONNECT_TIMEOUT_MS", 3000,
+                                     ".env.public"));
+    config.telegram_request_timeout_ms = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_REQUEST_TIMEOUT_MS", 10000,
+                                     ".env.public"));
+    config.telegram_retry_count = std::max(
+        0, getEnvOrLocalIntOrDefault("TELEGRAM_RETRY_COUNT", 2,
+                                     ".env.public"));
+    config.telegram_retry_delay_ms = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_RETRY_DELAY_MS", 500,
+                                     ".env.public"));
+    config.telegram_queue_capacity = std::max(
+        1, getEnvOrLocalIntOrDefault("TELEGRAM_QUEUE_CAPACITY", 256,
+                                     ".env.public"));
 
     config.parking_timer_enabled =
         getEnvBoolOrDefault("PARKING_TIMER_ENABLED", true);
@@ -279,13 +323,13 @@ AppConfig AppConfig::loadFromEnv() {
         const std::string channel = "ch01";
         const std::string prefix = "IVA_" + slot.str() + "_";
         const std::string roi_x = getEnvOrLocalSetting(
-            (prefix + "ROI_X").c_str(), "", ".env.iva.local");
+            (prefix + "ROI_X").c_str(), "", ".env.public");
         const std::string roi_y = getEnvOrLocalSetting(
-            (prefix + "ROI_Y").c_str(), "", ".env.iva.local");
+            (prefix + "ROI_Y").c_str(), "", ".env.public");
         const std::string roi_width = getEnvOrLocalSetting(
-            (prefix + "ROI_WIDTH").c_str(), "", ".env.iva.local");
+            (prefix + "ROI_WIDTH").c_str(), "", ".env.public");
         const std::string roi_height = getEnvOrLocalSetting(
-            (prefix + "ROI_HEIGHT").c_str(), "", ".env.iva.local");
+            (prefix + "ROI_HEIGHT").c_str(), "", ".env.public");
         const bool roi_configured =
             !roi_x.empty() || !roi_y.empty() ||
             !roi_width.empty() || !roi_height.empty();
@@ -293,9 +337,9 @@ AppConfig AppConfig::loadFromEnv() {
         config.iva_areas.push_back({
             slot.str(),
             getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(), slot.str(),
-                                 ".env.iva.local"),
+                                 ".env.public"),
             getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel,
-                                 ".env.iva.local"),
+                                 ".env.public"),
             parseDoubleOrDefault(roi_x, 0.0),
             parseDoubleOrDefault(roi_y, 0.0),
             parseDoubleOrDefault(roi_width, 1.0),

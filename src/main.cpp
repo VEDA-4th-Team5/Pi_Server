@@ -10,6 +10,8 @@
 #include "event/SystemEventReporter.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
+#include "notification/TelegramApiClient.hpp"
+#include "notification/TelegramChannelNotifier.hpp"
 #include "parking/CaptureRequest.hpp"
 #include "parking/CaptureScheduler.hpp"
 #include "parking/CaptureSchedulerRuntime.hpp"
@@ -414,6 +416,46 @@ int main() {
     if (system_event_sink == nullptr)
         util::logError("System event reporter disabled after start failure");
 
+
+    std::unique_ptr<notification::TelegramApiClient> telegram_api_client;
+    std::unique_ptr<notification::TelegramChannelNotifier> telegram_notifier;
+    notification::TelegramChannelNotifier* telegram_notifier_ptr{nullptr};
+
+    if (config.telegram_enabled) {
+        const bool telegram_enabled =
+            !config.telegram_bot_token.empty() &&
+            !config.telegram_channel.empty();
+
+        telegram_api_client = std::make_unique<notification::TelegramApiClient>(
+            notification::TelegramApiClient::Config{
+                .enabled = telegram_enabled,
+                .bot_token = config.telegram_bot_token,
+                .channel = config.telegram_channel,
+                .connect_timeout_ms = static_cast<long>(
+                    std::max(1, config.telegram_connect_timeout_ms)),
+                .request_timeout_ms = static_cast<long>(
+                    std::max(1, config.telegram_request_timeout_ms))
+            });
+
+        const auto telegram_notifier_config =
+            notification::TelegramChannelNotifier::Config{
+                .enabled = telegram_enabled,
+                .queue_capacity = static_cast<std::size_t>(
+                    std::max(1, config.telegram_queue_capacity)),
+                .retry_count = std::max(0, config.telegram_retry_count),
+                .retry_delay_ms = std::max(1, config.telegram_retry_delay_ms)
+            };
+
+        telegram_notifier = std::make_unique<notification::TelegramChannelNotifier>(
+            telegram_notifier_config, *telegram_api_client);
+
+        if (telegram_notifier->start()) {
+            telegram_notifier_ptr = telegram_notifier.get();
+        } else {
+            util::logWarn(
+                "Telegram notifier disabled: MQTT publish path remains active");
+        }
+    }
     std::unique_ptr<http::ParkingHttpServer> http_server;
 
     camera::RtspStreamReceiver rtsp_receiver(
@@ -920,6 +962,7 @@ int main() {
             database, http_config, &overstay_settings, &roi_settings);
         if (!http_server->start()) {
             g_running.store(false);
+            if (telegram_notifier) telegram_notifier->stop();
             rtsp_receiver.stop();
             hall_service.reset();
             evidence_worker->stop();
@@ -954,12 +997,14 @@ int main() {
         [&hall_service](const event::IvaOccupancySignal& signal) {
             return hall_service &&
                    hall_service->handleCameraIvaSignal(signal);
-        }
+        },
+        telegram_notifier_ptr
     );
     capture_mqtt_bridge = &mqtt_bridge;
 
     if (!mqtt_bridge.start()) {
         g_running.store(false);
+        if (telegram_notifier) telegram_notifier->stop();
         bestshot_receiver.stop();
         hall_service.reset();
         evidence_worker->stop();
@@ -1104,6 +1149,8 @@ int main() {
     if (sensor_link) sensor_link->stop();
     fire_alarm_manager.reset();
     // reporter queue를 MQTT가 살아 있을 때 모두 비운 뒤 bridge 수명을 종료한다.
+    if (telegram_notifier) telegram_notifier->stop();
+    telegram_notifier.reset();
     system_event_reporter.stop();
     system_event_mqtt_bridge.store(nullptr, std::memory_order_release);
     mqtt_bridge.stop();

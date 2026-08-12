@@ -128,6 +128,14 @@ struct AppConfig {
     int iva_duplicate_suppression_ms;
     int gemini_connect_timeout_sec;
     int gemini_request_timeout_sec;
+    bool telegram_enabled;
+    std::string telegram_bot_token;
+    std::string telegram_channel;
+    int telegram_connect_timeout_ms;
+    int telegram_request_timeout_ms;
+    int telegram_retry_count;
+    int telegram_retry_delay_ms;
+    int telegram_queue_capacity;
 
     bool parking_timer_enabled;
     // 위반 판정과 OVERSTAY_EVIDENCE가 함께 사용하는 단일 부트스트랩 값.

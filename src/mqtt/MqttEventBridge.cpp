@@ -4,6 +4,7 @@
 #include "event/CameraEventParser.hpp"
 #include "event/EventPayloadBuilder.hpp"
 #include "event/IvaEventResolver.hpp"
+#include "notification/TelegramChannelNotifier.hpp"
 #include "ocr/PlateImageEnhancer.hpp"
 #include "util/Logger.hpp"
 
@@ -65,7 +66,8 @@ MqttEventBridge::MqttEventBridge(
     std::vector<parking::ParkingSlotConfig> parking_slot_configs,
     SensorMessageHandler sensor_message_handler,
     FireAckHandler fire_ack_handler,
-    IvaOccupancyHandler iva_occupancy_handler
+    IvaOccupancyHandler iva_occupancy_handler,
+    notification::TelegramChannelNotifier* telegram_notifier
 )
     : config_(config),
       channels_(channels),
@@ -77,6 +79,7 @@ MqttEventBridge::MqttEventBridge(
       sensor_message_handler_(std::move(sensor_message_handler)),
       fire_ack_handler_(std::move(fire_ack_handler)),
       iva_occupancy_handler_(std::move(iva_occupancy_handler)),
+      telegram_notifier_(telegram_notifier),
       mosq_(nullptr) {
 }
 
@@ -444,7 +447,24 @@ bool MqttEventBridge::publishQtEvent(const std::string& topic,
                                      const std::string& payload,
                                      const int qos,
                                      const bool retain) {
-    return publish(topic, payload, qos, retain);
+    const bool published = publish(topic, payload, qos, retain);
+    if (!published) {
+        return false;
+    }
+
+    if (telegram_notifier_) {
+        notification::TelegramMessage message{
+            .topic = topic,
+            .payload = payload,
+            .qos = qos,
+            .retain = retain,
+        };
+        if (!telegram_notifier_->enqueue(std::move(message))) {
+            util::logWarn("Failed to enqueue Telegram event: topic=" + topic);
+        }
+    }
+
+    return true;
 }
 
 bool MqttEventBridge::publishApplicationEvent(const std::string& topic,

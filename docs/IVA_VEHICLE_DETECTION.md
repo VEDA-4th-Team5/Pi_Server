@@ -60,7 +60,7 @@ camera_id + video_source_token + rule_name
 기본 CH1을 추측하지 않고 이벤트를 거부한다.
 
 슬롯별 ROI와 서버 채널은 `AppConfig::iva_areas`에서 가져온다. 운영 전에
-`.env.iva.local` 또는 환경변수로 `IVA_EV01_ROI_X` 등의 정규화 좌표를 설정해야
+`.env.public` 또는 환경변수로 `IVA_EV01_ROI_X` 등의 정규화 좌표를 설정해야
 한다. 또는 Qt가 REST API로 좌표를 SQLite에 저장할 수 있다. 두 위치 모두에
 좌표가 없으면 전체 프레임을 임의로 사용하지 않고 해당 슬롯 촬영/OCR을 건너뛴다.
 
