@@ -24,7 +24,10 @@ pipeline {
         }
         stage('Deploy') {
             when {
-                expression { env.GIT_BRANCH == 'origin/main' }
+                expression {
+                    env.GIT_BRANCH == 'origin/main' ||
+                    env.GIT_BRANCH.startsWith('origin/release/')
+                }
             }
             steps {
                 sh 'cp cmake-build/pi-server /home/hun/Pi_server_develop/cmake-build/pi-server'
