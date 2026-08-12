@@ -232,6 +232,38 @@ int db_insert_image_log(int session_id, const char *original_path,
     return finish_update(stmt, "이미지 로그 입력", 0);
 }
 
+int db_insert_image_log_with_roi(
+    int session_id, const char *original_path, const char *enhanced_path,
+    const char *enhancement_type, const char *ocr_result,
+    double roi_x, double roi_y, double roi_width, double roi_height,
+    unsigned long long roi_revision)
+{
+    static const char *sql =
+        "INSERT INTO IMAGE_LOG(session_id,original_image_path,"
+        "enhanced_image_path,enhancement_type,ocr_result,roi_x,roi_y,"
+        "roi_width,roi_height,roi_revision) VALUES(?,?,?,?,?,?,?,?,?,?);";
+    sqlite3_stmt *stmt = NULL;
+    int rc;
+    if (roi_revision == 0 || prepare(&stmt, sql, "ROI image log insert") < 0)
+        return -1;
+    rc = bind_id_or_null(stmt, 1, session_id);
+    if (rc == SQLITE_OK) rc = bind_text_or_null(stmt, 2, original_path);
+    if (rc == SQLITE_OK) rc = bind_text_or_null(stmt, 3, enhanced_path);
+    if (rc == SQLITE_OK) rc = bind_text_or_null(stmt, 4, enhancement_type);
+    if (rc == SQLITE_OK) rc = bind_text_or_null(stmt, 5, ocr_result);
+    if (rc == SQLITE_OK) rc = sqlite3_bind_double(stmt, 6, roi_x);
+    if (rc == SQLITE_OK) rc = sqlite3_bind_double(stmt, 7, roi_y);
+    if (rc == SQLITE_OK) rc = sqlite3_bind_double(stmt, 8, roi_width);
+    if (rc == SQLITE_OK) rc = sqlite3_bind_double(stmt, 9, roi_height);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(stmt, 10, (sqlite3_int64)roi_revision);
+    if (rc != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return -2;
+    }
+    return finish_update(stmt, "ROI image log insert", 0);
+}
+
 int db_insert_event_log(int session_id, const char *slot_id,
                         const char *event_type, const char *message)
 {
@@ -399,6 +431,14 @@ static void fill_image_row(sqlite3_stmt *stmt, DbImageRow *row)
     copy_column_text(stmt, 5, row->evidence_reason, sizeof(row->evidence_reason));
     copy_column_text(stmt, 6, row->ocr_result, sizeof(row->ocr_result));
     copy_column_text(stmt, 7, row->captured_at, sizeof(row->captured_at));
+    row->has_applied_roi = sqlite3_column_type(stmt, 12) != SQLITE_NULL;
+    if (row->has_applied_roi) {
+        row->roi_x = sqlite3_column_double(stmt, 8);
+        row->roi_y = sqlite3_column_double(stmt, 9);
+        row->roi_width = sqlite3_column_double(stmt, 10);
+        row->roi_height = sqlite3_column_double(stmt, 11);
+        row->roi_revision = (unsigned long long)sqlite3_column_int64(stmt, 12);
+    }
 }
 
 int db_visit_session_images(int session_id, DbImageVisitor visitor, void *context)
@@ -407,7 +447,8 @@ int db_visit_session_images(int session_id, DbImageVisitor visitor, void *contex
         "SELECT image_id,session_id,COALESCE(original_image_path,''),"
         "COALESCE(enhanced_image_path,''),COALESCE(enhancement_type,''),"
         "COALESCE(evidence_reason,''),COALESCE(ocr_result,''),"
-        "COALESCE(captured_at,'') FROM IMAGE_LOG "
+        "COALESCE(captured_at,''),roi_x,roi_y,roi_width,roi_height,"
+        "roi_revision FROM IMAGE_LOG "
         "WHERE session_id=? ORDER BY captured_at,image_id;";
     sqlite3_stmt *stmt = NULL;
     int rc;
@@ -451,7 +492,8 @@ int db_get_image_by_id(int image_id, DbImageRow *row)
         "SELECT image_id,session_id,COALESCE(original_image_path,''),"
         "COALESCE(enhanced_image_path,''),COALESCE(enhancement_type,''),"
         "COALESCE(evidence_reason,''),COALESCE(ocr_result,''),"
-        "COALESCE(captured_at,'') FROM IMAGE_LOG "
+        "COALESCE(captured_at,''),roi_x,roi_y,roi_width,roi_height,"
+        "roi_revision FROM IMAGE_LOG "
         "WHERE image_id=?;";
     sqlite3_stmt *stmt = NULL;
     int rc;
