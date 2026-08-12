@@ -1,6 +1,6 @@
 # CV Snapshot API Pi Server 연동
 
-기준일: 2026-07-28
+기준일: 2026-08-12
 
 ## 목적
 
@@ -8,10 +8,9 @@ CV5의 `cv_snapshot_api`가 한 번 캡처한 동일 프레임에서 생성한 `
 `enhanced` JPEG를 Raspberry Pi가 내려받아 기존 홀센서 30/60초 OCR 흐름에 연결한다.
 Pi는 카메라 개선본이 정상 제공되면 OpenCV 화질 개선을 다시 수행하지 않는다.
 
-2026-08-05 구현은 Hall 예약 촬영뿐 아니라 WiseAI IVA 세션의 시작·장기점유 증거도
-요청형 촬영으로 연결한다. 현재 실제 ROI 좌표가 확정되지 않아 카메라가 반환한 전체
-original/enhanced 프레임을 그대로 세션 디렉터리에 저장한다. crop은 좌표 확정 후
-별도 단계로 추가한다.
+현재 구현은 Hall 예약 촬영과 WiseAI IVA 세션의 시작·장기점유 증거를
+요청형 촬영으로 연결한다. 카메라가 반환한 전체 original/enhanced JPEG에
+SQLite `SYSTEM_SETTINGS`의 슬롯별 정규화 ROI를 즉시 적용해 crop한다.
 
 ## 런타임 흐름
 
@@ -98,7 +97,8 @@ crop한다. original과 enhanced에 같은 좌표를 적용하며 Gemini OCR에�
 - `CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false`이면 Pi 서버는 RTSP 수신과 최초 프레임
   대기를 생략한다. API 실패는 해당 촬영 실패로 기록하되 서버 전체를 종료하지 않는다.
 - 현재 실기기는 OpenAPI에 HTTP Digest 인증을 요구하며 계정은 `.env.private`에서만 읽는다.
-- 기본값은 안전을 위해 `CAMERA_SNAPSHOT_API_ENABLED=false`다. CAP 검증 후 운영 환경에서 활성화한다.
+- 코드 기본값은 `false`지만 현재 운영 `.env.public`은
+  `CAMERA_SNAPSHOT_API_ENABLED=true`, `CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false`다.
 
 ### IVA 세션 촬영 구현
 
@@ -110,8 +110,8 @@ IVA MQTT → 비동기 capture queue → /images/generate
 ```
 
 API 전용 모드에서는 Qt만 RTSP 영상을 직접 수신하고 Pi는 연속 RTSP 디코딩을 하지
-않는다. 단, 정확한 이벤트 프레임 BestShot은 Snapshot API의 현재 프레임과 다르므로
-카메라가 BestShot URL을 제공하면 그 경로를 우선한다.
+않는다. BestShot 호환 경로는 소스에 남아 있지만
+`BESTSHOT_ENABLED=false`이며 현재 IVA/Snapshot API 운영에서는 시작하지 않는다.
 
 ### Gemini OCR 오류 분류
 
