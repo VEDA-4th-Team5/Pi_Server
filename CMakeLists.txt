@@ -138,6 +138,24 @@ target_include_directories(camera-iva-event-test PRIVATE include)
 target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME camera-iva-event-test COMMAND camera-iva-event-test)
 
+add_executable(callback-lifecycle-test
+    tests/unit/CallbackLifecycleTest.cpp
+    src/app/RuntimeShutdown.cpp
+    src/mqtt/MqttEndpoint.cpp
+    src/util/Logger.cpp)
+target_include_directories(callback-lifecycle-test PRIVATE include)
+target_compile_options(callback-lifecycle-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(callback-lifecycle-test PRIVATE Threads::Threads)
+add_test(NAME callback-lifecycle-test COMMAND callback-lifecycle-test)
+
+add_executable(mqtt-tracked-transport-test
+    tests/unit/MqttTrackedTransportTest.cpp
+    src/mqtt/MqttEndpoint.cpp)
+target_include_directories(mqtt-tracked-transport-test PRIVATE include)
+target_compile_options(mqtt-tracked-transport-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(mqtt-tracked-transport-test PRIVATE Threads::Threads)
+add_test(NAME mqtt-tracked-transport-test COMMAND mqtt-tracked-transport-test)
+
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
     src/event/FireAlarmManager.cpp
