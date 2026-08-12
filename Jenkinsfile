@@ -29,7 +29,7 @@ pipeline {
             steps {
                 sh 'cp cmake-build/pi-server /home/hun/Pi_server_develop/cmake-build/pi-server'
                 sh 'sudo systemctl restart pi-server'
-                sh 'sleep 3 && sudo systemctl is-active pi-server'
+                sh 'sleep 3 && sudo systemctl status pi-server'
             }
         }
     }
