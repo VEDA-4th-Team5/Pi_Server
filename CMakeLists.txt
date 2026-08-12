@@ -304,6 +304,7 @@ add_custom_target(parking-alert-module
 add_library(parking-timer-core STATIC
     src/database/EventDatabase.cpp
     src/database/EventDatabaseFire.cpp
+    src/database/EventDatabaseOccupancy.cpp
     src/database/EventDatabaseTimer.cpp
     src/database/db_manager.c
     src/event/FirePersistence.cpp

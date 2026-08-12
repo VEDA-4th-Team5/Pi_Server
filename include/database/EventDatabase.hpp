@@ -1,8 +1,10 @@
 #pragma once
 
 #include "event/FirePersistence.hpp"
+#include "parking/SlotTransitionTypes.hpp"
 #include "parking_timer/Types.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -159,6 +161,32 @@ public:
         const std::string& source_kind,
         const std::string& sensor_id,
         const std::string& boot_id) const;
+
+    parking::SlotAdmissionResult admitSlotTransitionCommand(
+        const parking::SlotTransitionCommand& command,
+        std::size_t pending_capacity);
+    std::size_t admitDueSlotDeadlines(
+        std::int64_t now_epoch_ms,
+        std::size_t pending_capacity,
+        const std::vector<std::string>& blocked_slots = {});
+    std::vector<parking::DurableSlotCommand>
+    listRunnableSlotTransitionCommands(std::int64_t now_epoch_ms) const;
+    parking::CommittedOccupancyTransition applySlotTransitionCommand(
+        const std::string& command_id);
+    std::vector<parking::CommittedOccupancyTransition>
+    listPendingSlotTransitionEffects(std::int64_t now_epoch_ms) const;
+    bool completeSlotTransitionEffects(const std::string& command_id);
+    bool deferSlotTransitionEffects(const std::string& command_id,
+                                    std::int64_t next_attempt_at_epoch_ms,
+                                    const std::string& error) noexcept;
+    bool deferSlotTransitionCommand(const std::string& command_id,
+                                    std::int64_t next_attempt_at_epoch_ms,
+                                    const std::string& error) noexcept;
+    std::optional<std::int64_t> nextScheduledSlotDeadlineEpochMs() const;
+    std::size_t pendingSlotTransitionCommandCount() const;
+    std::size_t pendingSlotTransitionEffectCount() const;
+    std::size_t pendingSlotTransitionDrainCount(
+        std::int64_t shutdown_cutoff_epoch_ms) const;
 
     /** @brief 서버 시작 시 운영 DB에 안전한 멱등 migration만 적용한다. */
     void migrateRuntimeSchema();
