@@ -235,6 +235,7 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                                const std::filesystem::path& seed_file) {
     const auto schema = readTextFile(schema_file);
     const auto seed = readTextFile(seed_file);
+    {
     std::lock_guard lock(db_mutex_);
     // 기존 운영 DB의 테이블 이름과 데이터를 유지한 채 신규 구분 필드만 보강한다.
     if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
@@ -260,6 +261,8 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
         sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         throw;
     }
+    }
+    migrateRuntimeSchema();
 }
 
 void EventDatabase::migrateRuntimeSchema() {
@@ -310,6 +313,206 @@ void EventDatabase::migrateRuntimeSchema() {
                 "parking runtime schema is incomplete: PARKING_SLOT and "
                 "PARKING_SESSION must be present together");
         }
+        if (has_parking_slot) {
+            if (!tableHasColumn(db_, "PARKING_SESSION", "occupancy_attempt_id")) {
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION "
+                    "ADD COLUMN occupancy_attempt_id TEXT;");
+            }
+            if (!tableHasColumn(db_, "PARKING_SESSION", "entry_command_id")) {
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN entry_command_id TEXT;");
+            }
+            if (!tableHasColumn(db_, "PARKING_SESSION", "exit_command_id")) {
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN exit_command_id TEXT;");
+            }
+            if (!tableHasColumn(db_, "PARKING_SESSION", "entry_time_epoch_ms")) {
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION "
+                    "ADD COLUMN entry_time_epoch_ms INTEGER;");
+            }
+            if (!tableHasColumn(db_, "PARKING_SESSION", "exit_time_epoch_ms")) {
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION "
+                    "ADD COLUMN exit_time_epoch_ms INTEGER;");
+            }
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET "
+                "occupancy_attempt_id='legacy-attempt:' || session_id "
+                "WHERE occupancy_attempt_id IS NULL OR occupancy_attempt_id='';");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET "
+                "entry_command_id='legacy-entry:' || session_id "
+                "WHERE entry_command_id IS NULL OR entry_command_id='';");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET entry_time_epoch_ms="
+                "CAST((julianday(entry_time)-2440587.5)*86400000 AS INTEGER) "
+                "WHERE entry_time_epoch_ms IS NULL;");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET exit_time_epoch_ms="
+                "CAST((julianday(exit_time)-2440587.5)*86400000 AS INTEGER) "
+                "WHERE exit_time IS NOT NULL AND exit_time_epoch_ms IS NULL;");
+            Statement invalid_timestamp(db_,
+                "SELECT 1 FROM PARKING_SESSION WHERE entry_time_epoch_ms IS NULL "
+                "OR (exit_time IS NOT NULL AND exit_time_epoch_ms IS NULL) "
+                "LIMIT 1;");
+            if (sqlite3_step(invalid_timestamp.get()) == SQLITE_ROW) {
+                throw std::runtime_error(
+                    "parking session timestamp migration is ambiguous");
+            }
+            Statement duplicate_active(db_,
+                "SELECT slot_id FROM PARKING_SESSION WHERE exit_time IS NULL "
+                "AND status IN ('ACTIVE','VIOLATION') GROUP BY slot_id "
+                "HAVING COUNT(*)>1 LIMIT 1;");
+            if (sqlite3_step(duplicate_active.get()) == SQLITE_ROW) {
+                throw std::runtime_error(
+                    "multiple active parking sessions exist for slot=" +
+                    columnText(duplicate_active.get(), 0));
+            }
+            executeSqlUnlocked(
+                "UPDATE PARKING_SLOT SET status=CASE WHEN EXISTS("
+                "SELECT 1 FROM PARKING_SESSION s WHERE "
+                "s.slot_id=PARKING_SLOT.slot_id AND s.exit_time IS NULL AND "
+                "s.status IN ('ACTIVE','VIOLATION')) THEN 'OCCUPIED' "
+                "ELSE 'VACANT' END,updated_at=CURRENT_TIMESTAMP;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_parking_session_entry_command "
+                "ON PARKING_SESSION(entry_command_id) "
+                "WHERE entry_command_id IS NOT NULL;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_parking_session_exit_command "
+                "ON PARKING_SESSION(exit_command_id) "
+                "WHERE exit_command_id IS NOT NULL;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_parking_active_slot "
+                "ON PARKING_SESSION(slot_id) WHERE exit_time IS NULL "
+                "AND status IN ('ACTIVE','VIOLATION');");
+        }
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS OCCUPANCY_COMMAND_INBOX ("
+            "command_id TEXT PRIMARY KEY,slot_id TEXT NOT NULL,"
+            "source_kind TEXT NOT NULL CHECK (source_kind IN "
+            "('HALL_OBSERVATION','CAMERA_OBSERVATION','EXIT_DEADLINE')),"
+            "sensor_id TEXT NOT NULL DEFAULT '',source_identity TEXT NOT NULL,"
+            "source_sequence TEXT,occurred_at TEXT NOT NULL,"
+            "payload_json TEXT NOT NULL,due_at_epoch_ms INTEGER NOT NULL DEFAULT 0,"
+            "admission_ordinal INTEGER NOT NULL UNIQUE,status TEXT NOT NULL "
+            "CHECK (status IN ('PENDING_UNPREPARED','PENDING_PREPARED',"
+            "'APPLIED','REJECTED_INVALID')),"
+            "occupancy_attempt_id TEXT NOT NULL DEFAULT '',"
+            "correlation_id TEXT NOT NULL DEFAULT '',"
+            "observation_generation INTEGER NOT NULL DEFAULT 0,"
+            "deadline_id TEXT NOT NULL DEFAULT '',expected_session_id INTEGER,"
+            "attempt_count INTEGER NOT NULL DEFAULT 0,"
+            "next_attempt_at_epoch_ms INTEGER NOT NULL DEFAULT 0,"
+            "last_error TEXT NOT NULL DEFAULT '',"
+            "result_code TEXT NOT NULL DEFAULT '',result_session_id INTEGER,"
+            "effect_state TEXT NOT NULL DEFAULT 'NONE' CHECK (effect_state IN "
+            "('NONE','PENDING','APPLIED')),"
+            "effect_attempt_count INTEGER NOT NULL DEFAULT 0,"
+            "effect_next_attempt_at_epoch_ms INTEGER NOT NULL DEFAULT 0,"
+            "effect_last_error TEXT NOT NULL DEFAULT '',"
+            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id));");
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX", "effect_state")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_state TEXT NOT NULL DEFAULT 'NONE' CHECK "
+                "(effect_state IN ('NONE','PENDING','APPLIED'));");
+        }
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                            "effect_attempt_count")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_attempt_count INTEGER NOT NULL DEFAULT 0;");
+        }
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                            "effect_next_attempt_at_epoch_ms")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_next_attempt_at_epoch_ms INTEGER NOT NULL DEFAULT 0;");
+        }
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                            "effect_last_error")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_last_error TEXT NOT NULL DEFAULT '';");
+        }
+        if (has_parking_slot) {
+            executeSqlUnlocked(
+                "UPDATE OCCUPANCY_COMMAND_INBOX AS c SET status='APPLIED',"
+                "result_code='SESSION_STARTED',"
+                "result_session_id=(SELECT s.session_id FROM PARKING_SESSION s "
+                "WHERE s.entry_command_id=c.command_id LIMIT 1),"
+                "effect_state='PENDING',effect_next_attempt_at_epoch_ms=0,"
+                "effect_last_error='' WHERE c.status='PENDING_PREPARED' AND "
+                "EXISTS (SELECT 1 FROM PARKING_SESSION s WHERE "
+                "s.entry_command_id=c.command_id);");
+            executeSqlUnlocked(
+                "UPDATE OCCUPANCY_COMMAND_INBOX AS c SET status='APPLIED',"
+                "result_code='SESSION_ENDED',"
+                "result_session_id=(SELECT s.session_id FROM PARKING_SESSION s "
+                "WHERE s.exit_command_id=c.command_id LIMIT 1),"
+                "effect_state='PENDING',effect_next_attempt_at_epoch_ms=0,"
+                "effect_last_error='' WHERE c.status='PENDING_PREPARED' AND "
+                "EXISTS (SELECT 1 FROM PARKING_SESSION s WHERE "
+                "s.exit_command_id=c.command_id);");
+        }
+        executeSqlUnlocked(
+            "UPDATE OCCUPANCY_COMMAND_INBOX SET status='PENDING_UNPREPARED',"
+            "result_code='',result_session_id=NULL,effect_state='NONE',"
+            "effect_attempt_count=0,effect_next_attempt_at_epoch_ms=0,"
+            "effect_last_error='',next_attempt_at_epoch_ms=0,"
+            "last_error='legacy prepared outcome requires replay' "
+            "WHERE status='PENDING_PREPARED';");
+        executeSqlUnlocked(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_occupancy_source_identity "
+            "ON OCCUPANCY_COMMAND_INBOX(source_kind,source_identity);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_occupancy_inbox_runnable "
+            "ON OCCUPANCY_COMMAND_INBOX(status,slot_id,admission_ordinal,"
+            "next_attempt_at_epoch_ms);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_occupancy_effect_pending "
+            "ON OCCUPANCY_COMMAND_INBOX(effect_state,slot_id,"
+            "admission_ordinal,effect_next_attempt_at_epoch_ms);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS OCCUPANCY_SENSOR_SEQUENCE_STATE ("
+            "sensor_id TEXT PRIMARY KEY,protocol_mode TEXT NOT NULL CHECK "
+            "(protocol_mode IN ('LEGACY','VERSIONED')),active_boot_id TEXT,"
+            "last_sequence TEXT NOT NULL,last_command_id TEXT NOT NULL,"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS IVA_SLOT_OBSERVATION_STATE ("
+            "slot_id TEXT PRIMARY KEY,occupancy_attempt_id TEXT NOT NULL DEFAULT '',"
+            "active_session_id INTEGER,observation_generation INTEGER NOT NULL DEFAULT 0,"
+            "observed_state TEXT NOT NULL CHECK (observed_state IN "
+            "('UNKNOWN','OCCUPIED','VACANT_PENDING','VACANT')),"
+            "configured_areas_json TEXT NOT NULL DEFAULT '[]',"
+            "area_states_json TEXT NOT NULL DEFAULT '{}',"
+            "last_source_command_id TEXT NOT NULL DEFAULT '',"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id));");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS OCCUPANCY_EXIT_DEADLINE ("
+            "deadline_id TEXT PRIMARY KEY,slot_id TEXT NOT NULL,"
+            "occupancy_attempt_id TEXT NOT NULL,expected_session_id INTEGER NOT NULL,"
+            "observation_generation INTEGER NOT NULL,due_at_epoch_ms INTEGER NOT NULL,"
+            "state TEXT NOT NULL CHECK (state IN "
+            "('SCHEDULED','ADMITTED','SUPERSEDED','APPLIED')),"
+            "admitted_command_id TEXT UNIQUE,"
+            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id),"
+            "FOREIGN KEY(expected_session_id) REFERENCES PARKING_SESSION(session_id));");
+        executeSqlUnlocked(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_occupancy_live_deadline_slot "
+            "ON OCCUPANCY_EXIT_DEADLINE(slot_id) "
+            "WHERE state IN ('SCHEDULED','ADMITTED');");
         if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
             !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
             executeSqlUnlocked(
