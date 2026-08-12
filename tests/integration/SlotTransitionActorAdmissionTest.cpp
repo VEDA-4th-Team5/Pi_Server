@@ -501,6 +501,68 @@ void testInvalidVacantTimestampDoesNotCloseState() {
     require(actor.stopAndDrain(2s), "invalid-timestamp actor did not stop");
 }
 
+void testDurableHallConfirmationSurvivesRestart() {
+    TemporaryDatabase temporary;
+    const auto due = nowEpochMs() + 250;
+    {
+        database::EventDatabase database(temporary.path);
+        initialize(database);
+        SqliteProbe probe(temporary.path);
+        database::SessionTransitionStore store(database);
+        auto actor = makeActor(store);
+        require(actor.start(), "confirmation first actor did not start");
+        requireSubmitted(actor.submit(hallCommand(
+            "hall-confirm-restart", 401, "OCCUPIED", due - 100, due)),
+            "durable confirmation admission failed");
+        require(waitUntil([&] {
+            return probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_COMMAND_INBOX WHERE "
+                "command_id='hall-confirm-restart';") == 1;
+        }), "Hall confirmation did not cross the durable admission boundary");
+        require(probe.text(
+                    "SELECT status FROM OCCUPANCY_COMMAND_INBOX WHERE "
+                    "command_id='hall-confirm-restart';") ==
+                    "PENDING_UNPREPARED",
+                "Hall confirmation was not persisted before restart");
+        require(probe.integer(
+                    "SELECT COUNT(*) FROM PARKING_SESSION WHERE slot_id='P01';") ==
+                    0,
+                "Hall confirmation created a session before its deadline");
+        require(!probe.optionalInt(
+                    "SELECT CAST(last_sequence AS INTEGER) FROM "
+                    "OCCUPANCY_SENSOR_SEQUENCE_STATE WHERE sensor_id='hall-p01';"),
+                "pending Hall confirmation consumed its sequence");
+        require(actor.stopAndDrain(2s),
+                "confirmation first actor did not stop cleanly");
+    }
+
+    {
+        database::EventDatabase database(temporary.path);
+        database.migrateRuntimeSchema();
+        SqliteProbe probe(temporary.path);
+        database::SessionTransitionStore store(database);
+        auto actor = makeActor(store);
+        require(actor.start(), "confirmation restart actor did not start");
+        require(actor.waitUntilIdle(3s),
+                "restart did not replay durable Hall confirmation");
+        require(probe.integer(
+                    "SELECT COUNT(*) FROM PARKING_SESSION WHERE slot_id='P01' "
+                    "AND status='ACTIVE';") == 1,
+                "restarted Hall confirmation did not create its session");
+        require(probe.integer(
+                    "SELECT CAST(last_sequence AS INTEGER) FROM "
+                    "OCCUPANCY_SENSOR_SEQUENCE_STATE WHERE sensor_id='hall-p01';") ==
+                    401,
+                "restarted Hall confirmation did not commit its sequence");
+        require(probe.text(
+                    "SELECT status FROM OCCUPANCY_COMMAND_INBOX WHERE "
+                    "command_id='hall-confirm-restart';") == "APPLIED",
+                "restarted Hall confirmation did not become terminal");
+        require(actor.stopAndDrain(2s),
+                "confirmation restart actor did not stop cleanly");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -510,6 +572,7 @@ int main() {
         testSourceRedeliveryIgnoresOnlyLocalSchedulingTime();
         testHallCloseFailureRetriesExactSession();
         testInvalidVacantTimestampDoesNotCloseState();
+        testDurableHallConfirmationSurvivesRestart();
         std::cout << "Slot transition admission integration tests passed\n";
         return 0;
     } catch (const std::exception& error) {
