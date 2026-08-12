@@ -368,7 +368,8 @@ EvidenceInsertResult EventDatabase::insertEvidenceImage(
     const std::int64_t session_id,
     const std::string& original_path,
     const std::string& evidence_reason,
-    const std::string& captured_at) {
+    const std::string& captured_at,
+    const std::string& enhanced_path) {
     if (session_id < 0 || original_path.empty() || captured_at.empty() ||
         (evidence_reason != "OCCUPANCY_START_EVIDENCE" &&
          evidence_reason != "OVERSTAY_EVIDENCE")) {
@@ -401,12 +402,19 @@ EvidenceInsertResult EventDatabase::insertEvidenceImage(
 
         Statement image(db_,
             "INSERT INTO IMAGE_LOG(session_id,original_image_path,"
-            "enhancement_type,evidence_reason,captured_at) "
-            "VALUES(?,?,'NONE',?,?);");
+            "enhanced_image_path,enhancement_type,evidence_reason,captured_at) "
+            "VALUES(?,?,?,?,?,?);");
         image.bindInt64(1, session_id);
         image.bindText(2, original_path);
-        image.bindText(3, evidence_reason);
-        image.bindText(4, captured_at);
+        if (enhanced_path.empty()) {
+            if (sqlite3_bind_null(image.get(), 3) != SQLITE_OK)
+                throw std::runtime_error("SQLite evidence enhanced NULL bind failed");
+        } else {
+            image.bindText(3, enhanced_path);
+        }
+        image.bindText(4, enhanced_path.empty() ? "NONE" : "CAMERA_AUTO");
+        image.bindText(5, evidence_reason);
+        image.bindText(6, captured_at);
         requireDone(db_, image.get());
         executeSqlUnlocked("COMMIT;");
         return EvidenceInsertResult::Inserted;

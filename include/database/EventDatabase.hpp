@@ -140,7 +140,8 @@ public:
         std::int64_t session_id,
         const std::string& original_path,
         const std::string& evidence_reason,
-        const std::string& captured_at);
+        const std::string& captured_at,
+        const std::string& enhanced_path = {});
     /** @brief 이미 저장된 세션 증거 이미지 경로를 조회한다. */
     std::optional<std::string> findEvidenceImagePath(
         std::int64_t session_id,

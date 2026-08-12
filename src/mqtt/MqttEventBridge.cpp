@@ -3,13 +3,13 @@
 #include "database/EventDatabase.hpp"
 #include "event/CameraEventParser.hpp"
 #include "event/EventPayloadBuilder.hpp"
+#include "event/IvaEventResolver.hpp"
 #include "ocr/PlateImageEnhancer.hpp"
 #include "util/Logger.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <sstream>
 #include <utility>
 
@@ -17,35 +17,40 @@ namespace mqtt {
 
 namespace {
 
-std::string lowerCopy(std::string value) {
-    for (char& c : value)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return value;
-}
-
-const app::IvaAreaConfig* findIvaArea(const app::AppConfig& config,
-                                      const event::CameraEvent& camera_event) {
-    const std::string raw = lowerCopy(camera_event.raw_topic + "\n" +
-                                      camera_event.raw_payload);
-    // 먼저 카메라가 보낸 Area/Rule 이름으로 정확한 주차면을 찾는다.
-    for (const auto& area : config.iva_areas) {
-        if (!area.area_name.empty() &&
-            raw.find(lowerCopy(area.area_name)) != std::string::npos)
-            return &area;
-    }
-    // Firmware가 영역명을 생략하면 ONVIF VideoSourceToken 채널을 fallback으로 사용한다.
-    for (const auto& area : config.iva_areas) {
-        if (area.channel_id == camera_event.event_channel_id) return &area;
-    }
-    return nullptr;
-}
-
 std::shared_ptr<camera::CameraChannel> findChannel(
     const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
     const std::string& channel_id) {
     for (const auto& channel : channels)
         if (channel && channel->channel_id == channel_id) return channel;
     return nullptr;
+}
+
+bool hasTopicSegment(const std::string& topic, const std::string& segment) {
+    if (segment.empty()) return false;
+    std::size_t begin{};
+    while (begin <= topic.size()) {
+        const std::size_t end = topic.find('/', begin);
+        if (topic.substr(begin, end - begin) == segment) return true;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return false;
+}
+
+event::IvaOccupancyAction toOccupancyAction(const std::string& action) {
+    if (action == "ENTER") return event::IvaOccupancyAction::Enter;
+    if (action == "INTRUSION") return event::IvaOccupancyAction::Intrusion;
+    if (action == "EXIT") return event::IvaOccupancyAction::Exit;
+    return event::IvaOccupancyAction::Unsupported;
+}
+
+int ivaProcessingOrder(const event::CameraEvent& cameraEvent) {
+    // 한 PUBLISH에 EXIT와 INTRUSION이 함께 있으면 EXIT 후보를 먼저 만들고
+    // 마지막 INTRUSION이 이를 취소하게 하여 점유 상태가 우선하도록 한다.
+    if (cameraEvent.action == "EXIT") return 0;
+    if (cameraEvent.action == "ENTER") return 1;
+    if (cameraEvent.action == "INTRUSION") return 2;
+    return 1;
 }
 
 }
@@ -57,8 +62,10 @@ MqttEventBridge::MqttEventBridge(
     snapshot::SnapshotStorage& snapshot_storage,
     parking::ParkingTriggerCoordinator& trigger_coordinator,
     ocr::OcrWorker& ocr_worker,
+    std::vector<parking::ParkingSlotConfig> parking_slot_configs,
     SensorMessageHandler sensor_message_handler,
-    FireAckHandler fire_ack_handler
+    FireAckHandler fire_ack_handler,
+    IvaOccupancyHandler iva_occupancy_handler
 )
     : config_(config),
       channels_(channels),
@@ -66,8 +73,10 @@ MqttEventBridge::MqttEventBridge(
       snapshot_storage_(snapshot_storage),
       trigger_coordinator_(trigger_coordinator),
       ocr_worker_(ocr_worker),
+      parking_slot_configs_(std::move(parking_slot_configs)),
       sensor_message_handler_(std::move(sensor_message_handler)),
       fire_ack_handler_(std::move(fire_ack_handler)),
+      iva_occupancy_handler_(std::move(iva_occupancy_handler)),
       mosq_(nullptr) {
 }
 
@@ -98,7 +107,8 @@ bool MqttEventBridge::start() {
         return false;
     }
 
-    if (config_.hall_mqtt_input_enabled) {
+    if (config_.hall_mqtt_input_enabled &&
+        config_.parking_occupancy_source == "HALL") {
         rc = mosquitto_subscribe(
             mosq_, nullptr, config_.hall_mqtt_topic.c_str(), 1);
         if (rc != MOSQ_ERR_SUCCESS) {
@@ -244,43 +254,115 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         return;
     }
 
-    // 카메라마다 다른 raw topic을 서버 내부의 공통 이벤트 형식으로 정규화한다.
-    event::CameraEvent camera_event =
-        event::CameraEventParser::parse(
-            raw_topic,
-            raw_payload,
-            config_.default_channel_id
-        );
+    // 한 PUBLISH에 여러 ONVIF NotificationMessage가 묶여도 각각 처리한다.
+    auto camera_events = event::CameraEventParser::parseMany(
+        raw_topic, raw_payload, config_.default_channel_id);
+    if (camera_events.size() > 1) {
+        util::logLine("CAMERA_EVENT",
+                      "bundled notifications parsed count=" +
+                          std::to_string(camera_events.size()) +
+                          " topic=" + raw_topic);
+        std::stable_sort(camera_events.begin(), camera_events.end(),
+                         [](const auto& left, const auto& right) {
+                             return ivaProcessingOrder(left) <
+                                    ivaProcessingOrder(right);
+                         });
+    }
+    for (auto& camera_event : camera_events) {
+        processCameraEvent(std::move(camera_event));
+    }
+}
+
+void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
+    const std::string& raw_topic = camera_event.raw_topic;
 
     // IVA Area 이벤트는 모든 채널이 아니라 해당 주차면의 채널/ROI만 증거로 저장한다.
     if (camera_event.is_iva_area_event) {
-        // 동일 topic의 false/off 알림은 영역 해제 이벤트이므로 입차 사진을 만들지 않는다.
-        if (!camera_event.is_active) {
-            util::logInfo("IVA area inactive event ignored: " + raw_topic);
+        if (!camera_event.protocol_valid) {
+            util::logWarn("IVA protocol rejected: " +
+                          camera_event.protocol_error + " topic=" + raw_topic);
             return;
         }
-        const app::IvaAreaConfig* area = findIvaArea(config_, camera_event);
-        if (area == nullptr) {
-            util::logWarn("IVA area event received but no area mapping matched");
+        std::string mapping_error;
+        const auto target = event::IvaEventResolver::resolve(
+            config_.camera_id, camera_event, parking_slot_configs_,
+            config_.iva_areas, &mapping_error);
+        if (!target) {
+            util::logWarn(
+                "IVA area event rejected: " + mapping_error +
+                " token=" + camera_event.video_source_token +
+                " topic=" + raw_topic);
             return;
         }
-        std::shared_ptr<camera::CameraChannel> channel =
-            findChannel(channels_, area->channel_id);
-        if (!channel) {
-            util::logError("IVA mapped RTSP channel is not configured: " +
-                           area->channel_id);
+        if (camera_event.is_smart_parking_iva) {
+            if (camera_event.declared_camera_id != config_.camera_id ||
+                camera_event.source_id != config_.camera_id ||
+                camera_event.slot_id != target->slotId ||
+                !hasTopicSegment(raw_topic, target->slotId) ||
+                !hasTopicSegment(raw_topic,
+                    camera_event.action == "ENTER"
+                        ? "enter"
+                        : (camera_event.action == "INTRUSION"
+                               ? "intrusion"
+                               : "exit"))) {
+                util::logWarn(
+                    "IVA protocol rejected: topic/payload/config mismatch "
+                    "topic=" + raw_topic + " slot=" + target->slotId);
+                return;
+            }
+        }
+
+        const auto iva_action = toOccupancyAction(camera_event.action);
+        if (config_.parking_occupancy_source == "CAMERA_IVA") {
+            if (!iva_occupancy_handler_) {
+                util::logError("IVA occupancy handler is not configured");
+                return;
+            }
+            event::IvaOccupancySignal signal;
+            signal.slotId = target->slotId;
+            signal.cameraId = config_.camera_id;
+            signal.videoSourceToken = camera_event.video_source_token;
+            signal.ruleName = target->ruleName;
+            signal.objectId = camera_event.object_id;
+            signal.action = iva_action;
+            // smart-parking-iva-v1 Publication은 고정 payload라 실제 WiseAI
+            // Action과 무관하게 발행될 수 있다. INTRUSION은 보조 입력으로
+            // 허용하되 EXIT는 Raw WiseAI만 출차 권한을 갖는다.
+            signal.authoritativeExit = !camera_event.is_smart_parking_iva;
+            if (!iva_occupancy_handler_(signal)) {
+                util::logWarn("IVA occupancy event was not accepted: slot=" +
+                              target->slotId + " action=" +
+                              camera_event.action);
+            }
             return;
         }
 
-        camera_event.iva_area_id = area->area_name;
-        camera_event.slot_id = area->slot_id;
-        // BestShot metadata가 뒤이어 도착하면 같은 주차면으로 연결할 pending을 만든다.
-        if (!trigger_coordinator_.recordCameraIva(area->slot_id, area->channel_id))
+        // HALL 모드에서는 IVA가 세션을 종료하지 않고 촬영 후보로만 동작한다.
+        if (iva_action != event::IvaOccupancyAction::Intrusion ||
+            !camera_event.is_active) {
+            util::logInfo("IVA action ignored in HALL mode: action=" +
+                          camera_event.action + " topic=" + raw_topic);
             return;
-        snapshot::NormalizedRoi roi{area->roi_x, area->roi_y,
-                                    area->roi_width, area->roi_height};
+        }
+        std::shared_ptr<camera::CameraChannel> channel =
+            findChannel(channels_, target->channelId);
+        if (!channel) {
+            util::logError("IVA mapped RTSP channel is not configured: " +
+                           target->channelId);
+            return;
+        }
+
+        camera_event.rule_name = target->ruleName;
+        camera_event.iva_area_id = target->areaName;
+        camera_event.slot_id = target->slotId;
+        // BestShot metadata가 뒤이어 도착하면 같은 주차면으로 연결할 pending을 만든다.
+        if (!trigger_coordinator_.recordCameraIva(target->slotId,
+                                                  target->channelId))
+            return;
+        snapshot::NormalizedRoi roi{target->roiX, target->roiY,
+                                    target->roiWidth, target->roiHeight};
         std::string snapshot_path = snapshot_storage_.saveIvaAreaSnapshot(
-            channel, area->slot_id, roi);
+            channel, target->slotId, roi);
         std::string enhanced_path;
         if (!snapshot_path.empty())
             enhanced_path = ocr::enhanceIvaSceneImage(snapshot_path);
@@ -290,7 +372,7 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         database::EventRecord record;
         record.camera_id = config_.camera_id;
         record.channel_id = channel->channel_id;
-        record.slot_id = area->slot_id;
+        record.slot_id = target->slotId;
         record.source_type = camera_event.source_type;
         record.source_id = camera_event.source_id;
         record.event_type = camera_event.event_type;
@@ -304,7 +386,7 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         database_.insertEvent(record);
         if (!enhanced_path.empty()) {
             database_.attachEnhancedPlateImage(snapshot_path, enhanced_path);
-            ocr_worker_.enqueueScene(area->slot_id, snapshot_path, enhanced_path);
+            ocr_worker_.enqueueScene(target->slotId, snapshot_path, enhanced_path);
         }
         // IVA snapshot은 입차 구역 증빙과 BestShot 연결에 사용한다.
         // Gemini에는 ROI 원본과 개선본을 함께 보내며, 이후 Plate BestShot OCR이
@@ -313,9 +395,11 @@ void MqttEventBridge::onMessage(mosquitto* mosq, const mosquitto_message* messag
         std::string qt_topic = config_.qt_event_topic_prefix + "/" +
             config_.camera_id + "/" + channel->channel_id + "/event";
         publish(qt_topic, payload_json, 0, false);
-        util::logLine("IVA_SNAPSHOT", "slot=" + area->slot_id +
-                      " area=" + area->area_name +
-                      " channel=" + area->channel_id +
+        util::logLine("IVA_SNAPSHOT", "slot=" + target->slotId +
+                      " area=" + target->areaName +
+                      " rule=" + target->ruleName +
+                      " token=" + camera_event.video_source_token +
+                      " channel=" + target->channelId +
                       " snapshot=" + snapshot_path +
                       " enhanced=" + enhanced_path);
         return;

@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+# 최초 실행에서도 별도 준비 스크립트 없이 화재 센서 기본 설정을 만든다.
+[[ -f ./.env.fire.local ]] || ./tools/fire_setup.sh
+
 if [[ "${1:-}" == "restart" ]]; then
     pkill -INT -x pi-server 2>/dev/null || true
     # RTSP read timeout 때문에 정상 종료에 최대 약 30초가 걸릴 수 있다.
@@ -21,10 +24,12 @@ elif pgrep -x pi-server >/dev/null; then
     exit 0
 fi
 
-if [[ ! -x ./cmake-build/pi-server ]]; then
+if [[ ! -f ./cmake-build/CMakeCache.txt ]]; then
     cmake -S . -B cmake-build
-    cmake --build cmake-build -j2
 fi
+
+# 소스 변경이 실행 바이너리에 빠지는 일을 막기 위해 매번 증분 빌드한다.
+cmake --build cmake-build --target pi-server -j2
 
 set -a
 [[ -f ./.env.camera.local ]] && source ./.env.camera.local

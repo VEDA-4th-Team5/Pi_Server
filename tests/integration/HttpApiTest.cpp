@@ -1,6 +1,7 @@
 #include "database/EventDatabase.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "settings/OverstayThresholdService.hpp"
+#include "settings/ParkingRoiSettingsService.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -67,6 +68,14 @@ int main() {
     database.migrateRuntimeSchema();
     settings::OverstayThresholdService overstay_settings(database);
     if (!overstay_settings.initialize()) return 1;
+    const std::vector<app::IvaAreaConfig> roi_bootstrap{
+        {"EV01", "name1", "ch01", 0.0, 0.0, 1.0, 1.0, 0},
+        {"EV02", "name2", "ch01", 0.1, 0.1, 0.4, 0.4, 0},
+        // 알려진 슬롯이지만 SQLite/환경에 ROI가 없으면 전체 프레임으로
+        // 대체하지 않고 GET 404를 반환해야 한다.
+        {"EV03", "name3", "ch01", 0.0, 0.0, 1.0, 1.0, 0, false}};
+    settings::ParkingRoiSettingsService roi_settings(database, roi_bootstrap);
+    if (!roi_settings.initialize()) return 1;
     const fs::path start_evidence = data / "snapshots" / "start.jpg";
     const fs::path overstay_evidence = data / "snapshots" / "overstay.jpg";
     { std::ofstream output(start_evidence, std::ios::binary); output << "start"; }
@@ -90,7 +99,8 @@ int main() {
         config.tls_certificate_path = tls_cert;
         config.tls_private_key_path = tls_key;
     }
-    http::ParkingHttpServer server(database, config, &overstay_settings);
+    http::ParkingHttpServer server(database, config, &overstay_settings,
+                                   &roi_settings);
     if (!server.start()) return 1;
     httplib::Client client(std::string(test_tls ? "https://" : "http://") +
                            "127.0.0.1:" + std::to_string(config.port));
@@ -126,6 +136,56 @@ int main() {
     }
     success &= expect(overstay_settings.thresholdSeconds() == 1800,
                       "invalid PUT did not change setting");
+    auto roi_list = client.Get("/api/v1/settings/parking-slots/roi");
+    success &= expect(roi_list && roi_list->status == 200 &&
+        nlohmann::json::parse(roi_list->body).at("count") == 2,
+        "ROI list endpoint");
+    auto roi_get = client.Get("/api/v1/settings/parking-slots/ev01/roi");
+    success &= expect(roi_get && roi_get->status == 200 &&
+        nlohmann::json::parse(roi_get->body).at("roi").at("width") == 1.0,
+        "ROI GET endpoint normalizes slot id");
+    const auto missing_roi = client.Get(
+        "/api/v1/settings/parking-slots/EV03/roi");
+    success &= expect(missing_roi && missing_roi->status == 404 &&
+                      !roi_settings.roiForSlot("EV03"),
+                      "missing ROI is not replaced by full frame");
+    auto roi_put = client.Put(
+        "/api/v1/settings/parking-slots/EV01/roi",
+        R"({"x":0.25,"y":0.2,"width":0.5,"height":0.6})",
+        "application/json");
+    success &= expect(roi_put && roi_put->status == 200 &&
+        nlohmann::json::parse(roi_put->body).at("appliedImmediately") == true,
+        "ROI PUT applies immediately");
+    const auto applied_roi = roi_settings.roiForSlot("EV01");
+    success &= expect(applied_roi && applied_roi->x == 0.25 &&
+                      applied_roi->height == 0.6,
+                      "ROI PUT updated in-memory value");
+    for (const std::string body : {
+             R"({"x":-0.1,"y":0,"width":0.5,"height":0.5})",
+             R"({"x":0.8,"y":0,"width":0.5,"height":0.5})",
+             R"({"x":0,"y":0,"width":"bad","height":0.5})",
+             "not-json"}) {
+        const auto invalid = client.Put(
+            "/api/v1/settings/parking-slots/EV01/roi", body,
+            "application/json");
+        success &= expect(invalid && invalid->status == 400,
+                          "invalid ROI rejected");
+    }
+    const auto unknown_roi = client.Put(
+        "/api/v1/settings/parking-slots/EV99/roi",
+        R"({"x":0,"y":0,"width":1,"height":1})",
+        "application/json");
+    success &= expect(unknown_roi && unknown_roi->status == 404,
+                      "unknown ROI slot rejected");
+    const auto configure_missing = client.Put(
+        "/api/v1/settings/parking-slots/EV03/roi",
+        R"({"x":0.2,"y":0.2,"width":0.3,"height":0.3})",
+        "application/json");
+    success &= expect(configure_missing && configure_missing->status == 200 &&
+                      roi_settings.roiForSlot("EV03").has_value(),
+                      "known slot accepts its first explicit ROI");
+    success &= expect(roi_settings.roiForSlot("EV01")->x == 0.25,
+                      "invalid ROI did not change current value");
     std::atomic<bool> concurrent_ok{true};
     std::vector<std::thread> clients;
     for (int index = 0; index < 4; ++index) {
@@ -192,11 +252,21 @@ int main() {
     success &= expect(reloaded_settings.initialize() &&
                       reloaded_settings.thresholdSeconds() == 1800,
                       "threshold persisted across settings reload");
+    settings::ParkingRoiSettingsService reloaded_roi(database, roi_bootstrap);
+    success &= expect(reloaded_roi.initialize() &&
+                      reloaded_roi.roiForSlot("EV01")->x == 0.25 &&
+                      reloaded_roi.roiForSlot("EV01")->height == 0.6,
+                      "ROI persisted across settings reload");
     database.close();
     const auto failed_update = overstay_settings.update(2400);
     success &= expect(!failed_update.success &&
                       overstay_settings.thresholdSeconds() == 1800,
                       "DB failure preserved in-memory threshold");
+    const auto failed_roi = roi_settings.update(
+        "EV01", {0.1, 0.1, 0.2, 0.2});
+    success &= expect(!failed_roi.success &&
+                      roi_settings.roiForSlot("EV01")->x == 0.25,
+                      "DB failure preserved in-memory ROI");
     fs::remove_all(root);
     if (success) std::cout << "HTTP API integration test passed\n";
     return success ? 0 : 1;

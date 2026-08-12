@@ -33,6 +33,7 @@ struct EvidenceCaptureRequest {
     std::shared_ptr<camera::CameraChannel> channel;
     snapshot::NormalizedRoi roi{};
     std::chrono::steady_clock::time_point startedAtMonotonic;
+    int snapshotApiChannel{0};
 };
 
 struct EvidenceCaptureResult {
@@ -41,12 +42,13 @@ struct EvidenceCaptureResult {
     std::string channelId;
     EvidenceReason reason{EvidenceReason::OccupancyStart};
     std::string imagePath;
+    std::string enhancedImagePath;
     bool stored{};
     bool duplicate{};
     std::string message;
 };
 
-/** @brief 최신 RTSP 프레임의 증거 저장과 예약을 전용 스레드에서 처리한다. */
+/** @brief 카메라 API 또는 최신 RTSP 프레임의 증거 저장을 전용 스레드에서 처리한다. */
 class EvidenceCaptureWorker {
 public:
     struct Config {
@@ -54,11 +56,14 @@ public:
         std::size_t maxPendingJobs{128};
     };
     using Completion = std::function<void(const EvidenceCaptureResult&)>;
+    using Capture = std::function<snapshot::StoredImagePair(
+        const EvidenceCaptureRequest&, EvidenceReason)>;
 
     EvidenceCaptureWorker(snapshot::SnapshotStorage& storage,
                           database::EventDatabase& database,
                           Config config,
-                          Completion completion = {});
+                          Completion completion = {},
+                          Capture capture = {});
     ~EvidenceCaptureWorker();
 
     EvidenceCaptureWorker(const EvidenceCaptureWorker&) = delete;
@@ -106,6 +111,7 @@ private:
     database::EventDatabase& database_;
     Config config_;
     Completion completion_;
+    Capture capture_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::priority_queue<Job, std::vector<Job>, Later> jobs_;

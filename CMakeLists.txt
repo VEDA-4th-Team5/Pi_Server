@@ -36,6 +36,15 @@ target_compile_options(gemini-ocr-test PRIVATE -Wall -Wextra)
 target_link_libraries(gemini-ocr-test PRIVATE
     PkgConfig::OPENCV PkgConfig::CURL Threads::Threads)
 
+# 외부 Gemini 호출 없이 HTTP 상태/JSON/MIME/fallback 계약을 검증한다.
+add_executable(gemini-ocr-client-test
+    tests/unit/GeminiOcrClientTest.cpp
+    src/ocr/GeminiOcrClient.cpp)
+target_include_directories(gemini-ocr-client-test PRIVATE include)
+target_compile_options(gemini-ocr-client-test PRIVATE -Wall -Wextra)
+target_link_libraries(gemini-ocr-client-test PRIVATE PkgConfig::CURL)
+add_test(NAME gemini-ocr-client-test COMMAND gemini-ocr-client-test)
+
 add_executable(db-manager-test
     tests/integration/DbManagerTest.c
     src/database/db_manager.c)
@@ -117,6 +126,17 @@ target_compile_options(hall-capture-coordinator-test PRIVATE -Wall -Wextra)
 target_link_libraries(hall-capture-coordinator-test PRIVATE Threads::Threads)
 add_test(NAME hall-capture-coordinator-test
     COMMAND hall-capture-coordinator-test)
+
+add_executable(camera-iva-event-test
+    tests/unit/CameraIvaEventTest.cpp
+    src/event/CameraEventParser.cpp
+    src/event/IvaEventResolver.cpp
+    src/event/IvaSlotOccupancyAggregator.cpp
+    src/event/IvaOccupancyCoordinator.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(camera-iva-event-test PRIVATE include)
+target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME camera-iva-event-test COMMAND camera-iva-event-test)
 
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
@@ -206,6 +226,22 @@ add_executable(parking-link-tool
 target_include_directories(parking-link-tool PRIVATE include)
 target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
 
+# 설치된 카메라 화면에서 주차면 ROI를 측정하는 독립 C++/OpenCV 도구.
+# 운영 pi-server와 별도 프로세스이며, RTSP URL은 환경변수로만 전달한다.
+add_executable(check_coordinates tools/check_coordinates.cpp)
+target_compile_options(check_coordinates PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(check_coordinates PRIVATE
+    PkgConfig::OPENCV PkgConfig::HTTPLIB Threads::Threads)
+add_test(NAME check-coordinates-test
+    COMMAND check_coordinates
+            --image ${CMAKE_SOURCE_DIR}/tests/fixtures/roi_checker_test.ppm
+            --slot EV01
+            --rect 1,0,2,1
+            --output ${CMAKE_CURRENT_BINARY_DIR}/roi_checker_test_preview.png)
+set_tests_properties(check-coordinates-test PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "IVA_EV01_ROI_X=0.250000;IVA_EV01_ROI_WIDTH=0.500000")
+
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
@@ -263,6 +299,8 @@ add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
 add_executable(hall-timer-integration-test
     tests/integration/HallTimerIntegrationTest.cpp
     src/sensor/HallParkingService.cpp
+    src/event/IvaSlotOccupancyAggregator.cpp
+    src/event/IvaOccupancyCoordinator.cpp
     src/parking/EvidenceCaptureWorker.cpp
     src/snapshot/SnapshotStorage.cpp
     src/event/SystemEventReporter.cpp
@@ -277,6 +315,28 @@ target_compile_definitions(hall-timer-integration-test PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 add_test(NAME hall-timer-integration-test
     COMMAND hall-timer-integration-test
+            ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+
+add_executable(camera-iva-occupancy-integration-test
+    tests/integration/CameraIvaOccupancyIntegrationTest.cpp
+    src/sensor/HallParkingService.cpp
+    src/event/IvaSlotOccupancyAggregator.cpp
+    src/event/IvaOccupancyCoordinator.cpp
+    src/parking/EvidenceCaptureWorker.cpp
+    src/snapshot/SnapshotStorage.cpp
+    src/event/SystemEventReporter.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp
+    ${SENSOR_PARKING_SOURCES})
+target_include_directories(camera-iva-occupancy-integration-test PRIVATE include)
+target_compile_options(camera-iva-occupancy-integration-test PRIVATE
+    -Wall -Wextra)
+target_link_libraries(camera-iva-occupancy-integration-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV)
+target_compile_definitions(camera-iva-occupancy-integration-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME camera-iva-occupancy-integration-test
+    COMMAND camera-iva-occupancy-integration-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
 
 add_executable(evidence-capture-worker-test
@@ -324,7 +384,8 @@ add_test(NAME camera-snapshot-api-client-test
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
     src/http/ParkingHttpServer.cpp
-    src/settings/OverstayThresholdService.cpp)
+    src/settings/OverstayThresholdService.cpp
+    src/settings/ParkingRoiSettingsService.cpp)
 target_include_directories(http-api-test PRIVATE include)
 target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE

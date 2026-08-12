@@ -23,4 +23,4 @@ FIRE_SENSOR_SLOT_MAP=FLAME01=EV01
 EOF
 
 echo "created: $ENV_FILE"
-echo "사용법: ./set.sh"
+echo "사용법: ./run_server.sh"

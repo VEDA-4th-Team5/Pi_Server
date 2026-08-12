@@ -3,6 +3,7 @@
 #include "app/AppConfig.hpp"
 #include "camera/CameraChannel.hpp"
 #include "database/EventDatabase.hpp"
+#include "event/IvaOccupancyCoordinator.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "parking/ParkingOccupancyConfirmationGate.hpp"
 #include "parking/EvidenceCaptureWorker.hpp"
@@ -29,6 +30,8 @@ namespace sensor {
 struct HallParkingWorkItem {
     parking::ParkingSensorEvent event;
     parking::ParkingTransitionResult transition;
+    // 카메라 EXIT가 확인한 DB 세션. 실행 시 현재 세션과 다르면 stale로 버린다.
+    std::optional<std::int64_t> expectedSessionId;
 };
 
 /** @brief 슬롯별 최신 상태를 병합하는 비동기 작업용 bounded queue다. */
@@ -37,7 +40,7 @@ public:
     enum class PushResult { Added, Coalesced, Full };
 
     explicit HallParkingWorkQueue(std::size_t capacity);
-    [[nodiscard]] bool canAccept(const std::string& slot_id) const;
+    [[nodiscard]] bool canAccept(const parking::ParkingSensorEvent& event) const;
     [[nodiscard]] PushResult push(HallParkingWorkItem item);
     [[nodiscard]] std::optional<HallParkingWorkItem> pop();
     [[nodiscard]] bool empty() const noexcept;
@@ -77,14 +80,21 @@ public:
     bool handleLine(const std::string& line,
                     const std::string& transport = "mqtt-test");
 
+    /** @brief WiseAI IVA 액션을 기존 세션·정리 흐름으로 연결한다. */
+    bool handleCameraIvaSignal(const event::IvaOccupancySignal& signal);
+
 private:
     bool processEventLocked(const parking::ParkingSensorEvent& event,
-                            bool apply_confirmation_gate);
+                            bool apply_confirmation_gate,
+                            std::optional<std::int64_t> expected_session_id =
+                                std::nullopt);
     bool handleOccupied(const parking::ParkingSensorEvent& event,
                         const parking::ParkingTransitionResult& transition);
     bool handleVacant(const parking::ParkingSensorEvent& event,
-                      const parking::ParkingTransitionResult& transition);
+                      const parking::ParkingTransitionResult& transition,
+                      std::optional<std::int64_t> expected_session_id);
     void confirmationLoop();
+    void cameraExitLoop();
     void workLoop();
     [[nodiscard]] bool canEnqueueWorkLocked(
         const parking::ParkingSensorEvent& event);
@@ -102,6 +112,7 @@ private:
     ParkingSensorEventAdapter adapter_;
     parking::ParkingSensorSequenceGuard sequence_guard_;
     parking::ParkingSlotManager occupancy_manager_;
+    event::IvaOccupancyCoordinator iva_occupancy_coordinator_;
     const app::AppConfig& app_config_;
     std::vector<std::shared_ptr<camera::CameraChannel>>& channels_;
     database::EventDatabase& database_;
@@ -116,6 +127,8 @@ private:
     std::mutex mutex_;
     std::condition_variable confirmation_condition_;
     std::thread confirmation_worker_;
+    std::condition_variable camera_exit_condition_;
+    std::thread camera_exit_worker_;
     std::condition_variable work_condition_;
     HallParkingWorkQueue work_queue_;
     std::thread work_worker_;
