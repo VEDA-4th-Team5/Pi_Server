@@ -47,6 +47,12 @@ int OverstayThresholdService::thresholdSeconds() const noexcept {
     return threshold_seconds_.load(std::memory_order_acquire);
 }
 
+OverstayThresholdStatus OverstayThresholdService::status() const {
+    std::lock_guard lock(update_mutex_);
+    return {thresholdSeconds(), applied_revision_, runtime_applied_,
+            runtime_healthy_};
+}
+
 bool OverstayThresholdService::isValid(const int seconds) noexcept {
     return seconds >= kMinimumSeconds && seconds <= kMaximumSeconds;
 }
@@ -54,16 +60,25 @@ bool OverstayThresholdService::isValid(const int seconds) noexcept {
 ThresholdUpdateResult OverstayThresholdService::update(const int seconds) {
     std::lock_guard lock(update_mutex_);
     const int previous = thresholdSeconds();
+    const auto result = [this, previous](const bool success,
+                                         const int threshold_seconds,
+                                         std::string error = {}) {
+        return ThresholdUpdateResult{
+            success, previous, threshold_seconds, applied_revision_,
+            runtime_applied_, runtime_healthy_, std::move(error)};
+    };
     if (!isValid(seconds)) {
-        return {false, previous, previous,
-                "thresholdSeconds must be between 60 and 86400"};
+        return result(false, previous,
+                      "thresholdSeconds must be between 60 and 86400");
     }
-    if (seconds == previous) return {true, previous, previous, {}};
+    if (seconds == previous && runtime_applied_ && runtime_healthy_) {
+        return result(true, previous);
+    }
     if (!database_.upsertSystemSetting(kSettingKey, std::to_string(seconds))) {
         util::logError("Overstay threshold update failed: old=" +
                        std::to_string(previous) + " requested=" +
                        std::to_string(seconds));
-        return {false, previous, previous, "failed to persist setting"};
+        return result(false, previous, "failed to persist setting");
     }
 
     threshold_seconds_.store(seconds, std::memory_order_release);
@@ -71,12 +86,24 @@ ThresholdUpdateResult OverstayThresholdService::update(const int seconds) {
         try {
             apply_callback_(std::chrono::seconds(seconds));
         } catch (const std::exception& error) {
+            runtime_applied_ = false;
+            runtime_healthy_ = false;
             util::logError("Overstay threshold runtime apply failed: " +
                            std::string(error.what()));
+            return result(false, seconds,
+                          "failed to apply runtime policy: " +
+                              std::string(error.what()));
         } catch (...) {
+            runtime_applied_ = false;
+            runtime_healthy_ = false;
             util::logError("Overstay threshold runtime apply failed");
+            return result(false, seconds,
+                          "failed to apply runtime policy");
         }
     }
+    runtime_applied_ = true;
+    runtime_healthy_ = true;
+    ++applied_revision_;
 
     const std::string changed_at = parking_timer::utcNow();
     std::ostringstream message;
@@ -86,7 +113,7 @@ ThresholdUpdateResult OverstayThresholdService::update(const int seconds) {
     util::logInfo("Overstay threshold updated: old=" +
                   std::to_string(previous) + " new=" +
                   std::to_string(seconds) + " changed_at=" + changed_at);
-    return {true, previous, seconds, {}};
+    return result(true, seconds);
 }
 
 void OverstayThresholdService::setApplyCallback(ApplyCallback callback) {

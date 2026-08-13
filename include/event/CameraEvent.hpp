@@ -9,6 +9,7 @@ struct CameraEvent {
     std::string raw_payload;
 
     std::string timestamp;
+    bool timestamp_from_source{false};
 
     std::string event_channel_id;
     // 카메라 MQTT topic에서 읽은 canonical token("vs-0" 형식)이다.

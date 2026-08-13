@@ -57,7 +57,6 @@ std::chrono::milliseconds remainingDelay(
  * @param[in,out] events 관제 이벤트를 발행할 이벤트 관리자.
  * @param[in] parking_timeout EV/PHEV 장기점유 판정까지의 대기시간.
  * @throws std::invalid_argument 제한시간이 0 이하인 경우.
- * @throws std::system_error 타이머 worker 스레드를 생성할 수 없는 경우.
  * @note 타이머 callback과 출차 처리는 같은 `transition_mutex_`를 사용하므로 DB 상태와
  *       이벤트 발행 순서가 서로 뒤집히지 않는다.
  */
@@ -70,16 +69,21 @@ ParkingSlotManager::ParkingSlotManager(EventDatabase& database,
       parking_timeout_(parking_timeout),
       timers_(database_, [this](const ViolationEvent& event) {
           // 현재는 JSON stdout이지만 향후 MQTT/HTTP publisher로 교체할 통합 지점이다.
-          events_.publish("VIOLATION_TRIGGERED", event.slot_id, event.car_number,
-                          event.violation_at, event.image_path_2, event.log_id);
+          (void)events_.publish("VIOLATION_TRIGGERED", event.slot_id,
+                                event.car_number, event.violation_at,
+                                event.image_path_2, event.log_id);
       }, [this](const TimerError& error) {
           // worker 오류도 정상 이벤트와 같은 JSON 경로로 보내 관제 측에서 확인하게 한다.
-          events_.publish("TIMER_ERROR", error.slot_id, error.car_number, utcNow(),
-                          error.message);
+          (void)events_.publish("TIMER_ERROR", error.slot_id, error.car_number,
+                                utcNow(), error.message);
       }, &transition_mutex_, std::move(evidence_provider)) {
     if (parking_timeout_ <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("parking timeout must be positive");
     }
+}
+
+bool ParkingSlotManager::start() noexcept {
+    return timers_.start();
 }
 
 /**
@@ -108,20 +112,20 @@ EntryResult ParkingSlotManager::handleEntry(const std::string& slot_id,
     const auto now = utcNow();
     // 미등록 차량은 정책이 정해지지 않았으므로 자동 타이머 대신 관리자 확인으로 보낸다.
     if (category == VehicleCategory::Unknown) {
-        events_.publish("UNKNOWN_VEHICLE", slot_id, car_number, now,
-                        "manual confirmation required");
+        (void)events_.publish("UNKNOWN_VEHICLE", slot_id, car_number, now,
+                              "manual confirmation required");
         return {false, category, std::nullopt, "vehicle is not registered"};
     }
     if (category == VehicleCategory::NonEv) {
-        events_.publish("NON_EV_ALERT", slot_id, car_number, now,
-                        "not scheduled in the EV overtime timer");
+        (void)events_.publish("NON_EV_ALERT", slot_id, car_number, now,
+                              "not scheduled in the EV overtime timer");
         return {false, category, std::nullopt, "non-EV vehicle"};
     }
 
     // 부분 unique index에 맡기기 전에 의미 있는 이벤트와 오류 메시지를 제공한다.
     if (database_.findActiveBySlot(slot_id).has_value()) {
-        events_.publish("ENTRY_REJECTED", slot_id, car_number, now,
-                        "slot already has an active session");
+        (void)events_.publish("ENTRY_REJECTED", slot_id, car_number, now,
+                              "slot already has an active session");
         return {false, category, std::nullopt, "slot is already occupied"};
     }
 
@@ -142,8 +146,9 @@ EntryResult ParkingSlotManager::handleEntry(const std::string& slot_id,
         }
         throw;
     }
-    events_.publish("ARRIVAL", slot_id, car_number, now,
-                    "PARKING_SESSION inserted; overtime timer started", log_id);
+    (void)events_.publish(
+        "ARRIVAL", slot_id, car_number, now,
+        "PARKING_SESSION inserted; overtime timer started", log_id);
     return {true, category, log_id, "timer started"};
 }
 
@@ -161,13 +166,15 @@ EntryResult ParkingSlotManager::handleRecognizedSession(
     const auto record = database_.findLogById(session_id);
     if (!record.has_value() || record->slot_id != slot_id ||
         record->departed_at.has_value()) {
-        events_.publish("TIMER_REJECTED", slot_id, car_number, now,
-                        "session is missing, mismatched, or already ended");
+        (void)events_.publish(
+            "TIMER_REJECTED", slot_id, car_number, now,
+            "session is missing, mismatched, or already ended");
         return {false, category, session_id, "session is not active"};
     }
     if (category == VehicleCategory::Unknown) {
-        events_.publish("UNKNOWN_VEHICLE", slot_id, car_number, now,
-                        "manual confirmation required; timer not started");
+        (void)events_.publish(
+            "UNKNOWN_VEHICLE", slot_id, car_number, now,
+            "manual confirmation required; timer not started");
         return {false, category, session_id, "vehicle is not registered"};
     }
     if (category == VehicleCategory::NonEv) {
@@ -177,8 +184,8 @@ EntryResult ParkingSlotManager::handleRecognizedSession(
             return {false, category, session_id,
                     "non-EV violation was already handled or session ended"};
         }
-        events_.publish("NON_EV_ALERT", slot_id, car_number, now,
-                        "non-EV vehicle in EV charging slot", session_id);
+        (void)events_.publish("NON_EV_ALERT", slot_id, car_number, now,
+                              "non-EV vehicle in EV charging slot", session_id);
         return {false, category, session_id, "non-EV vehicle"};
     }
 
@@ -193,8 +200,9 @@ EntryResult ParkingSlotManager::handleRecognizedSession(
         scheduled_session_ids_.erase(session_id);
         throw;
     }
-    events_.publish("TIMER_STARTED", slot_id, car_number, now,
-                    "existing PARKING_SESSION scheduled after OCR", session_id);
+    (void)events_.publish("TIMER_STARTED", slot_id, car_number, now,
+                          "existing PARKING_SESSION scheduled after OCR",
+                          session_id);
     return {true, category, session_id, "timer started"};
 }
 
@@ -235,10 +243,10 @@ std::size_t ParkingSlotManager::updateParkingTimeout(
         scheduled_session_ids_.insert(record.id);
         ++rescheduled;
     }
-    events_.publish("OVERSTAY_TIMERS_RESCHEDULED", {}, {}, utcNow(),
-                    "active_sessions=" + std::to_string(rescheduled) +
-                    " threshold_ms=" +
-                    std::to_string(parking_timeout_.count()));
+    (void)events_.publish(
+        "OVERSTAY_TIMERS_RESCHEDULED", {}, {}, utcNow(),
+        "active_sessions=" + std::to_string(rescheduled) + " threshold_ms=" +
+            std::to_string(parking_timeout_.count()));
     return rescheduled;
 }
 
@@ -266,13 +274,31 @@ std::optional<LogRecord> ParkingSlotManager::handleExit(const std::string& slot_
     const auto now = utcNow();
     auto record = database_.departActiveBySlot(slot_id, now);
     if (!record.has_value()) {
-        events_.publish("EXIT_IGNORED", slot_id, "", now, "no active session");
+        (void)events_.publish("EXIT_IGNORED", slot_id, "", now,
+                              "no active session");
         return std::nullopt;
     }
 
-    events_.publish("DEPARTURE", slot_id, record->car_number, now,
-                    "PARKING_SESSION updated; queued timer lazily canceled",
-                    record->id);
+    (void)events_.publish(
+        "DEPARTURE", slot_id, record->car_number, now,
+        "PARKING_SESSION updated; queued timer lazily canceled", record->id);
+    return record;
+}
+
+std::optional<LogRecord> ParkingSlotManager::handleCommittedExit(
+    const std::int64_t session_id,
+    const std::string& slot_id) {
+    if (session_id < 0 || slot_id.empty()) {
+        throw std::invalid_argument(
+            "committed exit session and slot must be valid");
+    }
+    std::lock_guard transition_lock(transition_mutex_);
+    auto record = database_.findLogById(session_id);
+    if (!record || record->slot_id != slot_id ||
+        !record->departed_at.has_value()) {
+        return std::nullopt;
+    }
+    scheduled_session_ids_.erase(session_id);
     return record;
 }
 

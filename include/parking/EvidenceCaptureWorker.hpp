@@ -2,6 +2,7 @@
 
 #include "camera/CameraChannel.hpp"
 #include "database/EventDatabase.hpp"
+#include "parking/AppliedParkingRoi.hpp"
 #include "snapshot/SnapshotStorage.hpp"
 
 #include <chrono>
@@ -34,6 +35,7 @@ struct EvidenceCaptureRequest {
     snapshot::NormalizedRoi roi{};
     std::chrono::steady_clock::time_point startedAtMonotonic;
     int snapshotApiChannel{0};
+    std::uint64_t roiRevision{};
 };
 
 struct EvidenceCaptureResult {
@@ -43,6 +45,8 @@ struct EvidenceCaptureResult {
     EvidenceReason reason{EvidenceReason::OccupancyStart};
     std::string imagePath;
     std::string enhancedImagePath;
+    snapshot::NormalizedRoi roi{};
+    std::uint64_t roiRevision{};
     bool stored{};
     bool duplicate{};
     std::string message;
@@ -58,12 +62,15 @@ public:
     using Completion = std::function<void(const EvidenceCaptureResult&)>;
     using Capture = std::function<snapshot::StoredImagePair(
         const EvidenceCaptureRequest&, EvidenceReason)>;
+    using RoiResolver = std::function<std::optional<AppliedParkingRoi>(
+        const std::string& slot_id)>;
 
     EvidenceCaptureWorker(snapshot::SnapshotStorage& storage,
                           database::EventDatabase& database,
                           Config config,
                           Completion completion = {},
-                          Capture capture = {});
+                          Capture capture = {},
+                          RoiResolver roi_resolver = {});
     ~EvidenceCaptureWorker();
 
     EvidenceCaptureWorker(const EvidenceCaptureWorker&) = delete;
@@ -112,6 +119,7 @@ private:
     Config config_;
     Completion completion_;
     Capture capture_;
+    RoiResolver roi_resolver_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::priority_queue<Job, std::vector<Job>, Later> jobs_;

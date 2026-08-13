@@ -120,6 +120,7 @@ void testEntryViolationAndExit() {
 
         parking_timer::EventManager events;
         parking_timer::ParkingSlotManager slots(database, events, 120ms);
+        require(slots.start(), "parking timer worker did not start");
 
         // 정상 EV는 PARKED 한 행을 만들고 타이머 큐에 등록돼야 한다.
         const auto entry = slots.handleEntry("EV01", "123가4567");
@@ -188,6 +189,7 @@ void testExistingCameraSessionScheduling() {
 
         parking_timer::EventManager events;
         parking_timer::ParkingSlotManager slots(database, events, 5s);
+        require(slots.start(), "parking timer worker did not start");
         const auto scheduled = slots.handleRecognizedSession(
             session_id, "EV01", "123가4567");
         require(scheduled.accepted && scheduled.log_id == session_id,
@@ -218,6 +220,34 @@ void testExistingCameraSessionScheduling() {
 }
 
 /**
+ * @brief runtime guard 이전에는 timer 작업을 받지 않고 explicit start가 멱등인지 검증한다.
+ *
+ * @throws std::runtime_error 시작 전 작업이 수락되거나 worker 시작에 실패한 경우.
+ */
+void testTimerRequiresExplicitStart() {
+    const auto path = temporaryDatabase("explicit_start");
+    {
+        EventDatabase database(path);
+        initialize(database);
+        const auto log_id = database.insertParked(
+            "123가4567", "EV01", parking_timer::utcNow(), "entry.jpg");
+        parking_timer::TimerManager timers(
+            database, [](const parking_timer::ViolationEvent&) {});
+        bool rejected{};
+        try {
+            timers.schedule(log_id, "EV01", "123가4567", 1s);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        require(rejected,
+                "timer accepted work before the runtime guard could start it");
+        require(timers.start() && timers.start(),
+                "timer explicit start was not successful and idempotent");
+    }
+    removeDatabaseFiles(path);
+}
+
+/**
  * @brief 기존 대기보다 빠른 새 deadline이 worker를 깨우고 먼저 처리되는지 검증한다.
  *
  * @throws std::runtime_error callback이 오지 않거나 최소 힙 순서가 잘못된 경우.
@@ -243,6 +273,7 @@ void testEarlierDeadlineWakesWorker() {
                 }
                 condition.notify_one();
             });
+        require(timers.start(), "timer worker did not start");
 
         // worker가 300ms를 기다리기 시작한 뒤 50ms 타이머를 넣어 notify/re-wait 경로를 탄다.
         timers.schedule(first_id, "EV01", "123가4567", 300ms);
@@ -287,6 +318,7 @@ void testWorkerContainsCallbackExceptions() {
                 }
                 condition.notify_one();
             });
+        require(timers.start(), "timer worker did not start");
 
         timers.schedule(log_id, "EV01", "123가4567", 20ms);
         std::unique_lock lock(mutex);
@@ -320,6 +352,7 @@ void testSnapshotFailureStillMarksViolation() {
             [](std::int64_t, const std::string&, const std::string&) -> std::string {
                 throw std::runtime_error("simulated camera failure");
             });
+        require(timers.start(), "timer worker did not start");
         timers.schedule(log_id, "EV01", "123가4567", 20ms);
         require(waitUntil([&] {
                     const auto record = database.findLogById(log_id);
@@ -357,6 +390,7 @@ void testPendingEvidenceRetriesBeforeViolation() {
                 return provider_calls.fetch_add(1) == 0
                     ? std::string{} : "overstay-restored.jpg";
             });
+        require(timers.start(), "timer worker did not start");
         timers.schedule(log_id, "EV01", "123가4567", 20ms);
         std::unique_lock lock(mutex);
         require(condition.wait_for(lock, 1500ms,
@@ -377,6 +411,7 @@ void testActiveSessionThresholdReschedule() {
         initialize(database);
         parking_timer::EventManager events;
         parking_timer::ParkingSlotManager slots(database, events, 500ms);
+        require(slots.start(), "parking timer worker did not start");
         const auto entry = slots.handleEntry("EV01", "123가4567");
         require(entry.accepted && entry.log_id.has_value(),
                 "reschedule fixture entry failed");
@@ -419,6 +454,7 @@ int main() {
     try {
         testEntryViolationAndExit();
         testExistingCameraSessionScheduling();
+        testTimerRequiresExplicitStart();
         testEarlierDeadlineWakesWorker();
         testWorkerContainsCallbackExceptions();
         testSnapshotFailureStillMarksViolation();

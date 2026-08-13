@@ -93,6 +93,11 @@ int main(int argc, char* argv[]) {
             (temporary.path / "snapshots").string(), 100, running);
 
         parking_timer::EventManager events;
+        events.setPublisher(
+            [](std::string_view, std::int64_t, std::string_view,
+               std::string_view, std::string_view, std::string_view) {
+                return true;
+            });
         parking_timer::ParkingSlotManager timer(
             database, events, 10s,
             [&database](const std::int64_t sessionId, const std::string&,
@@ -101,6 +106,7 @@ int main(int argc, char* argv[]) {
                            sessionId, "OVERSTAY_EVIDENCE")
                     .value_or("");
             });
+        require(timer.start(), "parking timer worker did not start");
         parking::EvidenceCaptureWorker::Config evidenceConfig;
         evidenceConfig.overstayDelay = 10s;
         parking::EvidenceCaptureWorker evidence(

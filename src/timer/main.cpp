@@ -386,6 +386,9 @@ int main(int argc, char* argv[]) {
 
         parking_timer::EventManager events;
         ParkingSlotManager slots(database, events, config.parking_timeout);
+        if (!slots.start()) {
+            throw std::runtime_error("parking timer worker could not be started");
+        }
         std::cout << "database=" << config.database_path << ", timeout="
                   << std::chrono::duration_cast<std::chrono::seconds>(
                          config.parking_timeout)
