@@ -449,6 +449,11 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                     "topic=" + raw_topic + " slot=" + target->slotId);
                 return;
             }
+
+            // Event Rule을 작동시키기 위한 고정 Publication이다. 같은 감지에서
+            // 이어지는 원본 WiseAI 메시지가 UtcTime/ObjectId를 제공하므로,
+            // 고정 메시지는 경고 없이 버리고 점유 상태를 변경하지 않는다.
+            return;
         }
 
         const auto iva_action = toOccupancyAction(camera_event.action);
@@ -457,12 +462,9 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                 util::logError("IVA occupancy handler is not configured");
                 return;
             }
-            // The fixed smart-parking publication has neither an event id nor
-            // a source timestamp. It cannot distinguish broker redelivery
-            // from a later vehicle lifecycle, so only raw WiseAI observations
-            // are allowed to mutate occupancy.
-            if (camera_event.is_smart_parking_iva ||
-                !camera_event.timestamp_from_source ||
+            // 원본 WiseAI 관측만 점유를 변경한다. 정확한 소스 시각과 객체
+            // 식별자가 없으면 broker 재전송과 새 차량 생애주기를 구별할 수 없다.
+            if (!camera_event.timestamp_from_source ||
                 camera_event.object_id.empty()) {
                 util::logWarn(
                     "IVA occupancy rejected: source timestamp/object identity "
@@ -509,8 +511,7 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                           camera_event.action + " topic=" + raw_topic);
             return;
         }
-        if (!iva_occupancy_handler_ || camera_event.is_smart_parking_iva ||
-            !camera_event.timestamp_from_source ||
+        if (!iva_occupancy_handler_ || !camera_event.timestamp_from_source ||
             camera_event.object_id.empty()) {
             util::logWarn(
                 "IVA correlation rejected: exact source time/ObjectId or "
