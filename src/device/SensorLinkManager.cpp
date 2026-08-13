@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cctype>
 #include <exception>
+#include <optional>
 #include <span>
 #include <utility>
 
@@ -19,6 +20,27 @@ std::string lower(std::string value) {
                        return static_cast<char>(std::tolower(ch));
                    });
     return value;
+}
+
+// LoRa 규격 v1.1 §7: 고정점 모드 목적지는 센서 번호로 정해진다. 채널 30
+// (0x1E)은 두 노드가 공유하는 무선 채널이다.
+constexpr LoRaDestination kStm1Destination{0x00, 0x01, 0x1E};
+constexpr LoRaDestination kStm2Destination{0x00, 0x02, 0x1E};
+
+// AlertCommand payload는 "ALERT:<sensor_id>:..." 형태다. 두 번째 필드만 보고
+// 목적지 노드를 고른다. 여기 없는 센서(예: 도메인과 무관한 테스트용 명령)는
+// 목적지를 못 골라 nullopt를 돌려주고, 호출부는 예전처럼 주소 없이 보낸다.
+std::optional<LoRaDestination> resolveAlertDestination(
+    const std::string& command) {
+    const auto first = command.find(':');
+    if (first == std::string::npos) return std::nullopt;
+    const auto second = command.find(':', first + 1);
+    const std::string sensorId = command.substr(
+        first + 1, second == std::string::npos ? std::string::npos
+                                                : second - first - 1);
+    if (sensorId == "HALL01" || sensorId == "HALL02") return kStm1Destination;
+    if (sensorId == "HALL03" || sensorId == "HALL04") return kStm2Destination;
+    return std::nullopt;
 }
 
 }  // namespace
@@ -83,7 +105,10 @@ bool SensorLinkManager::sendAlertCommand(const std::string& command,
         frame.type = LoRaMessageType::AlertCommand;
         frame.sequence = sequence;
         frame.payload.assign(command.begin(), command.end());
-        const bool sent = lora_.send(frame, error);
+        const auto destination = resolveAlertDestination(command);
+        const bool sent = destination
+            ? lora_.sendTo(*destination, frame, error)
+            : lora_.send(frame, error);
         if (!sent) {
             report(event::SystemEventCode::UartWriteFailed,
                    event::SystemEventSeverity::Error,
