@@ -1,6 +1,10 @@
 # UART / LoRa Link Protocol
 
-기준일: 2026-08-06
+기준일: 2026-08-13 (STM <-> Pi LoRa 연동 규격 v1.1 반영, EVDA-46/EVDA-201)
+
+노드가 STM1/STM2 둘이며, 페이로드에 노드 ID가 들어간다. `seq`는 노드당 단일
+카운터로 홀·화재가 공유한다. 하행 명령은 목적지 노드를 골라 fixed-point 주소
+헤더를 붙여 보내야 한다.
 
 ## 책임 분리
 
@@ -41,6 +45,8 @@ SENSOR:HALL01:VACANT:2\n
 
 partial read와 한 번에 여러 줄이 들어오는 경우 모두 처리한다. sequence는 센서별로
 단조 증가해야 하며 중복·역순 값은 기존 `ParkingSensorSequenceGuard`가 거부한다.
+단, 직전 값보다 `kLegacySequenceRebootDropThreshold`(1000) 넘게 줄어들면 역순이
+아니라 STM32 재부팅으로 보고 새 카운터를 그대로 받아들인다(§ 노드/재부팅 처리 참고).
 
 ## LoRa binary frame
 
@@ -50,7 +56,7 @@ partial read와 한 번에 여러 줄이 들어오는 경우 모두 처리한다
 |---:|---:|---|
 | 0 | 1 | SOF `0xAA` |
 | 1 | 1 | SOF `0x55` |
-| 2 | 1 | Version `0x01` |
+| 2 | 1 | Version `0x01`(레거시) 또는 `0x02`(v1.1) |
 | 3 | 1 | Message type |
 | 4 | 4 | Transport sequence |
 | 8 | 2 | Payload length, 최대 512 |
@@ -61,20 +67,48 @@ CRC 범위는 `Version`부터 payload 마지막 byte까지이며 초기값은 `0
 polynomial은 `0x1021`이다. CRC가 틀리거나 payload가 512 byte를 넘으면 frame을
 폐기하고 다음 `AA 55`에서 재동기화한다.
 
+`LoRaDriver::consume()`은 상행에서 `0x01`/`0x02`를 모두 받는다("보낼 때는 좁게,
+받을 때는 넓게"). `encode()`/`send()`는 계속 `0x01`을 찍는다 — STM 쪽이 하행에서
+두 버전을 모두 받도록 이미 고쳐졌으므로 STM과 Pi를 같은 순간에 배포하지 않아도
+된다.
+
 Message type:
 
 - `0x01`: SensorEvent
 - `0x02`: AlertCommand
 - `0x03`: Heartbeat
 
-SensorEvent payload는 기존 센서 문자열이다.
+### SensorEvent payload
+
+v1.0(레거시, 노드 ID 없음):
 
 ```text
 SENSOR:HALL01:OCCUPIED:15
+FIRE:FLAME01:DETECTED:12
 ```
 
-payload 안의 sequence는 센서별 중복 방지에 사용된다. frame sequence는 무선 전송
-진단 및 송수신 추적용이다. STM32 구현에서는 두 값을 동일하게 사용하는 것을 권장한다.
+v1.1(노드 ID·화재 energy 추가, version `0x02`에서 사용):
+
+```text
+SENSOR:<node>:<sensor>:<state>:<seq>
+FIRE:<node>:<sensor>:<state>:<seq>:<energy>
+
+SENSOR:STM1:HALL01:OCCUPIED:15
+FIRE:STM1:FLAME01:DETECTED:26:42.09
+```
+
+- `<node>`는 `STM1`|`STM2`. `SensorProtocolParser`는 두 번째 필드가 이 값인지로
+  두 grammar를 구분한다(out-of-band 버전 태그 없이). 센서 ID가 노드를 가로질러
+  이미 전역 고유하므로(`config/parking_slots.json`) 슬롯 매핑에는 쓰이지 않고
+  `SensorProtocolMessage::node` / `FireSensorMessage::node`에 진단용으로만
+  담긴다.
+- `<energy>`는 화재 센서 FFT의 1~20Hz 대역 에너지 합(표시용, 소수 둘째 자리)이다.
+  화재 판정은 STM32가 하므로 Pi는 이 값으로 재판정하지 않는다 — `<state>`만
+  근거로 삼는다. `FireSensorMessage::energy`에 담기며 도메인 로직에는 전달하지
+  않는다.
+- payload 안의 sequence는 **노드당 단일 카운터**다(홀 채널 2개와 화재가 공유).
+  frame sequence는 무선 전송 진단 및 송수신 추적용이다. STM32 구현에서는 두 값을
+  동일하게 사용하는 것을 권장한다.
 
 AlertCommand payload 예시:
 
@@ -83,6 +117,30 @@ ALERT:EV01:ON
 ALERT:EV01:OFF
 HEARTBEAT
 ```
+
+## 목적지 주소 지정 (Pi -> STM, 고정점 모드)
+
+노드가 둘이므로 하행 project frame 앞에 3 byte 목적지 헤더를 반드시 붙여야
+한다. 빠뜨리면 모듈이 project frame의 앞 3 byte(`AA 55 0x`)를 주소로 오인해서
+하행이 통째로 나가지 않는다.
+
+```text
+<ADDH> <ADDL> <CH>  +  project frame
+
+STM1 로 : 00 01 1E
+STM2 로 : 00 02 1E        (0x1E = 채널 30)
+```
+
+`LoRaDriver::sendTo(destination, frame)`이 이 헤더를 붙여 한 번에 write한다.
+목적지는 AlertCommand payload의 센서 번호로 정해진다(§ LED 명령 표 참고):
+`device::SensorLinkManager::sendAlertCommand()`가 payload를 보고 목적지를
+고른 뒤 `sendTo()`를 호출하며, 알려진 센서가 아니면(HALL01~04 밖) 예전처럼
+주소 없이 `send()`로 보낸다.
+
+> 두 노드가 같은 채널을 듣는다. 목적지를 STM2로 지정해도 STM1 모듈이 전파를
+> 수신할 수 있지만, STM 펌웨어가 센서 번호로 자기 담당인지 판별해 무시하므로
+> 동작에는 문제가 없다. 노드가 늘면 이 필터가 유일한 방어선이므로 목적지
+> 주소는 정확히 지정한다.
 
 ## 번호판 조명 LED 명령 (Pi -> STM32)
 
@@ -95,7 +153,12 @@ ALERT:HALL01:LED:OFF:12
 ```
 
 - 두 번째 필드는 센서 ID로 `SENSOR:HALL01:OCCUPIED:1` 과 같은 값을 사용한다. 주차면마다
-  LED를 독립 제어하기 위해 필요하다.
+  LED를 독립 제어하기 위해 필요하다. 센서 번호로 목적지 노드도 함께 정해진다:
+
+  | 센서 | 목적지 노드 | 고정점 헤더 |
+  |---|---|---|
+  | `HALL01`, `HALL02` | STM1 | `00 01 1E` |
+  | `HALL03`, `HALL04` | STM2 | `00 02 1E` |
 - 마지막 필드는 sequence다. 하나의 촬영에서 ON 과 뒤따르는 OFF 는 같은 값을 쓰므로
   두 명령을 짝지어 추적할 수 있다. 값은 Pi 안에서 단조 증가한다.
 - ACK 는 요구하지 않는다. Pi 는 ON 을 보낸 뒤 고정 정착 지연만 두고 촬영을 진행한다.
@@ -159,7 +222,7 @@ export SENSOR_UART_BAUD=115200
 - Pi에서 사용할 최종 UART 장치 경로
 - STM32 Buzzer 명령 규약 (LED 명령은 위 절에서 확정)
 - STM32 페일세이프 타이머의 최종 값과 LED 구동 회로 규격
-- 화재 센서 payload
 - 암호화, 송신 재시도 및 무선 ACK 정책
+- STM2 노드 실기기 검증, 2노드 동시 운용(반이중 충돌) 검증
 
 이 항목들은 하드웨어 규격을 받기 전까지 코드에 하드코딩하지 않는다.
