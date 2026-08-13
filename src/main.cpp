@@ -894,7 +894,8 @@ int main() {
 
     mqtt::MqttEventBridge mqtt_bridge(
         config, channels, database, snapshot_storage,
-        ocr_worker, parking_slot_configs, {}, {}, {}, nullptr,
+        ocr_worker, parking_slot_configs, {}, {}, {},
+        mqtt::makeMosquittoTransport(),
         telegram_notifier_ptr);
     if (!mqtt_bridge.bindParkingRoiResolver(
             [&roi_settings](const std::string& slot_id) {
