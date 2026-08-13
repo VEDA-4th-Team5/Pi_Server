@@ -27,13 +27,12 @@ bool TimerManager::LaterDeadline::operator()(const TimerItem& left,
 }
 
 /**
- * @brief DB와 callback을 연결하고 단일 타이머 worker 스레드를 시작한다.
+ * @brief DB와 callback을 연결하되 deadline worker는 아직 시작하지 않는다.
  *
  * @param[in,out] database 만료 시 로그 상태를 바꿀 SQLite 접근 객체.
  * @param[in] callback 위반 확정 후 호출할 callback.
  * @param[in] error_callback worker 오류를 보고할 선택 callback.
  * @param[in,out] transition_mutex 입차·출차·만료 전이를 직렬화할 선택 mutex 포인터.
- * @throws std::system_error worker 스레드를 생성할 수 없는 경우.
  * @note 참조와 mutex는 이 `TimerManager`보다 오래 살아 있어야 한다.
  */
 TimerManager::TimerManager(EventDatabase& database,
@@ -45,35 +44,47 @@ TimerManager::TimerManager(EventDatabase& database,
       callback_(std::move(callback)),
       error_callback_(std::move(error_callback)),
       evidence_provider_(std::move(evidence_provider)),
-      transition_mutex_(transition_mutex) {
-    // ctor body에 도달한 뒤 worker를 시작해야 stopping_/queue_/callback을 초기화 전에
-    // 읽는 경쟁을 피할 수 있다. worker 최외곽에서도 예외가 프로세스를 끝내지 못하게 한다.
-    worker_ = std::thread([this] {
-        try {
-            run();
-        } catch (const std::exception& error) {
-            reportError(TimerItem{}, error.what());
-        } catch (...) {
-            reportError(TimerItem{}, "unknown timer worker loop failure");
-        }
-    });
-}
+      transition_mutex_(transition_mutex) {}
 
 /**
- * @brief worker에 종료를 알리고 스레드가 완전히 끝날 때까지 기다린다.
+ * @brief runtime teardown guard가 준비된 뒤 deadline worker를 시작한다.
  *
- * @note stop flag 설정 → condition variable 깨우기 → join 순서를 지켜 소멸 후 callback이
- *       외부 객체를 참조하는 일을 막는다. 큐의 미만료 항목은 소멸 시 처리하지 않는다.
+ * @note worker 최외곽에서 예외를 격리하며, 중복 start는 성공으로 처리한다.
  */
-TimerManager::~TimerManager() {
+bool TimerManager::start() noexcept {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    std::lock_guard lock(mutex_);
+    if (worker_.joinable()) return true;
+    if (stopping_) return false;
+    try {
+        worker_ = std::thread([this] {
+            try {
+                run();
+            } catch (const std::exception& error) {
+                reportError(TimerItem{}, error.what());
+            } catch (...) {
+                reportError(TimerItem{}, "unknown timer worker loop failure");
+            }
+        });
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
+/** @brief worker에 종료를 알리고 스레드가 완전히 끝날 때까지 기다린다. */
+void TimerManager::stop() noexcept {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     {
         std::lock_guard lock(mutex_);
         stopping_ = true;
     }
     cv_.notify_one();
-    if (worker_.joinable()) {
-        worker_.join();
-    }
+    if (worker_.joinable()) worker_.join();
+}
+
+TimerManager::~TimerManager() {
+    stop();
 }
 
 /**
@@ -116,6 +127,9 @@ void TimerManager::scheduleImpl(const std::int64_t log_id,
         std::lock_guard lock(mutex_);
         if (stopping_) {
             throw std::runtime_error("TimerManager is stopping");
+        }
+        if (!worker_.joinable()) {
+            throw std::runtime_error("TimerManager is not started");
         }
         item.sequence = next_sequence_++;
         item.generation = ++generations_[log_id];

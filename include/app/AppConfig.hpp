@@ -91,6 +91,10 @@ struct AppConfig {
     int camera_snapshot_max_retries;
     int camera_snapshot_retry_delay_ms;
 
+    // Hanwha RTSP metadata의 Vehicle/Plate BestShot 다운로드 경로.
+    // IVA + Snapshot API 운영에서는 중복 세션/촬영을 막기 위해 기본 비활성화한다.
+    bool bestshot_enabled{false};
+
     // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
     // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
     bool fire_alarm_enabled;

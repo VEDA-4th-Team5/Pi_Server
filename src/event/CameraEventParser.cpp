@@ -172,6 +172,7 @@ void parseWiseAiIvaJson(const std::string& topic,
     }
     if (body.contains("UtcTime") && body["UtcTime"].is_string()) {
         event.timestamp = body["UtcTime"].get<std::string>();
+        event.timestamp_from_source = true;
     }
 
     if (action == "INTRUSION") {

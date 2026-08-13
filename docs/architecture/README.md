@@ -3,9 +3,9 @@
 WiseAI IVA 차량 탐지의 MQTT parsing 및 슬롯 매핑 계약은
 [`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
 
-기준일: 2026-08-05
+기준일: 2026-08-12
 
-기준 코드: CV Snapshot API 통합 작업 트리 (base `f6b8ac8`)
+기준 코드: `chore/cleanup-unused-features_EVDA-205` (`7968a58`)
 
 이 문서는 외부 발표 자료가 아니라 현재 `Pi_Server` C/C++ 코드에 실제로
 연결된 런타임 아키텍처를 설명한다. 외부 기획서와 발표 자료는
@@ -25,7 +25,7 @@ flowchart LR
     Camera[Hanwha Vision Camera] -->|RTSP video| FrameBuffer[CameraChannel FrameBuffer]
     Camera -->|CV Snapshot OpenAPI / JPEG| CameraApi[CameraSnapshotApiClient]
     Camera -->|ONVIF MQTT event| Mosquitto
-    Camera -->|RTSP metadata| BestShot[BestShotReceiver]
+    Camera -.->|BESTSHOT_ENABLED=true일 때 RTSP metadata| BestShot[BestShotReceiver]
 
     HallService --> Session[(SQLite PARKING_SESSION)]
     HallService --> Evidence[EvidenceCaptureWorker]
@@ -75,7 +75,8 @@ AppConfig 환경변수 로드
 → 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
 → RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
-→ OcrWorker / BestShotReceiver 시작
+→ OcrWorker 시작
+→ `BESTSHOT_ENABLED=true`일 때만 BestShotReceiver 시작
 → MqttEventBridge 연결
 → CaptureSchedulerRuntime 시작
 → UART/LoRa SensorLinkManager 시작
@@ -229,7 +230,7 @@ Camera ONVIF MQTT
 → CameraEventParser
 → active IVA Area 확인
 → Area name 또는 channel로 EV01~EV04 매핑
-→ RTSP 최신 frame ROI crop
+→ Snapshot API original/enhanced 다운로드 후 ROI crop
 → scene JPEG + OpenCV enhanced 생성
 → EVENT_LOG / IMAGE_LOG
 → OcrWorker
@@ -239,7 +240,7 @@ Camera ONVIF MQTT
 MotionAlarm, MotionDetection, ObjectDetection 등 비 IVA 이벤트는 중복 사진을 막기 위해
 현재 Snapshot을 저장하지 않는다.
 
-### 5.2 BestShot metadata
+### 5.2 선택적 BestShot metadata
 
 ```text
 Camera RTSP metadata track
@@ -251,8 +252,9 @@ Camera RTSP metadata track
 → Gemini OCR
 ```
 
-BestShot 경로는 홀센서 경로와 별개로 DB 세션을 생성한다. 동일 차량에 두 경로를
-동시 운영하면 활성 세션 중복 정책을 추가로 확정해야 한다.
+이 경로는 현재 `BESTSHOT_ENABLED=false`로 비활성화되어 스레드,
+RTSP metadata 연결, JPEG 다운로드를 시작하지 않는다. 운영 기본 경로는
+WiseAI IVA MQTT → Snapshot API → ROI crop → Gemini OCR이다.
 
 ## 6. 저장 구조
 
@@ -330,7 +332,8 @@ report()
 ```
 
 주차 세션 상태, 타이머 만료, VACANT는 전이 mutex로 직렬화한다. 증거 촬영,
-30/60초 촬영, OCR, RTSP 수신, MQTT loop는 각자의 worker thread에서 실행된다.
+30/60초 촬영, OCR, MQTT loop는 각자의 worker thread에서 실행된다.
+RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한다.
 
 ## 9. 현재 설정상 주의점
 
@@ -340,10 +343,12 @@ report()
 - SQLite와 `IVA_EVxx_ROI_*` 설정에 ROI가 모두 없으면 해당 슬롯 ROI는
   미설정 상태로 유지한다. 촬영/OCR은 전체 프레임을 임의로 사용하지 않고
   명확한 오류를 남긴 뒤 건너뛴다.
-- `PARKING_HALL_ENABLED` 설정은 로드되지만 현재 `main.cpp`의 홀 경로 활성화
-  조건으로 사용되지 않는다.
-- `FIRE_ALARM_ENABLED`와 `FireAlarmManager`는 존재하지만 현재 `main.cpp`에 배선되지
-  않았다.
+- 점유 입력은 `PARKING_OCCUPANCY_SOURCE=HALL|CAMERA_IVA`로 단일 주체를 선택한다.
+  `PARKING_HALL_ENABLED`는 현재 로드만 되는 구형 설정이다.
+- `FIRE_ALARM_ENABLED=true`이면 `SensorLinkManager` → `FireAlarmManager` → Qt MQTT와
+  ACK 명령 경로가 `main.cpp`에 배선된다.
+- `FIRE_UART_*`는 구형 설정이며 실제 공유 UART은 `SENSOR_UART_*`를 사용한다.
+- `BESTSHOT_ENABLED=false`가 기본이며 운영 프로필에서 BestShot은 시작하지 않는다.
 - MQTT는 기본 `1883` 평문 연결이며 username/password/TLS 설정이 없다.
 - HTTP API는 TLS를 선택할 수 있지만 API 인증은 없다.
 - `SystemEventReporter`는 UART/LoRa/홀센서에 연결되어 있고 MQTT/RTSP 오류와는

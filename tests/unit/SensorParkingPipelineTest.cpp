@@ -122,6 +122,38 @@ int main(int argc, char* argv[]) {
                 &error).has_value(),
             "invalid sensor state was accepted");
 
+        parking::ParkingSensorSequenceGuard epochGuard;
+        const auto legacyHigh = adapter.adapt(
+            *parser.parse("SENSOR:HALL02:VACANT:900", now, &error), &error);
+        const auto firstV2 = adapter.adapt(
+            *parser.parse("SENSOR2:HALL02:OCCUPIED:boot-b:1", now, &error),
+            &error);
+        require(legacyHigh && firstV2 &&
+                    firstV2->sourceProtocolVersion ==
+                        sensor::SensorProtocolVersion::BootEpochV2 &&
+                    firstV2->sourceBootId == "boot-b",
+                "SENSOR2 parser/adapter lost explicit epoch metadata");
+        require(epochGuard.accept(*legacyHigh, &error) &&
+                    epochGuard.accept(*firstV2, &error),
+                "legacy high to first v2 low migration was rejected");
+        const auto downgrade = adapter.adapt(
+            *parser.parse("SENSOR:HALL02:VACANT:901", now, &error), &error);
+        require(downgrade && !epochGuard.accept(*downgrade, &error),
+                "legacy downgrade was accepted after v2 migration");
+        const auto nextBoot = adapter.adapt(
+            *parser.parse("SENSOR2:HALL02:VACANT:boot-c:1", now, &error),
+            &error);
+        const auto retiredBoot = adapter.adapt(
+            *parser.parse("SENSOR2:HALL02:OCCUPIED:boot-b:2", now, &error),
+            &error);
+        require(nextBoot && retiredBoot &&
+                    epochGuard.accept(*nextBoot, &error) &&
+                    !epochGuard.accept(*retiredBoot, &error),
+                "retired Hall boot ID was accepted");
+        require(!parser.parse(
+                    "SENSOR2:HALL02:OCCUPIED::1", now, &error),
+                "SENSOR2 without boot ID was accepted");
+
         std::cout
             << "[PASS] parking sensor stage 2"
             << " mappings=" << index.size()

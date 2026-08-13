@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sensor/SensorProtocolVersion.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -23,6 +25,9 @@ struct ParkingSensorEvent {
     // but a UART/LoRa adapter can use it for duplicate and stale-packet
     // protection.
     std::optional<std::uint64_t> sourceSequence;
+    sensor::SensorProtocolVersion sourceProtocolVersion{
+        sensor::SensorProtocolVersion::LegacyV1};
+    std::optional<std::string> sourceBootId;
     std::string sourceTransport{"unknown"};
 
     // 수신 순간의 단조시계 값이다. NTP로 벽시계가 바뀌어도 점유 확정과

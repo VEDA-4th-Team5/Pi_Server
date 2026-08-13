@@ -19,6 +19,9 @@ public:
                        std::chrono::milliseconds parking_timeout,
                        TimerManager::EvidenceProvider evidence_provider = {});
 
+    /** @brief Starts the owned timer worker after runtime teardown is armed. */
+    [[nodiscard]] bool start() noexcept;
+
     /** @brief EV/PHEV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다. */
     EntryResult handleEntry(const std::string& slot_id,
                             const std::string& car_number,
@@ -38,6 +41,10 @@ public:
 
     /** @brief 활성 세션을 출차 처리하며 없으면 nullopt를 반환한다. */
     std::optional<LogRecord> handleExit(const std::string& slot_id);
+    /** Publishes/cancels timer projection for a session already ended by the
+     * authoritative occupancy transaction. Never mutates PARKING_SESSION. */
+    std::optional<LogRecord> handleCommittedExit(std::int64_t session_id,
+                                                 const std::string& slot_id);
     /** @brief lazy-canceled 항목을 포함한 현재 우선순위 큐 크기를 반환한다. */
     std::size_t pendingTimerCount() const;
 

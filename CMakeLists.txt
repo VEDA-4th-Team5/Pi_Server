@@ -21,10 +21,23 @@ file(GLOB_RECURSE SERVER_CPP CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER SERVER_CPP EXCLUDE REGEX "src/timer/")
 add_executable(pi-server ${SERVER_CPP} src/database/db_manager.c)
 target_include_directories(pi-server PRIVATE include include/uapi)
-target_compile_options(pi-server PRIVATE -Wall -Wextra)
+target_compile_options(pi-server PRIVATE
+    -Wall -Wextra -ffunction-sections -fdata-sections)
+target_compile_definitions(pi-server PRIVATE
+    VEDA_RUNTIME_SQL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/db")
 target_link_libraries(pi-server PRIVATE
     PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
     PkgConfig::HTTPLIB mosquitto sqlite3 Threads::Threads)
+target_link_options(pi-server PRIVATE -Wl,--gc-sections)
+if(NOT CMAKE_NM)
+    message(FATAL_ERROR "nm is required for the production occupancy gate")
+endif()
+add_custom_command(TARGET pi-server POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        -DNM_TOOL=${CMAKE_NM}
+        -DBINARY_PATH=$<TARGET_FILE:pi-server>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/AssertNoLegacyOccupancySymbols.cmake
+    VERBATIM)
 
 add_executable(gemini-ocr-test
     tests/integration/GeminiOcrTest.cpp
@@ -44,6 +57,13 @@ target_include_directories(gemini-ocr-client-test PRIVATE include)
 target_compile_options(gemini-ocr-client-test PRIVATE -Wall -Wextra)
 target_link_libraries(gemini-ocr-client-test PRIVATE PkgConfig::CURL)
 add_test(NAME gemini-ocr-client-test COMMAND gemini-ocr-client-test)
+
+add_executable(app-config-test
+    tests/unit/AppConfigTest.cpp
+    src/app/AppConfig.cpp)
+target_include_directories(app-config-test PRIVATE include)
+target_compile_options(app-config-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME app-config-test COMMAND app-config-test)
 
 add_executable(db-manager-test
     tests/integration/DbManagerTest.c
@@ -140,48 +160,75 @@ add_test(NAME camera-iva-event-test COMMAND camera-iva-event-test)
 
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
-    src/event/FireAlarmManager.cpp
+    src/event/FireAlarmService.cpp
+    src/event/FirePersistence.cpp
     src/event/EventPayloadBuilder.cpp
-    src/sensor/FireSensorMessage.cpp
     src/sensor/SensorProtocolParser.cpp
     src/util/Logger.cpp
     src/util/StringUtil.cpp
     src/util/TimeUtil.cpp)
 target_include_directories(fire-alarm-test PRIVATE include)
 target_compile_options(fire-alarm-test PRIVATE -Wall -Wextra)
+target_link_libraries(fire-alarm-test PRIVATE parking-timer-core)
 add_test(NAME fire-alarm-test COMMAND fire-alarm-test)
 
+add_executable(fire-delivery-integration-test
+    tests/integration/FireDeliveryIntegrationTest.cpp
+    src/event/FireAlarmService.cpp
+    src/event/FireDeliveryCoordinator.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-delivery-integration-test PRIVATE include)
+target_compile_options(fire-delivery-integration-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(fire-delivery-integration-test PRIVATE
+    parking-timer-core Threads::Threads)
+add_test(NAME fire-delivery-integration-test
+    COMMAND fire-delivery-integration-test)
+
+add_executable(fire-broker-restart-process-test
+    tests/integration/FireBrokerRestartProcessTest.cpp
+    src/event/FireAlarmService.cpp
+    src/event/FireDeliveryCoordinator.cpp
+    src/event/EventPayloadBuilder.cpp
+    src/mqtt/MqttEndpoint.cpp
+    src/mqtt/MosquittoTransport.cpp
+    src/util/StringUtil.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(fire-broker-restart-process-test PRIVATE include)
+target_compile_options(fire-broker-restart-process-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(fire-broker-restart-process-test PRIVATE
+    parking-timer-core mosquitto Threads::Threads)
+add_test(NAME fire-broker-restart-process-test
+    COMMAND fire-broker-restart-process-test)
+
+add_executable(mqtt-tracked-transport-test
+    tests/unit/MqttTrackedTransportTest.cpp
+    src/mqtt/MqttEndpoint.cpp)
+target_include_directories(mqtt-tracked-transport-test PRIVATE include)
+target_compile_options(mqtt-tracked-transport-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(mqtt-tracked-transport-test PRIVATE Threads::Threads)
+add_test(NAME mqtt-tracked-transport-test
+    COMMAND mqtt-tracked-transport-test)
+
 # STM32 UART 통신만 단독으로 확인하기 위한 경량 실행 파일.
-# 카메라/MQTT/DB 없이 src/sensor 코드만 빌드한다. gemini-ocr-test, db-manager-test,
-# http-api-test 와 같은 자리 — src/ 는 프로덕션 코드만, 수동 진단 도구는
-# tests/integration/ 에 모은다.
+# 카메라/MQTT/DB 없이 운영 main과 동일한 device::SensorLinkManager를 사용한다.
 add_executable(uart-fire-listener
     tests/integration/UartFireListenerTool.cpp
-    src/sensor/SensorLinkManager.cpp
+    src/device/UartDriver.cpp
+    src/device/LoRaDriver.cpp
+    src/device/SensorLinkManager.cpp
+    src/event/SystemEventReporter.cpp
     src/sensor/SensorProtocolParser.cpp
     src/sensor/FireSensorMessage.cpp
+    src/util/StringUtil.cpp
     src/util/Logger.cpp)
 target_include_directories(uart-fire-listener PRIVATE include)
 target_compile_options(uart-fire-listener PRIVATE -Wall -Wextra)
-target_link_libraries(uart-fire-listener PRIVATE Threads::Threads)
-
-# STM32 UART -> FireAlarmManager -> 실제 MQTT 브로커까지 카메라/DB/OCR 없이
-# 검증하는 도구. main.cpp 는 건드리지 않고, 여기서 검증된 배선을 그대로
-# main.cpp 로 옮기는 방식으로 통합한다.
-add_executable(fire-pipeline-tool
-    tests/integration/FirePipelineTool.cpp
-    src/app/AppConfig.cpp
-    src/event/FireAlarmManager.cpp
-    src/event/EventPayloadBuilder.cpp
-    src/sensor/SensorLinkManager.cpp
-    src/sensor/SensorProtocolParser.cpp
-    src/sensor/FireSensorMessage.cpp
-    src/util/Logger.cpp
-    src/util/StringUtil.cpp
-    src/util/TimeUtil.cpp)
-target_include_directories(fire-pipeline-tool PRIVATE include)
-target_compile_options(fire-pipeline-tool PRIVATE -Wall -Wextra)
-target_link_libraries(fire-pipeline-tool PRIVATE mosquitto Threads::Threads)
+target_link_libraries(uart-fire-listener PRIVATE Threads::Threads util)
 
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
@@ -259,8 +306,15 @@ add_custom_target(parking-alert-module
 # ---- parking timer (timer_ 프로젝트 통합분) ----
 add_library(parking-timer-core STATIC
     src/database/EventDatabase.cpp
+    src/database/EventDatabaseCorrelation.cpp
+    src/database/EventDatabaseFire.cpp
+    src/database/EventDatabaseOccupancy.cpp
     src/database/EventDatabaseTimer.cpp
+    src/database/SessionTransitionStore.cpp
     src/database/db_manager.c
+    src/event/FirePersistence.cpp
+    src/parking/SlotTransitionActor.cpp
+    src/parking/SlotTransitionTypes.cpp
     src/util/Logger.cpp
     src/timer/EventManager.cpp
     src/timer/ParkingSlotManager.cpp
@@ -269,18 +323,23 @@ add_library(parking-timer-core STATIC
     src/timer/Types.cpp)
 target_include_directories(parking-timer-core PUBLIC include)
 target_compile_options(parking-timer-core PRIVATE
-    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    -ffunction-sections -fdata-sections)
 target_link_libraries(parking-timer-core PUBLIC sqlite3 Threads::Threads)
 
 # 메인 서버에서도 동일한 타이머 코어를 사용한다. parking-timer 독립 실행 파일도 유지한다.
 target_link_libraries(pi-server PRIVATE parking-timer-core)
 
-add_executable(parking-timer src/timer/main.cpp)
-target_link_libraries(parking-timer PRIVATE parking-timer-core)
-target_compile_options(parking-timer PRIVATE
-    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-target_compile_definitions(parking-timer PRIVATE
-    PARKING_TIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+option(VEDA_BUILD_LEGACY_PARKING_TIMER_CLI
+    "Build the development-only legacy parking mutation CLI" OFF)
+if(VEDA_BUILD_LEGACY_PARKING_TIMER_CLI)
+    add_executable(parking-timer EXCLUDE_FROM_ALL src/timer/main.cpp)
+    target_link_libraries(parking-timer PRIVATE parking-timer-core)
+    target_compile_options(parking-timer PRIVATE
+        -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    target_compile_definitions(parking-timer PRIVATE
+        PARKING_TIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()
 
 # 실행/테스트가 빌드 디렉터리에서도 리소스를 찾을 수 있게 복사.
 foreach(resource db/schema.sql db/seed.sql config/timer.conf)
@@ -294,6 +353,15 @@ target_compile_options(parking-timer-tests PRIVATE
 target_compile_definitions(parking-timer-tests PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 add_test(NAME parking-timer-tests COMMAND parking-timer-tests)
+
+add_executable(slot-transition-actor-test
+    tests/integration/SlotTransitionActorTest.cpp)
+target_link_libraries(slot-transition-actor-test PRIVATE parking-timer-core)
+target_compile_options(slot-transition-actor-test PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+target_compile_definitions(slot-transition-actor-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+add_test(NAME slot-transition-actor-test COMMAND slot-transition-actor-test)
 
 # 카메라/UART 없이 홀센서 입력부터 OCR 대역과 장기점유 타이머까지 잇는 통합 테스트.
 add_executable(hall-timer-integration-test
@@ -383,7 +451,9 @@ add_test(NAME camera-snapshot-api-client-test
 
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
+    src/app/RuntimeShutdown.cpp
     src/http/ParkingHttpServer.cpp
+    src/mqtt/MqttEndpoint.cpp
     src/settings/OverstayThresholdService.cpp
     src/settings/ParkingRoiSettingsService.cpp)
 target_include_directories(http-api-test PRIVATE include)
@@ -391,6 +461,46 @@ target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE
     parking-timer-core PkgConfig::HTTPLIB sqlite3 Threads::Threads)
 add_test(NAME http-api-test COMMAND http-api-test)
+
+add_executable(callback-lifecycle-test
+    tests/unit/CallbackLifecycleTest.cpp
+    src/app/RuntimeShutdown.cpp
+    src/mqtt/MqttEndpoint.cpp
+    src/util/Logger.cpp)
+target_include_directories(callback-lifecycle-test PRIVATE include)
+target_compile_options(callback-lifecycle-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(callback-lifecycle-test PRIVATE Threads::Threads)
+add_test(NAME callback-lifecycle-test COMMAND callback-lifecycle-test)
+
+# 실제 MqttEventBridge 조립 경로에서 target-before-start와 stop/join 이후
+# callback 차단을 검증한다. main만 제외하고 운영 source를 그대로 링크한다.
+set(MQTT_BRIDGE_LIFECYCLE_SOURCES ${SERVER_CPP})
+list(FILTER MQTT_BRIDGE_LIFECYCLE_SOURCES EXCLUDE REGEX "src/main\\.cpp$")
+add_executable(mqtt-bridge-lifecycle-test
+    tests/integration/MqttBridgeLifecycleTest.cpp
+    ${MQTT_BRIDGE_LIFECYCLE_SOURCES}
+    src/database/db_manager.c)
+target_include_directories(mqtt-bridge-lifecycle-test PRIVATE include include/uapi)
+target_compile_options(mqtt-bridge-lifecycle-test PRIVATE -Wall -Wextra)
+target_compile_definitions(mqtt-bridge-lifecycle-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+target_link_libraries(mqtt-bridge-lifecycle-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
+    PkgConfig::HTTPLIB mosquitto sqlite3 Threads::Threads)
+add_test(NAME mqtt-bridge-lifecycle-test COMMAND mqtt-bridge-lifecycle-test)
+
+add_executable(parking-correlation-integration-test
+    tests/integration/ParkingCorrelationIntegrationTest.cpp
+    src/parking/ParkingTriggerCoordinator.cpp)
+target_include_directories(parking-correlation-integration-test PRIVATE include)
+target_compile_options(parking-correlation-integration-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_compile_definitions(parking-correlation-integration-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+target_link_libraries(parking-correlation-integration-test PRIVATE
+    parking-timer-core sqlite3 Threads::Threads)
+add_test(NAME parking-correlation-integration-test
+    COMMAND parking-correlation-integration-test)
 
 add_executable(code-doc-generator EXCLUDE_FROM_ALL
     tools/code_doc_generator.cpp)

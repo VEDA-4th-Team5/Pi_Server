@@ -1,47 +1,56 @@
 #pragma once
 
+#include "parking/ParkingCorrelation.hpp"
+
 #include <chrono>
-#include <mutex>
-#include <optional>
+#include <cstdint>
+#include <functional>
 #include <string>
-#include <unordered_map>
+
+namespace database {
+class EventDatabase;
+}
 
 namespace parking {
 
-// 카메라 IVA와 향후 홀센서 신호를 주차면 단위의 입차 트리거로 통합한다.
-// 현재는 IVA만으로도 Vehicle BestShot을 주차면에 연결할 수 있다.
+/**
+ * Thin, fail-closed facade over the durable correlation store.
+ *
+ * This class deliberately owns no slot/channel/session maps.  A lookup is
+ * resolved from SQLite on every use and an evidence attachment is authorized
+ * again by the SQLite transaction.  Consequently an in-memory result can
+ * never substitute for the active-session predicate at attachment time.
+ */
 class ParkingTriggerCoordinator {
 public:
-    ParkingTriggerCoordinator(int correlation_window_ms,
-                              int duplicate_suppression_ms);
+    using Clock = std::function<std::int64_t()>;
 
-    // 새 trigger면 true, suppression 시간 안의 중복이면 false를 반환한다.
-    bool recordCameraIva(const std::string& slot_id,
-                         const std::string& channel_id);
+    explicit ParkingTriggerCoordinator(
+        database::EventDatabase& database,
+        int correlation_window_ms = 8000,
+        Clock clock = {});
 
-    // 추후 STM32 UART/MQTT 수신기가 호출할 인터페이스다. 현재 카메라 단독
-    // 모드에서는 이 함수가 호출되지 않아도 IVA만으로 입차가 성립한다.
-    void recordHallState(const std::string& slot_id,
-                         const std::string& channel_id,
-                         bool occupied);
+    [[nodiscard]] ParkingCorrelationMatch resolve(
+        const std::string& camera_id,
+        const std::string& channel_id,
+        const std::string& object_id) const;
 
-    // 같은 채널에서 도착한 Vehicle BestShot에 연결할 최근 주차면을 한 번만 반환한다.
-    std::optional<std::string> claimSlotForVehicle(const std::string& channel_id);
-    void clearSlot(const std::string& slot_id);
+    [[nodiscard]] BestShotAttachResult attachBestShotIfActive(
+        const CommittedCorrelationLease& lease,
+        BestShotEvidenceKind kind,
+        const std::string& image_ref,
+        const std::string& image_path,
+        const std::string& plate_text = {});
+
+    [[nodiscard]] std::int64_t nowEpochMs() const;
+    [[nodiscard]] std::chrono::milliseconds correlationWindow() const noexcept;
 
 private:
-    struct PendingTrigger {
-        std::string channel_id;
-        bool camera_iva{false};
-        bool hall_occupied{false};
-        std::chrono::steady_clock::time_point updated_at;
-    };
+    static std::int64_t systemNowEpochMs();
 
+    database::EventDatabase& database_;
     std::chrono::milliseconds correlation_window_;
-    std::chrono::milliseconds duplicate_suppression_;
-    std::mutex mutex_;
-    std::unordered_map<std::string, PendingTrigger> pending_by_slot_;
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_iva_by_slot_;
+    Clock clock_;
 };
 
-}
+}  // namespace parking

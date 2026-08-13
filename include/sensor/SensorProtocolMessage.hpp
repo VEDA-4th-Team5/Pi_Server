@@ -1,6 +1,7 @@
   #pragma once
 
   #include "parking/ParkingSensorEvent.hpp"
+  #include "sensor/SensorProtocolVersion.hpp"
 
   #include <chrono>
   #include <cstdint>
@@ -19,6 +20,8 @@
       std::chrono::system_clock::time_point occurredAt{
           std::chrono::system_clock::now()};
       std::optional<std::uint64_t> sequence;
+      SensorProtocolVersion protocolVersion{SensorProtocolVersion::LegacyV1};
+      std::optional<std::string> bootId;
       std::string transport{"text-test"};
 
       // 수신 시점의 단조시계 값이다.

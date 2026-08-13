@@ -22,6 +22,8 @@ bool EventDatabase::open(const std::string& db_path) {
         db_close();
         opened_ = false;
     }
+    runtime_schema_ready_ = false;
+    occupancy_schema_ready_ = false;
 
     db_path_ = db_path;
     if (db_open(db_path_.c_str()) < 0) {
@@ -37,10 +39,24 @@ bool EventDatabase::open(const std::string& db_path) {
 
 void EventDatabase::close() {
     std::lock_guard<std::mutex> lock(db_mutex_);
-    if (!opened_) return;
-    db_close();
-    db_ = nullptr;
-    opened_ = false;
+    runtime_schema_ready_ = false;
+    occupancy_schema_ready_ = false;
+    if (opened_) {
+        db_close();
+        db_ = nullptr;
+        opened_ = false;
+    }
+}
+
+bool EventDatabase::runtimeSchemaReady() const noexcept {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    return opened_ && db_ != nullptr && runtime_schema_ready_;
+}
+
+bool EventDatabase::occupancySchemaReady() const noexcept {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    return opened_ && db_ != nullptr && runtime_schema_ready_ &&
+           occupancy_schema_ready_;
 }
 
 bool EventDatabase::insertEvent(const EventRecord& record) {
@@ -55,12 +71,15 @@ bool EventDatabase::insertEvent(const EventRecord& record) {
 
     // MQTT 이벤트는 아직 주차 세션 판정 전이므로 session_id 없이 증거 이미지를 기록한다.
     if (!record.snapshot_path.empty()) {
-        if (db_insert_image_log(
-                -1,
-                record.snapshot_path.c_str(),
-                nullptr,
-                "NONE",
-                nullptr) < 0) {
+        const int inserted = record.roi_revision > 0
+            ? db_insert_image_log_with_roi(
+                  -1, record.snapshot_path.c_str(), nullptr, "NONE", nullptr,
+                  record.applied_roi.x, record.applied_roi.y,
+                  record.applied_roi.width, record.applied_roi.height,
+                  record.roi_revision)
+            : db_insert_image_log(
+                  -1, record.snapshot_path.c_str(), nullptr, "NONE", nullptr);
+        if (inserted < 0) {
             util::logError("MVP IMAGE_LOG insert failed: " + record.snapshot_path);
             success = false;
         }
@@ -253,10 +272,17 @@ int collectSlot(const DbParkingSlotRow* source, void* context) {
 }
 int collectImage(const DbImageRow* source, void* context) {
     auto* rows = static_cast<std::vector<ImageView>*>(context);
-    rows->push_back({source->image_id, source->session_id, source->original_path,
-                     source->enhanced_path, source->enhancement_type,
-                     source->evidence_reason, source->ocr_result,
-                     source->captured_at});
+    ImageView row{source->image_id, source->session_id, source->original_path,
+                  source->enhanced_path, source->enhancement_type,
+                  source->evidence_reason, source->ocr_result,
+                  source->captured_at, {}, 0};
+    if (source->has_applied_roi) {
+        row.applied_roi = snapshot::NormalizedRoi{
+            source->roi_x, source->roi_y, source->roi_width,
+            source->roi_height};
+        row.roi_revision = source->roi_revision;
+    }
+    rows->push_back(std::move(row));
     return 0;
 }
 }
@@ -288,7 +314,14 @@ bool EventDatabase::getImage(int image_id, ImageView& row) {
     if (!opened_ || db_get_image_by_id(image_id, &source) < 0) return false;
     row = {source.image_id, source.session_id, source.original_path,
            source.enhanced_path, source.enhancement_type,
-           source.evidence_reason, source.ocr_result, source.captured_at};
+           source.evidence_reason, source.ocr_result, source.captured_at,
+           {}, 0};
+    if (source.has_applied_roi) {
+        row.applied_roi = snapshot::NormalizedRoi{
+            source.roi_x, source.roi_y, source.roi_width,
+            source.roi_height};
+        row.roi_revision = source.roi_revision;
+    }
     return true;
 }
 

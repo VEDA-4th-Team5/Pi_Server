@@ -235,31 +235,115 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                                const std::filesystem::path& seed_file) {
     const auto schema = readTextFile(schema_file);
     const auto seed = readTextFile(seed_file);
-    std::lock_guard lock(db_mutex_);
-    // 기존 운영 DB의 테이블 이름과 데이터를 유지한 채 신규 구분 필드만 보강한다.
-    if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
-        !tableHasColumn(db_, "VEHICLE", "is_phev")) {
-        executeSqlUnlocked("ALTER TABLE VEHICLE ADD COLUMN is_phev INTEGER NOT NULL "
-                           "DEFAULT 0 CHECK (is_phev IN (0, 1));");
+    {
+        std::lock_guard lock(db_mutex_);
+        if (!opened_ || db_ == nullptr)
+            throw std::runtime_error("cannot initialize a closed database");
+        // Add columns referenced by current schema indexes/triggers before
+        // executing CREATE ... IF NOT EXISTS against a representative older
+        // database. Fresh databases skip these guards and are created by the
+        // same schema below.
+        if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
+            !tableHasColumn(db_, "VEHICLE", "is_phev")) {
+            executeSqlUnlocked(
+                "ALTER TABLE VEHICLE ADD COLUMN is_phev INTEGER NOT NULL "
+                "DEFAULT 0 CHECK (is_phev IN (0, 1));");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id")) {
+            if (!tableHasColumn(db_, "PARKING_SESSION", "violation_at"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN violation_at TEXT;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "occupancy_attempt_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "occupancy_attempt_id TEXT;");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "entry_command_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "entry_command_id TEXT;");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "exit_command_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "exit_command_id TEXT;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "entry_time_epoch_ms"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "entry_time_epoch_ms INTEGER;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "exit_time_epoch_ms"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "exit_time_epoch_ms INTEGER;");
+        }
+        if (tableHasColumn(db_, "IMAGE_LOG", "image_id")) {
+            if (!tableHasColumn(db_, "IMAGE_LOG", "evidence_reason"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "correlation_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN correlation_id TEXT;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "camera_object_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN camera_object_id TEXT;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "image_ref"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN image_ref TEXT;");
+            if (!tableHasColumn(
+                    db_, "IMAGE_LOG", "correlation_binding_revision"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN "
+                    "correlation_binding_revision INTEGER;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_x"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_x REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_y"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_y REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_width"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_width REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_height"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_height REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_revision"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN roi_revision INTEGER;");
+        }
+        if (tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX", "command_id")) {
+            if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                                "effect_state"))
+                executeSqlUnlocked(
+                    "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                    "effect_state TEXT NOT NULL DEFAULT 'NONE' CHECK "
+                    "(effect_state IN ('NONE','PENDING','APPLIED'));");
+            if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                                "effect_attempt_count"))
+                executeSqlUnlocked(
+                    "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                    "effect_attempt_count INTEGER NOT NULL DEFAULT 0;");
+            if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                                "effect_next_attempt_at_epoch_ms"))
+                executeSqlUnlocked(
+                    "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                    "effect_next_attempt_at_epoch_ms INTEGER NOT NULL "
+                    "DEFAULT 0;");
+            if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                                "effect_last_error"))
+                executeSqlUnlocked(
+                    "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                    "effect_last_error TEXT NOT NULL DEFAULT '';");
+        }
+        executeSqlUnlocked(schema);
+        executeSqlUnlocked("BEGIN IMMEDIATE;");
+        try {
+            executeSqlUnlocked(seed);
+            executeSqlUnlocked("COMMIT;");
+        } catch (...) {
+            sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            throw;
+        }
     }
-    if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
-        !tableHasColumn(db_, "PARKING_SESSION", "violation_at")) {
-        executeSqlUnlocked("ALTER TABLE PARKING_SESSION ADD COLUMN violation_at TEXT;");
-    }
-    if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
-        !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
-        executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
-    }
-    // 스키마는 IF NOT EXISTS로 멱등하며, seed 전체만 별도 원자적 단위로 처리한다.
-    executeSqlUnlocked(schema);
-    executeSqlUnlocked("BEGIN IMMEDIATE;");
-    try {
-        executeSqlUnlocked(seed);
-        executeSqlUnlocked("COMMIT;");
-    } catch (...) {
-        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        throw;
-    }
+    // All entrypoints finish through the same additive migration and
+    // invariant checks. Calling initialize repeatedly is intentionally safe.
+    migrateRuntimeSchema();
 }
 
 void EventDatabase::migrateRuntimeSchema() {
@@ -267,19 +351,394 @@ void EventDatabase::migrateRuntimeSchema() {
     if (!opened_ || db_ == nullptr) {
         throw std::runtime_error("cannot migrate a closed SQLite database");
     }
-    executeSqlUnlocked(
-        "CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS ("
-        "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
-    if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
-        !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
-        executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
-    }
-    if (tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+    runtime_schema_ready_ = false;
+    occupancy_schema_ready_ = false;
+    executeSqlUnlocked("BEGIN IMMEDIATE;");
+    try {
         executeSqlUnlocked(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_image_evidence_session_reason "
-            "ON IMAGE_LOG(session_id, evidence_reason) "
-            "WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;");
+            "CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS ("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
+        executeSqlUnlocked(
+        "CREATE TABLE IF NOT EXISTS FIRE_ALARM_STATE ("
+        "channel_id TEXT PRIMARY KEY,"
+        "sensor_id TEXT UNIQUE NOT NULL,"
+        "retained_topic TEXT UNIQUE NOT NULL,"
+        "desired_lifecycle TEXT NOT NULL CHECK (desired_lifecycle IN "
+        "('OPEN','ACKNOWLEDGED','RESOLVED')),"
+        "active_alarm_id TEXT,"
+        "last_event_id TEXT NOT NULL,"
+        "fire_revision INTEGER NOT NULL CHECK (fire_revision > 0),"
+        "protocol_mode TEXT NOT NULL CHECK (protocol_mode IN "
+        "('UNSEEN','LEGACY','VERSIONED')),"
+        "active_boot_id TEXT,"
+        "last_source_sequence TEXT,"
+        "last_signal_json TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL);");
+        executeSqlUnlocked(
+        "CREATE TABLE IF NOT EXISTS FIRE_MQTT_OUTBOX ("
+        "delivery_key TEXT PRIMARY KEY,"
+        "sink_kind TEXT NOT NULL CHECK (sink_kind IN "
+        "('RETAINED_STATE','LIFECYCLE_EVENT')),"
+        "logical_key TEXT NOT NULL,"
+        "sensor_id TEXT NOT NULL,"
+        "channel_id TEXT NOT NULL,"
+        "event_id TEXT NOT NULL,"
+        "alarm_id TEXT NOT NULL,"
+        "fire_revision INTEGER NOT NULL CHECK (fire_revision > 0),"
+        "topic TEXT NOT NULL,"
+        "payload_json TEXT NOT NULL,"
+        "qos INTEGER NOT NULL DEFAULT 1 CHECK (qos = 1),"
+        "retain INTEGER NOT NULL CHECK (retain IN (0,1)),"
+        "attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),"
+        "next_attempt_at TEXT NOT NULL,"
+        "last_error TEXT NOT NULL DEFAULT '',"
+        "delivery_state TEXT NOT NULL CHECK (delivery_state IN "
+        "('PENDING','IN_FLIGHT','ACKED')),"
+        "acked_revision INTEGER,"
+        "created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL,"
+        "FOREIGN KEY(channel_id) REFERENCES FIRE_ALARM_STATE(channel_id));");
+        executeSqlUnlocked(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_fire_outbox_sink_logical "
+        "ON FIRE_MQTT_OUTBOX(sink_kind, logical_key);");
+        executeSqlUnlocked(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_fire_lifecycle_event "
+        "ON FIRE_MQTT_OUTBOX(sink_kind, event_id) "
+        "WHERE sink_kind='LIFECYCLE_EVENT';");
+        executeSqlUnlocked(
+        "CREATE INDEX IF NOT EXISTS idx_fire_outbox_pending "
+        "ON FIRE_MQTT_OUTBOX(sink_kind, delivery_state, channel_id, "
+        "fire_revision);");
+        executeSqlUnlocked(
+        "CREATE TABLE IF NOT EXISTS SENSOR_RETIRED_BOOT_ID ("
+        "source_kind TEXT NOT NULL CHECK (source_kind IN ('HALL','FIRE')),"
+        "sensor_id TEXT NOT NULL,boot_id TEXT NOT NULL,"
+        "retired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "PRIMARY KEY(source_kind,sensor_id,boot_id));");
+        const bool has_parking_slot =
+            tableHasColumn(db_, "PARKING_SLOT", "slot_id");
+        const bool has_parking_session =
+            tableHasColumn(db_, "PARKING_SESSION", "session_id");
+        if (has_parking_slot != has_parking_session) {
+            throw std::runtime_error(
+                "parking runtime schema is incomplete: PARKING_SLOT and "
+                "PARKING_SESSION must be present together");
+        }
+        if (has_parking_slot) {
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "occupancy_attempt_id")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION "
+                "ADD COLUMN occupancy_attempt_id TEXT;");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "entry_command_id")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION ADD COLUMN entry_command_id TEXT;");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "exit_command_id")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION ADD COLUMN exit_command_id TEXT;");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "entry_time_epoch_ms")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION "
+                "ADD COLUMN entry_time_epoch_ms INTEGER;");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "exit_time_epoch_ms")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION "
+                "ADD COLUMN exit_time_epoch_ms INTEGER;");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "occupancy_attempt_id")) {
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET "
+                "occupancy_attempt_id='legacy-attempt:' || session_id "
+                "WHERE occupancy_attempt_id IS NULL OR occupancy_attempt_id='';");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET "
+                "entry_command_id='legacy-entry:' || session_id "
+                "WHERE entry_command_id IS NULL OR entry_command_id='';");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET entry_time_epoch_ms="
+                "CAST((julianday(entry_time)-2440587.5)*86400000 AS INTEGER) "
+                "WHERE entry_time_epoch_ms IS NULL;");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET exit_time_epoch_ms="
+                "CAST((julianday(exit_time)-2440587.5)*86400000 AS INTEGER) "
+                "WHERE exit_time IS NOT NULL AND exit_time_epoch_ms IS NULL;");
+            Statement invalid_timestamp(db_,
+                "SELECT 1 FROM PARKING_SESSION WHERE entry_time_epoch_ms IS NULL "
+                "OR (exit_time IS NOT NULL AND exit_time_epoch_ms IS NULL) "
+                "LIMIT 1;");
+            if (sqlite3_step(invalid_timestamp.get()) == SQLITE_ROW) {
+                throw std::runtime_error(
+                    "parking session timestamp migration is ambiguous");
+            }
+            Statement duplicate_active(db_,
+                "SELECT slot_id FROM PARKING_SESSION WHERE exit_time IS NULL "
+                "AND status IN ('ACTIVE','VIOLATION') GROUP BY slot_id "
+                "HAVING COUNT(*)>1 LIMIT 1;");
+            if (sqlite3_step(duplicate_active.get()) == SQLITE_ROW) {
+                throw std::runtime_error(
+                    "multiple active parking sessions exist for slot=" +
+                    columnText(duplicate_active.get(), 0));
+            }
+            executeSqlUnlocked(
+                "UPDATE PARKING_SLOT SET status=CASE WHEN EXISTS("
+                "SELECT 1 FROM PARKING_SESSION s WHERE "
+                "s.slot_id=PARKING_SLOT.slot_id AND s.exit_time IS NULL AND "
+                "s.status IN ('ACTIVE','VIOLATION')) THEN 'OCCUPIED' "
+                "ELSE 'VACANT' END,updated_at=CURRENT_TIMESTAMP;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_parking_session_entry_command "
+                "ON PARKING_SESSION(entry_command_id) "
+                "WHERE entry_command_id IS NOT NULL;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_parking_session_exit_command "
+                "ON PARKING_SESSION(exit_command_id) "
+                "WHERE exit_command_id IS NOT NULL;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_parking_active_slot "
+                "ON PARKING_SESSION(slot_id) WHERE exit_time IS NULL "
+                "AND status IN ('ACTIVE','VIOLATION');");
+        }
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS OCCUPANCY_COMMAND_INBOX ("
+            "command_id TEXT PRIMARY KEY,slot_id TEXT NOT NULL,"
+            "source_kind TEXT NOT NULL CHECK (source_kind IN "
+            "('HALL_OBSERVATION','CAMERA_OBSERVATION','EXIT_DEADLINE')),"
+            "sensor_id TEXT NOT NULL DEFAULT '',source_identity TEXT NOT NULL,"
+            "source_sequence TEXT,occurred_at TEXT NOT NULL,"
+            "payload_json TEXT NOT NULL,due_at_epoch_ms INTEGER NOT NULL DEFAULT 0,"
+            "admission_ordinal INTEGER NOT NULL UNIQUE,status TEXT NOT NULL "
+            "CHECK (status IN ('PENDING_UNPREPARED','PENDING_PREPARED',"
+            "'APPLIED','REJECTED_INVALID')),"
+            "occupancy_attempt_id TEXT NOT NULL DEFAULT '',"
+            "correlation_id TEXT NOT NULL DEFAULT '',"
+            "observation_generation INTEGER NOT NULL DEFAULT 0,"
+            "deadline_id TEXT NOT NULL DEFAULT '',expected_session_id INTEGER,"
+            "attempt_count INTEGER NOT NULL DEFAULT 0,"
+            "next_attempt_at_epoch_ms INTEGER NOT NULL DEFAULT 0,"
+            "last_error TEXT NOT NULL DEFAULT '',"
+            "result_code TEXT NOT NULL DEFAULT '',result_session_id INTEGER,"
+            "effect_state TEXT NOT NULL DEFAULT 'NONE' CHECK (effect_state IN "
+            "('NONE','PENDING','APPLIED'))"
+            ","
+            "effect_attempt_count INTEGER NOT NULL DEFAULT 0,"
+            "effect_next_attempt_at_epoch_ms INTEGER NOT NULL DEFAULT 0,"
+            "effect_last_error TEXT NOT NULL DEFAULT '',"
+            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id));");
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX", "effect_state")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_state TEXT NOT NULL DEFAULT 'NONE' CHECK "
+                "(effect_state IN ('NONE','PENDING','APPLIED'));");
+        }
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                            "effect_attempt_count")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_attempt_count INTEGER NOT NULL DEFAULT 0;");
+        }
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                            "effect_next_attempt_at_epoch_ms")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_next_attempt_at_epoch_ms INTEGER NOT NULL DEFAULT 0;");
+        }
+        if (!tableHasColumn(db_, "OCCUPANCY_COMMAND_INBOX",
+                            "effect_last_error")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
+                "effect_last_error TEXT NOT NULL DEFAULT '';");
+        }
+        // PENDING_PREPARED is a legacy crash state.  It is only safe to
+        // promote it when the authoritative session row proves that this
+        // exact command committed.  Everything else must be replayed; treating
+        // an ambiguous prepared row as successful can permanently discard the
+        // observation that was interrupted before the session transaction.
+        if (tableHasColumn(db_, "PARKING_SESSION", "entry_command_id") &&
+            tableHasColumn(db_, "PARKING_SESSION", "exit_command_id")) {
+            executeSqlUnlocked(
+                "UPDATE OCCUPANCY_COMMAND_INBOX AS c SET status='APPLIED',"
+                "result_code='SESSION_STARTED',"
+                "result_session_id=(SELECT s.session_id FROM PARKING_SESSION s "
+                "WHERE s.entry_command_id=c.command_id LIMIT 1),"
+                "effect_state='PENDING',effect_next_attempt_at_epoch_ms=0,"
+                "effect_last_error='' WHERE c.status='PENDING_PREPARED' AND "
+                "EXISTS (SELECT 1 FROM PARKING_SESSION s WHERE "
+                "s.entry_command_id=c.command_id);");
+            executeSqlUnlocked(
+                "UPDATE OCCUPANCY_COMMAND_INBOX AS c SET status='APPLIED',"
+                "result_code='SESSION_ENDED',"
+                "result_session_id=(SELECT s.session_id FROM PARKING_SESSION s "
+                "WHERE s.exit_command_id=c.command_id LIMIT 1),"
+                "effect_state='PENDING',effect_next_attempt_at_epoch_ms=0,"
+                "effect_last_error='' WHERE c.status='PENDING_PREPARED' AND "
+                "EXISTS (SELECT 1 FROM PARKING_SESSION s WHERE "
+                "s.exit_command_id=c.command_id);");
+        }
+        executeSqlUnlocked(
+            "UPDATE OCCUPANCY_COMMAND_INBOX SET status='PENDING_UNPREPARED',"
+            "result_code='',result_session_id=NULL,effect_state='NONE',"
+            "effect_attempt_count=0,effect_next_attempt_at_epoch_ms=0,"
+            "effect_last_error='',next_attempt_at_epoch_ms=0,"
+            "last_error='legacy prepared outcome requires replay' "
+            "WHERE status='PENDING_PREPARED';");
+        executeSqlUnlocked(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_occupancy_source_identity "
+            "ON OCCUPANCY_COMMAND_INBOX(source_kind,source_identity);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_occupancy_inbox_runnable "
+            "ON OCCUPANCY_COMMAND_INBOX(status,slot_id,admission_ordinal,"
+            "next_attempt_at_epoch_ms);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_occupancy_effect_pending "
+            "ON OCCUPANCY_COMMAND_INBOX(effect_state,slot_id,"
+            "admission_ordinal,effect_next_attempt_at_epoch_ms);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS OCCUPANCY_SENSOR_SEQUENCE_STATE ("
+            "sensor_id TEXT PRIMARY KEY,protocol_mode TEXT NOT NULL CHECK "
+            "(protocol_mode IN ('LEGACY','VERSIONED')),active_boot_id TEXT,"
+            "last_sequence TEXT NOT NULL,last_command_id TEXT NOT NULL,"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS IVA_SLOT_OBSERVATION_STATE ("
+            "slot_id TEXT PRIMARY KEY,occupancy_attempt_id TEXT NOT NULL DEFAULT '',"
+            "active_session_id INTEGER,observation_generation INTEGER NOT NULL DEFAULT 0,"
+            "observed_state TEXT NOT NULL CHECK (observed_state IN "
+            "('UNKNOWN','OCCUPIED','VACANT_PENDING','VACANT')),"
+            "configured_areas_json TEXT NOT NULL DEFAULT '[]',"
+            "area_states_json TEXT NOT NULL DEFAULT '{}',"
+            "last_source_command_id TEXT NOT NULL DEFAULT '',"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id));");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS OCCUPANCY_EXIT_DEADLINE ("
+            "deadline_id TEXT PRIMARY KEY,slot_id TEXT NOT NULL,"
+            "occupancy_attempt_id TEXT NOT NULL,expected_session_id INTEGER NOT NULL,"
+            "observation_generation INTEGER NOT NULL,due_at_epoch_ms INTEGER NOT NULL,"
+            "state TEXT NOT NULL CHECK (state IN "
+            "('SCHEDULED','ADMITTED','SUPERSEDED','APPLIED')),"
+            "admitted_command_id TEXT UNIQUE,"
+            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id),"
+            "FOREIGN KEY(expected_session_id) REFERENCES PARKING_SESSION(session_id));");
+        executeSqlUnlocked(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_occupancy_live_deadline_slot "
+            "ON OCCUPANCY_EXIT_DEADLINE(slot_id) "
+            "WHERE state IN ('SCHEDULED','ADMITTED');");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS PARKING_CORRELATION_BINDING ("
+            "correlation_id TEXT PRIMARY KEY,"
+            "source_command_id TEXT NOT NULL UNIQUE,"
+            "occupancy_attempt_id TEXT NOT NULL,"
+            "session_id INTEGER,slot_id TEXT NOT NULL,"
+            "camera_id TEXT NOT NULL,video_source_token TEXT NOT NULL,"
+            "rule_name TEXT NOT NULL,object_id TEXT NOT NULL,"
+            "channel_id TEXT NOT NULL,"
+            "binding_revision INTEGER NOT NULL CHECK(binding_revision>0),"
+            "state TEXT NOT NULL CHECK(state IN "
+            "('PENDING','COMMITTED','ENDED','FAILED','EXPIRED','QUARANTINED')),"
+            "created_at_epoch_ms INTEGER NOT NULL,"
+            "expires_at_epoch_ms INTEGER NOT NULL,"
+            "updated_at_epoch_ms INTEGER NOT NULL,ended_at_epoch_ms INTEGER,"
+            "CHECK(state!='COMMITTED' OR (session_id IS NOT NULL AND "
+            "occupancy_attempt_id!='')),"
+            "UNIQUE(occupancy_attempt_id,camera_id,video_source_token,"
+            "rule_name,object_id),"
+            "FOREIGN KEY(session_id) REFERENCES PARKING_SESSION(session_id),"
+            "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id));");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_parking_correlation_bestshot_lookup "
+            "ON PARKING_CORRELATION_BINDING(camera_id,channel_id,object_id,"
+            "state,expires_at_epoch_ms,correlation_id);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_parking_correlation_session "
+            "ON PARKING_CORRELATION_BINDING(session_id,state,correlation_id);");
+        if (tableHasColumn(db_, "IMAGE_LOG", "image_id")) {
+            if (!tableHasColumn(db_, "IMAGE_LOG", "correlation_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN correlation_id TEXT;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "camera_object_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN camera_object_id TEXT;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "image_ref"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN image_ref TEXT;");
+            if (!tableHasColumn(
+                    db_, "IMAGE_LOG", "correlation_binding_revision"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN "
+                    "correlation_binding_revision INTEGER;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_x"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_x REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_y"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_y REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_width"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_width REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_height"))
+                executeSqlUnlocked("ALTER TABLE IMAGE_LOG ADD COLUMN roi_height REAL;");
+            if (!tableHasColumn(db_, "IMAGE_LOG", "roi_revision"))
+                executeSqlUnlocked(
+                    "ALTER TABLE IMAGE_LOG ADD COLUMN roi_revision INTEGER;");
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_image_bestshot_correlation ON IMAGE_LOG("
+                "correlation_id,enhancement_type,image_ref) WHERE "
+                "correlation_id IS NOT NULL AND enhancement_type IS NOT NULL "
+                "AND image_ref IS NOT NULL;");
+        }
+        // Install the actor identity invariant only after the additive column
+        // migration has completed.
+        if (tableHasColumn(db_, "PARKING_SESSION", "entry_command_id") &&
+            tableHasColumn(db_, "PARKING_SESSION", "occupancy_attempt_id") &&
+            tableHasColumn(db_, "PARKING_SESSION", "entry_time_epoch_ms")) {
+            executeSqlUnlocked(
+                "CREATE TRIGGER IF NOT EXISTS "
+                "tr_actor_session_identity_insert BEFORE INSERT ON "
+                "PARKING_SESSION WHEN NEW.entry_command_id IS NOT NULL AND "
+                "(NEW.occupancy_attempt_id IS NULL OR "
+                "NEW.occupancy_attempt_id='' OR NEW.entry_time_epoch_ms IS "
+                "NULL) BEGIN SELECT RAISE(ABORT,'actor session identity "
+                "missing'); END;");
+        }
+        }
+        if (tableHasColumn(db_, "IMAGE_LOG", "image_id") &&
+            !tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+            executeSqlUnlocked(
+                "ALTER TABLE IMAGE_LOG ADD COLUMN evidence_reason TEXT;");
+        }
+        if (tableHasColumn(db_, "IMAGE_LOG", "evidence_reason")) {
+            executeSqlUnlocked(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_image_evidence_session_reason "
+                "ON IMAGE_LOG(session_id, evidence_reason) "
+                "WHERE session_id IS NOT NULL AND evidence_reason IS NOT NULL;");
+        }
+        Statement foreign_key_check(db_, "PRAGMA foreign_key_check;");
+        if (sqlite3_step(foreign_key_check.get()) == SQLITE_ROW) {
+            throw std::runtime_error(
+                "runtime schema migration found a foreign-key violation");
+        }
+        executeSqlUnlocked("COMMIT;");
+        runtime_schema_ready_ = true;
+        occupancy_schema_ready_ = has_parking_slot;
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        runtime_schema_ready_ = false;
+        occupancy_schema_ready_ = false;
+        throw;
     }
 }
 
@@ -369,7 +828,9 @@ EvidenceInsertResult EventDatabase::insertEvidenceImage(
     const std::string& original_path,
     const std::string& evidence_reason,
     const std::string& captured_at,
-    const std::string& enhanced_path) {
+    const std::string& enhanced_path,
+    const snapshot::NormalizedRoi applied_roi,
+    const std::uint64_t roi_revision) {
     if (session_id < 0 || original_path.empty() || captured_at.empty() ||
         (evidence_reason != "OCCUPANCY_START_EVIDENCE" &&
          evidence_reason != "OVERSTAY_EVIDENCE")) {
@@ -402,8 +863,9 @@ EvidenceInsertResult EventDatabase::insertEvidenceImage(
 
         Statement image(db_,
             "INSERT INTO IMAGE_LOG(session_id,original_image_path,"
-            "enhanced_image_path,enhancement_type,evidence_reason,captured_at) "
-            "VALUES(?,?,?,?,?,?);");
+            "enhanced_image_path,enhancement_type,evidence_reason,captured_at,"
+            "roi_x,roi_y,roi_width,roi_height,roi_revision) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?);");
         image.bindInt64(1, session_id);
         image.bindText(2, original_path);
         if (enhanced_path.empty()) {
@@ -415,6 +877,19 @@ EvidenceInsertResult EventDatabase::insertEvidenceImage(
         image.bindText(4, enhanced_path.empty() ? "NONE" : "CAMERA_AUTO");
         image.bindText(5, evidence_reason);
         image.bindText(6, captured_at);
+        if (roi_revision > 0) {
+            if (sqlite3_bind_double(image.get(), 7, applied_roi.x) != SQLITE_OK ||
+                sqlite3_bind_double(image.get(), 8, applied_roi.y) != SQLITE_OK ||
+                sqlite3_bind_double(image.get(), 9, applied_roi.width) != SQLITE_OK ||
+                sqlite3_bind_double(image.get(), 10, applied_roi.height) != SQLITE_OK ||
+                sqlite3_bind_int64(image.get(), 11,
+                                   static_cast<sqlite3_int64>(roi_revision)) != SQLITE_OK)
+                throw std::runtime_error("SQLite evidence ROI bind failed");
+        } else {
+            for (int index = 7; index <= 11; ++index)
+                if (sqlite3_bind_null(image.get(), index) != SQLITE_OK)
+                    throw std::runtime_error("SQLite evidence ROI NULL bind failed");
+        }
         requireDone(db_, image.get());
         executeSqlUnlocked("COMMIT;");
         return EvidenceInsertResult::Inserted;
@@ -448,7 +923,9 @@ EvidenceInsertResult EventDatabase::insertHallCaptureImage(
     const std::string& original_path,
     const std::string& enhanced_path,
     const std::string& enhancement_type,
-    const std::string& captured_at) {
+    const std::string& captured_at,
+    const snapshot::NormalizedRoi applied_roi,
+    const std::uint64_t roi_revision) {
     if (session_id < 0 || original_path.empty() || captured_at.empty() ||
         (enhancement_type != "HALL_30S" &&
          enhancement_type != "HALL_60S")) {
@@ -481,8 +958,8 @@ EvidenceInsertResult EventDatabase::insertHallCaptureImage(
 
         Statement image(db_,
             "INSERT INTO IMAGE_LOG(session_id,original_image_path,"
-            "enhanced_image_path,enhancement_type,captured_at) "
-            "VALUES(?,?,?,?,?);");
+            "enhanced_image_path,enhancement_type,captured_at,roi_x,roi_y,"
+            "roi_width,roi_height,roi_revision) VALUES(?,?,?,?,?,?,?,?,?,?);");
         image.bindInt64(1, session_id);
         image.bindText(2, original_path);
         if (enhanced_path.empty()) {
@@ -493,6 +970,19 @@ EvidenceInsertResult EventDatabase::insertHallCaptureImage(
         }
         image.bindText(4, enhancement_type);
         image.bindText(5, captured_at);
+        if (roi_revision > 0) {
+            if (sqlite3_bind_double(image.get(), 6, applied_roi.x) != SQLITE_OK ||
+                sqlite3_bind_double(image.get(), 7, applied_roi.y) != SQLITE_OK ||
+                sqlite3_bind_double(image.get(), 8, applied_roi.width) != SQLITE_OK ||
+                sqlite3_bind_double(image.get(), 9, applied_roi.height) != SQLITE_OK ||
+                sqlite3_bind_int64(image.get(), 10,
+                                   static_cast<sqlite3_int64>(roi_revision)) != SQLITE_OK)
+                throw std::runtime_error("SQLite hall ROI bind failed");
+        } else {
+            for (int index = 6; index <= 10; ++index)
+                if (sqlite3_bind_null(image.get(), index) != SQLITE_OK)
+                    throw std::runtime_error("SQLite hall ROI NULL bind failed");
+        }
         requireDone(db_, image.get());
 
         Statement event(db_,

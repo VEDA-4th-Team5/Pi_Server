@@ -153,6 +153,7 @@ int main(int argc, char* argv[]) {
                                 std::string_view, std::string_view) {
             std::lock_guard lock(event_mutex);
             published_events.emplace_back(type);
+            return true;
         });
         parking_timer::ParkingSlotManager timer_manager(
             database, events, 80ms,
@@ -162,6 +163,7 @@ int main(int argc, char* argv[]) {
                            session_id, "OVERSTAY_EVIDENCE")
                     .value_or("");
             });
+        require(timer_manager.start(), "parking timer worker did not start");
 
         event::SystemEventReporter::Config reporter_config;
         reporter_config.duplicate_window = 1s;
@@ -194,7 +196,9 @@ int main(int argc, char* argv[]) {
         std::mutex transition_mutex;
         std::vector<parking::ParkingTransitionResult> capture_transitions;
         parking::EvidenceCaptureWorker::Config evidence_config;
-        evidence_config.overstayDelay = 80ms;
+        // Keep the early-departure scenario independent from scheduler timing:
+        // its assertion must observe only the entry evidence before VACANT.
+        evidence_config.overstayDelay = 10s;
         parking::EvidenceCaptureWorker evidence_worker(
             snapshots, database, evidence_config,
             [&](const parking::EvidenceCaptureResult& result) {
@@ -305,6 +309,8 @@ int main(int argc, char* argv[]) {
         require(database.listSessionImages(static_cast<int>(first->id), first_images) &&
                     first_images.empty(),
                 "canceled overstay evidence was created after VACANT");
+        require(evidence_worker.updateOverstayDelay(80ms) == 0,
+                "canceled session retained an overstay evidence job");
         database::ParkingSlotView slot;
         require(database.getParkingSlot("EV01", slot) &&
                     slot.parking_status == "VACANT",
@@ -384,6 +390,9 @@ int main(int argc, char* argv[]) {
                     return !database.findActiveBySlot("EV01").has_value();
                 }, 1s),
                 "violating session departure did not finish before next entry");
+
+        require(evidence_worker.updateOverstayDelay(10s) == 0,
+                "ended violation session retained an overstay evidence job");
 
         // 일반 차량은 OCR 직후 즉시 위반이며, 출차해도 시작 증거를 보존한다.
         require(service.handleLine("SENSOR:HALL01:OCCUPIED:6"),

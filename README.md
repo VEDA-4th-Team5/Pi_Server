@@ -1,19 +1,21 @@
 # VEDA Smart Parking Pi Server
 
 Hanwha Vision CCTV 기반 스마트 주차 관제 시스템의 Raspberry Pi C++ 서버입니다.
-RTSP, MQTT, OpenCV, Gemini OCR, SQLite 및 Qt 조회 API를 사용합니다.
+MQTT, 선택적 RTSP, Camera Snapshot API, OpenCV, Gemini OCR, SQLite 및
+Qt 연동 API를 사용합니다.
 
 ## 현재 구현
 
-- 카메라 RTSP 영상 수신
+- Camera Snapshot API original/enhanced JPEG 수신(현재 기본 촬영 경로)
+- Snapshot API 비활성/실패 시 선택적 RTSP 최신 프레임 수신
 - MQTT 및 ONVIF Metadata 이벤트 수신
-- 차량·번호판 BestShot 다운로드
+- `BESTSHOT_ENABLED=true`일 때만 차량·번호판 BestShot 다운로드
 - IVA Snapshot과 OpenCV 전처리 이미지 저장
 - Gemini HTTPS 번호판 OCR
 - 로컬 DB 기반 EV / NON_EV / UNKNOWN 판별
 - SQLite 주차 세션·이미지·이벤트 저장
 - Qt용 HTTP/HTTPS 상태·이미지 조회 API
-- 가짜 홀센서 MQTT 입력과 실제 Snapshot·세션·타이머 연결
+- 개발용 홀센서 MQTT 및 STM32 UART 입력과 Snapshot·세션·타이머 연결
 - OCCUPIED 확정 유예시간과 T0+30초/60초 요청형 촬영·OCR scheduler
 - CV5 Snapshot OpenAPI의 동일 프레임 original/enhanced 다운로드 및 OCR 연결
 - 실제 UART line 및 UART 기반 LoRa CRC frame 수신 드라이버
@@ -21,22 +23,20 @@ RTSP, MQTT, OpenCV, Gemini OCR, SQLite 및 Qt 조회 API를 사용합니다.
 - Qt용 주차 상태/위반 MQTT 이벤트 발행
 - 1시간 이전 출차 시 임시 이미지와 IMAGE_LOG 정리
 
-아직 STM32·LoRa 실물 검증, 32면 최종 모델, 화재 처리 및 영상 클립 저장은
-구현되지 않았습니다.
 - 센서 메시지 파서와 주차 상태 단위 테스트
-- STM32 UART 화재 후보 수신 및 Qt MQTT 알림 (초안)
+- STM32 UART 화재 후보 수신, Qt MQTT OPEN/ACKNOWLEDGED/RESOLVED 전이
 
-아직 32면 최종 모델, LoRa 및 영상 클립 저장은 구현되지 않았습니다.
-STM32 실장비는 아직 연결되어 있지 않아 화재 경로는 FIFO 시뮬레이터로만
-검증했습니다.
+현재 운영 프로필은 WiseAI IVA MQTT를 점유 입력으로 사용하고,
+Snapshot API에서 받은 이미지를 Pi에서 ROI crop해 OCR한다. 32면 최종
+모델, LoRa 실물 구간과 3~5초 영상 클립 저장은 아직 완료되지 않았다.
 
 ## 주요 흐름
 
 ```text
 Camera
-→ RTSP / MQTT / BestShot / CV Snapshot OpenAPI
+→ WiseAI MQTT + CV Snapshot API (BestShot/RTSP는 선택 기능)
 → Raspberry Pi C++ Server
-→ 카메라 내부 CV 개선본 다운로드 (기본 비활성, CAP 설치 후 활성)
+→ 카메라 내부 CV 개선본 다운로드 + 슬롯 ROI crop
 → Gemini OCR
 → SQLite 및 이미지 파일 저장
 → Qt HTTP/HTTPS 조회
@@ -178,6 +178,10 @@ OpenCV 화질 개선을 실행하지 않는다. API가 비활성이면 기존 RT
 서버에 즉시 반영되어 다음 촬영부터 적용된다. 상세 설정과 실기기 검증 절차는
 [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md)에 있다.
 
+RTSP metadata의 Vehicle/Plate BestShot 경로는 `BESTSHOT_ENABLED=true`일 때만
+작업 스레드를 시작한다. 기본값은 `false`이며, IVA + Snapshot API
+운영에서는 중복 세션·이미지 경로를 막기 위해 비활성화한다.
+
 가짜 홀센서 입력:
 
 ```bash
@@ -221,13 +225,15 @@ ABI, 권한 설정, `read/write/ioctl/poll` 검증 방법은
 [`docs/PARKING_ALERT_DRIVER.md`](docs/PARKING_ALERT_DRIVER.md)를 참고하십시오.
 ### 화재 알림 (STM32 UART)
 
-기본값은 비활성이며, 다음 환경변수로 켭니다.
+코드 기본값은 비활성이며, 현재 운영 `.env.public`은
+`FIRE_ALARM_ENABLED=true`다. 다음 환경변수로 제어한다.
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `FIRE_ALARM_ENABLED` | `false` | 화재 경로 전체 on/off |
-| `FIRE_UART_DEVICE` | `/dev/ttyAMA0` | STM32 UART 장치. 테스트 시 FIFO 경로 |
-| `FIRE_UART_BAUD` | `115200` | 9600/19200/38400/57600/115200 |
+| `SENSOR_UART_DEVICE` | `/dev/ttyAMA0` | 화재/홀센서가 공유하는 STM32 UART 장치 |
+| `SENSOR_UART_BAUD` | `115200` | 9600/19200/38400/57600/115200 |
+| `SENSOR_UART_RECONNECT_MS` | `1000` | UART 재연결 대기 |
 | `FIRE_TOPIC_PREFIX` | `parking/fire` | 화재 최신 상태 토픽 접두사 |
 | `FIRE_SENSOR_CHANNEL_MAP` | (없음) | `FLAME01=ch01,FLAME02=ch02,...` |
 
@@ -237,7 +243,8 @@ STM32가 아직 연결되지 않은 동안에는 FIFO로 같은 수신 경로를
 tools/fake_fire_sensor.sh --create-fifo /tmp/fake-uart
 
 FIRE_ALARM_ENABLED=true \
-FIRE_UART_DEVICE=/tmp/fake-uart \
+SENSOR_LINK_MODE=uart-line \
+SENSOR_UART_DEVICE=/tmp/fake-uart \
 FIRE_SENSOR_CHANNEL_MAP='FLAME01=ch01,FLAME02=ch02,FLAME03=ch03,FLAME04=ch04' \
   ./cmake-build/pi-server
 
@@ -302,7 +309,7 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 ## 현재 제한
 
 - DB는 최종 목표인 4채널 32면 구조가 아닙니다.
-- BestShot 저장 경로는 아직 채널별 P1~P4로 분리되지 않았습니다.
+- BestShot은 기본 비활성이며 코드 호환성만 유지한다.
 - UART/LoRa 소프트웨어 계층은 구현됐지만 실제 STM32·LoRa 장비 검증은 남아 있습니다.
 - 알람 ACK와 STM32 부저/LED 출력은 아직 없습니다.
 - `/dev/parking_alert`는 구현됐지만 타이머 위반 callback과 32면 bit 매핑은 아직 연결 전입니다.
@@ -313,6 +320,8 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 - [`docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`](docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md): 카메라 MQTT 촬영 요청 목표 규약과 ROI 처리
 - [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md): CV5 카메라 내부 화질 개선 이미지 연동
 - [`docs/IVA_ROI_COORDINATE_TOOL.md`](docs/IVA_ROI_COORDINATE_TOOL.md): 독립 OpenCV 도구로 주차면 ROI 좌표 측정
+- [`docs/HARDWARE_E2E_TEST_GUIDE.md`](docs/HARDWARE_E2E_TEST_GUIDE.md): WiseAI IVA부터 MQTT·촬영·ROI·DB·Qt·출차까지 실기기 E2E 검증
+- [`docs/Pi_Server_Hardware_E2E_Test_Guide.pdf`](docs/Pi_Server_Hardware_E2E_Test_Guide.pdf): 실기기 E2E 테스트 배포·인쇄용 PDF
 - [`docs/GEMINI_OCR_GUIDE.md`](docs/GEMINI_OCR_GUIDE.md): OpenCV 전처리, Gemini HTTPS OCR, DB 반영과 수동 테스트
 - [`docs/UART_LORA_PROTOCOL.md`](docs/UART_LORA_PROTOCOL.md): STM32 UART 및 LoRa frame 규약
 - [`docs/PARKING_ALERT_DRIVER.md`](docs/PARKING_ALERT_DRIVER.md): 전용 Linux Character Device 빌드·ABI·검증

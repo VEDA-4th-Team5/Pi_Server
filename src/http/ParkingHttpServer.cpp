@@ -34,6 +34,7 @@ json evStatus(int is_ev) {
     if (is_ev < 0) return nullptr;
     return is_ev == 1 ? json("EV") : json("NON_EV");
 }
+json roiJson(const snapshot::NormalizedRoi& roi);
 json slotJson(const database::ParkingSlotView& slot) {
     json value = {{"slot_id", slot.slot_id}, {"slot_type", slot.slot_type},
                   {"parking_status", slot.parking_status},
@@ -50,14 +51,20 @@ json slotJson(const database::ParkingSlotView& slot) {
 }
 json imageJson(const database::ImageView& image) {
     const std::string base = "/api/v1/images/" + std::to_string(image.image_id);
-    return {{"image_id", image.image_id},
+    json value = {{"image_id", image.image_id},
         {"session_id", image.session_id < 0 ? json(nullptr) : json(image.session_id)},
         {"original_url", image.original_path.empty() ? json(nullptr) : json(base + "/original")},
         {"enhanced_url", image.enhanced_path.empty() ? json(nullptr) : json(base + "/enhanced")},
         {"enhancement_type", optionalText(image.enhancement_type)},
         {"evidence_reason", optionalText(image.evidence_reason)},
         {"ocr_result", optionalText(image.ocr_result)},
-        {"captured_at", optionalText(image.captured_at)}};
+        {"captured_at", optionalText(image.captured_at)},
+        {"roi", nullptr}, {"roi_revision", nullptr}};
+    if (image.applied_roi && image.roi_revision > 0) {
+        value["roi"] = roiJson(*image.applied_roi);
+        value["roi_revision"] = image.roi_revision;
+    }
+    return value;
 }
 bool isInside(const fs::path& child, const fs::path& parent) {
     auto child_it = child.begin();
@@ -103,10 +110,14 @@ ParkingHttpServer::ParkingHttpServer(database::EventDatabase& database,
     : database_(database), overstay_settings_(overstay_settings),
       roi_settings_(roi_settings),
       config_(std::move(config)) {}
-ParkingHttpServer::~ParkingHttpServer() { stop(); }
+ParkingHttpServer::~ParkingHttpServer() {
+    if (!stop()) std::terminate();
+}
 
 bool ParkingHttpServer::start() {
-    if (server_) return true;
+    std::lock_guard lifecycleLock(lifecycle_mutex_);
+    if (state_ == HttpServerState::Running) return true;
+    if (state_ != HttpServerState::Constructed) return false;
     const bool cert_set = !config_.tls_certificate_path.empty();
     const bool key_set = !config_.tls_private_key_path.empty();
     if (cert_set != key_set) {
@@ -132,41 +143,126 @@ bool ParkingHttpServer::start() {
         uses_tls_ = false;
     }
     registerRoutes();
-    if (!server_->bind_to_port(config_.listen_address, config_.port)) {
+    if (!server_->bind_to_port(config_.listen_address.c_str(), config_.port)) {
         util::logError("HTTP API bind failed: " + config_.listen_address + ":" +
                        std::to_string(config_.port));
         server_.reset();
         return false;
     }
-    worker_ = std::thread([this] {
-        if (!server_->listen_after_bind())
-            util::logError("HTTP API listener stopped with an error");
-    });
+    try {
+        state_ = HttpServerState::Running;
+        worker_ = std::thread([this] {
+            if (!server_->listen_after_bind()) {
+                std::lock_guard lock(lifecycle_mutex_);
+                if (state_ == HttpServerState::Running)
+                    util::logError("HTTP API listener stopped with an error");
+            }
+        });
+    } catch (const std::exception& error) {
+        state_ = HttpServerState::Constructed;
+        server_->stop();
+        server_.reset();
+        util::logError("HTTP API worker start failed: " +
+                       std::string(error.what()));
+        return false;
+    }
     util::logInfo(std::string(uses_tls_ ? "HTTPS" : "HTTP") +
                   " API listening on " + config_.listen_address + ":" +
                   std::to_string(config_.port));
     return true;
 }
-void ParkingHttpServer::stop() {
-    if (server_) server_->stop();
-    if (worker_.joinable()) worker_.join();
-    server_.reset();
+void ParkingHttpServer::closeIngress() noexcept {
+    std::lock_guard stopLock(stop_mutex_);
+    closeIngressLocked();
 }
-bool ParkingHttpServer::usesTls() const { return uses_tls_; }
+
+void ParkingHttpServer::closeIngressLocked() noexcept {
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (state_ == HttpServerState::Stopped) return;
+        request_gate_.close();
+        state_ = HttpServerState::Quiescing;
+    }
+}
+
+void ParkingHttpServer::stopListenerLocked() noexcept {
+    httplib::Server* server{};
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        server = server_.get();
+    }
+    if (server) server->stop();
+}
+
+bool ParkingHttpServer::stop(
+    const std::chrono::milliseconds timeout) noexcept {
+    std::lock_guard stopLock(stop_mutex_);
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (state_ == HttpServerState::Stopped) return true;
+    }
+    closeIngressLocked();
+    stopListenerLocked();
+    if (!request_gate_.waitForDrainedFor(timeout)) {
+        util::logError("HTTP request drain timed out: active=" +
+                       std::to_string(request_gate_.activeCount()));
+        return false;
+    }
+    try {
+        if (worker_.joinable()) worker_.join();
+    } catch (const std::exception& error) {
+        util::logError("HTTP listener join failed: " +
+                       std::string(error.what()));
+        return false;
+    }
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        server_.reset();
+        state_ = HttpServerState::Stopped;
+    }
+    return true;
+}
+bool ParkingHttpServer::usesTls() const {
+    std::lock_guard lock(lifecycle_mutex_);
+    return uses_tls_;
+}
+
+HttpServerState ParkingHttpServer::state() const noexcept {
+    std::lock_guard lock(lifecycle_mutex_);
+    return state_;
+}
 
 void ParkingHttpServer::registerRoutes() {
-    server_->Get("/api/v1/health", [](const httplib::Request&, httplib::Response& res) {
-        sendJson(res, {{"status", "ok"}, {"service", "pi-server"}});
-    });
-    if (overstay_settings_ != nullptr) {
-        const auto get_threshold = [this](const httplib::Request&,
-                                          httplib::Response& res) {
-            const int seconds = overstay_settings_->thresholdSeconds();
-            sendJson(res, {{"thresholdSeconds", seconds},
-                           {"thresholdMinutes", seconds / 60.0},
-                           {"applyPolicy", "ACTIVE_AND_NEW_SESSIONS"}});
+    const auto guarded = [this](auto handler) {
+        return [this, handler = std::move(handler)](
+                   const httplib::Request& request,
+                   httplib::Response& response) mutable {
+            auto lease = request_gate_.tryAcquire();
+            if (!lease) {
+                sendError(response, 503, "SERVER_QUIESCING",
+                          "서버가 종료 중이어서 요청을 처리할 수 없습니다.");
+                return;
+            }
+            handler(request, response);
         };
-        const auto put_threshold = [this](const httplib::Request& req,
+    };
+
+    server_->Get("/api/v1/health", guarded([](const httplib::Request&, httplib::Response& res) {
+        sendJson(res, {{"status", "ok"}, {"service", "pi-server"}});
+    }));
+    if (overstay_settings_ != nullptr) {
+        const auto get_threshold = guarded([this](const httplib::Request&,
+                                          httplib::Response& res) {
+            const auto status = overstay_settings_->status();
+            sendJson(res, {{"thresholdSeconds", status.thresholdSeconds},
+                           {"effectiveSeconds", status.thresholdSeconds},
+                           {"thresholdMinutes", status.thresholdSeconds / 60.0},
+                           {"appliedRevision", status.appliedRevision},
+                           {"runtimeApplied", status.runtimeApplied},
+                           {"runtimeHealthy", status.runtimeHealthy},
+                           {"applyPolicy", "ACTIVE_AND_NEW_SESSIONS"}});
+        });
+        const auto put_threshold = guarded([this](const httplib::Request& req,
                                           httplib::Response& res) {
             json body;
             try {
@@ -202,14 +298,27 @@ void ParkingHttpServer::registerRoutes() {
             }
             const auto result = overstay_settings_->update(static_cast<int>(raw));
             if (!result.success) {
-                sendJson(res, {{"success", false}, {"error", result.error}}, 500);
+                sendJson(res, {{"success", false},
+                               {"requestedSeconds", raw},
+                               {"effectiveSeconds", result.thresholdSeconds},
+                               {"thresholdSeconds", result.thresholdSeconds},
+                               {"appliedRevision", result.appliedRevision},
+                               {"runtimeApplied", result.runtimeApplied},
+                               {"runtimeHealthy", result.runtimeHealthy},
+                               {"applyPolicy", "ACTIVE_AND_NEW_SESSIONS"},
+                               {"error", result.error}}, 503);
                 return;
             }
             sendJson(res, {{"success", true},
+                           {"requestedSeconds", raw},
+                           {"effectiveSeconds", result.thresholdSeconds},
                            {"thresholdSeconds", result.thresholdSeconds},
                            {"thresholdMinutes", result.thresholdSeconds / 60.0},
+                           {"appliedRevision", result.appliedRevision},
+                           {"runtimeApplied", result.runtimeApplied},
+                           {"runtimeHealthy", result.runtimeHealthy},
                            {"applyPolicy", "ACTIVE_AND_NEW_SESSIONS"}});
-        };
+        });
         server_->Get("/api/v1/settings/overstay-threshold", get_threshold);
         server_->Put("/api/v1/settings/overstay-threshold", put_threshold);
         // 초기 요청서 경로도 유지해 Qt 배포 버전 간 호환성을 보장한다.
@@ -218,30 +327,33 @@ void ParkingHttpServer::registerRoutes() {
     }
     if (roi_settings_ != nullptr) {
         server_->Get("/api/v1/settings/parking-slots/roi",
-            [this](const httplib::Request&, httplib::Response& res) {
+            guarded([this](const httplib::Request&, httplib::Response& res) {
                 json items = json::array();
                 for (const auto& setting : roi_settings_->list()) {
                     items.push_back({{"slotId", setting.slotId},
-                                     {"roi", roiJson(setting.roi)}});
+                                     {"roi", roiJson(setting.roi)},
+                                     {"revision", setting.revision}});
                 }
                 sendJson(res, {{"items", items}, {"count", items.size()}});
-            });
+            }));
         server_->Get(
             R"(/api/v1/settings/parking-slots/([^/]+)/roi)",
-            [this](const httplib::Request& req, httplib::Response& res) {
+            guarded([this](const httplib::Request& req, httplib::Response& res) {
                 const std::string slot_id =
                     normalizedSlotId(req.matches[1].str());
-                const auto roi = roi_settings_->roiForSlot(slot_id);
+                const auto roi = roi_settings_->resolveForUse(slot_id);
                 if (!roi) {
                     sendError(res, 404, "SLOT_NOT_FOUND",
                               "ROI가 설정된 주차면을 찾을 수 없습니다.");
                     return;
                 }
-                sendJson(res, {{"slotId", slot_id}, {"roi", roiJson(*roi)}});
-            });
+                sendJson(res, {{"slotId", slot_id},
+                               {"roi", roiJson(roi->value)},
+                               {"revision", roi->revision}});
+            }));
         server_->Put(
             R"(/api/v1/settings/parking-slots/([^/]+)/roi)",
-            [this](const httplib::Request& req, httplib::Response& res) {
+            guarded([this](const httplib::Request& req, httplib::Response& res) {
                 json body;
                 try {
                     body = json::parse(req.body);
@@ -287,10 +399,11 @@ void ParkingHttpServer::registerRoutes() {
                 }
                 sendJson(res, {{"success", true}, {"slotId", slot_id},
                                {"appliedImmediately", true},
+                               {"revision", result.revision},
                                {"roi", roiJson(result.roi)}});
-            });
+            }));
     }
-    server_->Get("/api/v1/parking-slots", [this](const httplib::Request&, httplib::Response& res) {
+    server_->Get("/api/v1/parking-slots", guarded([this](const httplib::Request&, httplib::Response& res) {
         std::vector<database::ParkingSlotView> slots;
         if (!database_.listParkingSlots(slots)) {
             sendError(res, 503, "DATABASE_UNAVAILABLE", "주차면을 조회할 수 없습니다."); return;
@@ -298,15 +411,15 @@ void ParkingHttpServer::registerRoutes() {
         json items = json::array();
         for (const auto& slot : slots) items.push_back(slotJson(slot));
         sendJson(res, {{"items", items}, {"count", items.size()}});
-    });
-    server_->Get(R"(/api/v1/parking-slots/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+    }));
+    server_->Get(R"(/api/v1/parking-slots/([^/]+))", guarded([this](const httplib::Request& req, httplib::Response& res) {
         database::ParkingSlotView slot;
         if (!database_.getParkingSlot(req.matches[1], slot)) {
             sendError(res, 404, "SLOT_NOT_FOUND", "주차면을 찾을 수 없습니다."); return;
         }
         sendJson(res, slotJson(slot));
-    });
-    server_->Get("/api/v1/parking-sessions/active", [this](const httplib::Request&, httplib::Response& res) {
+    }));
+    server_->Get("/api/v1/parking-sessions/active", guarded([this](const httplib::Request&, httplib::Response& res) {
         std::vector<database::ParkingSlotView> slots;
         if (!database_.listParkingSlots(slots)) {
             sendError(res, 503, "DATABASE_UNAVAILABLE", "활성 세션을 조회할 수 없습니다."); return;
@@ -314,8 +427,8 @@ void ParkingHttpServer::registerRoutes() {
         json items = json::array();
         for (const auto& slot : slots) if (slot.session_id >= 0) items.push_back(slotJson(slot));
         sendJson(res, {{"items", items}, {"count", items.size()}});
-    });
-    server_->Get(R"(/api/v1/parking-sessions/([0-9]+)/images)", [this](const httplib::Request& req, httplib::Response& res) {
+    }));
+    server_->Get(R"(/api/v1/parking-sessions/([0-9]+)/images)", guarded([this](const httplib::Request& req, httplib::Response& res) {
         int session_id;
         if (!parsePositiveId(req.matches[1], session_id)) {
             sendError(res, 400, "INVALID_SESSION_ID", "session_id 형식이 잘못되었습니다."); return;
@@ -327,8 +440,8 @@ void ParkingHttpServer::registerRoutes() {
         json items = json::array();
         for (const auto& image : images) items.push_back(imageJson(image));
         sendJson(res, {{"session_id", session_id}, {"items", items}, {"count", items.size()}});
-    });
-    server_->Get(R"(/api/v1/images/([0-9]+)/(original|enhanced))", [this](const httplib::Request& req, httplib::Response& res) {
+    }));
+    server_->Get(R"(/api/v1/images/([0-9]+)/(original|enhanced))", guarded([this](const httplib::Request& req, httplib::Response& res) {
         int image_id;
         if (!parsePositiveId(req.matches[1], image_id)) {
             sendError(res, 400, "INVALID_IMAGE_ID", "image_id 형식이 잘못되었습니다."); return;
@@ -358,8 +471,9 @@ void ParkingHttpServer::registerRoutes() {
         if (!input.good() && !input.eof()) {
             sendError(res, 500, "IMAGE_READ_FAILED", "이미지 파일을 읽지 못했습니다."); return;
         }
-        res.set_content(std::move(body), mimeType(candidate));
-    });
+        const std::string mime_type = mimeType(candidate);
+        res.set_content(std::move(body), mime_type.c_str());
+    }));
     server_->set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404) sendError(res, 404, "ENDPOINT_NOT_FOUND", "API 경로를 찾을 수 없습니다.");
     });

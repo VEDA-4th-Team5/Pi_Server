@@ -1,6 +1,6 @@
 # Test Scenarios
 
-기준일: 2026-07-27
+기준일: 2026-08-12
 
 ## 자동 테스트
 
@@ -10,27 +10,31 @@ cmake --build cmake-build -j2
 ctest --test-dir cmake-build --output-on-failure
 ```
 
-현재 CTest 항목:
+현재 CTest 21개 항목:
 
-1. `parking-domain-test`: 슬롯 구성, 상태 전이, 중복/역순 이벤트
-2. `sensor-parking-pipeline-test`: partial/multi-line 센서 parser와 adapter
-3. `capture-scheduler-test`: SQLite 세션 ID, T0+30/60초, 중복, 출차 취소, 발행 재시도
-4. `parking-occupancy-confirmation-gate-test`: 자동 확정, flap 취소, 단조시계 경과시간
-5. `parking-timer-tests`: EV/PHEV 분류, 중복 입차, 만료, 출차, 복구 및 오류 처리
-6. `hall-timer-integration-test`: 단일 OCCUPIED 자동 확정 → 실제 JPEG → DB/OCR 대역 → 타이머 → 위반 증거 → 조기 정리
-7. `http-api-test`: 슬롯·세션·이미지 API와 data root 경로 보안
-8. `uart-lora-driver-test`: PTY UART 양방향, partial line, LoRa partial/multi frame,
+1. `gemini-ocr-client-test`: Gemini HTTP/JSON/MIME/재시도 계약
+2. `hall-ocr-policy-test`: 30초 우선 OCR, 60초 fallback, UNKNOWN 정책
+3. `plate-illuminator-test`: 야간 LED 점등/해제 정책
+4. `hall-capture-coordinator-test`: SQLite 세션 ID와 이미지·OCR·타이머 연결
+5. `camera-iva-event-test`: WiseAI 다중 notification, Intrusion/Exit, 토큰·슬롯 매핑
+6. `fire-alarm-test`: OPEN → ACKNOWLEDGED → RESOLVED 전이와 중복 억제
+7. `parking-domain-test`: 슬롯 구성, 상태 전이, 중복/역순 이벤트
+8. `sensor-parking-pipeline-test`: partial/multi-line 센서 parser와 adapter
+9. `parking-session-worker-test`: 세션 worker 상태 전이
+10. `capture-scheduler-test`: SQLite 세션 ID, T0+30/60초, 중복, 출차 취소
+11. `parking-occupancy-confirmation-gate-test`: 자동 확정, flap 취소, 단조시계
+12. `uart-lora-driver-test`: PTY UART 양방향, partial line, LoRa partial/multi frame,
    CRC 오류 재동기화, SensorLink callback 및 alert 송신
-9. `system-event-reporter-test`: 비동기 queue, 중복 억제, 저장 재시도와 예외 격리
-10. `evidence-capture-worker-test`: 시작·장기점유 증거, 중복 방지, VACANT 취소,
+13. `system-event-reporter-test`: 비동기 queue, 중복 억제, 저장 재시도와 예외 격리
+14. `check-coordinates-test`: ROI 좌표 변환과 preview 생성
+15. `parking-timer-tests`: EV/PHEV 분류, 만료, 출차, 복구 및 오류 처리
+16. `hall-timer-integration-test`: OCCUPIED → JPEG/DB/OCR → 타이머 → 정리/보존
+17. `camera-iva-occupancy-integration-test`: IVA 입차/출차, 확인 대기, 세션 연결
+18. `evidence-capture-worker-test`: 시작·장기점유 증거, 중복 방지, VACANT 취소,
     파일/DB 실패 시 가짜 행과 고아 파일 방지
-11. `hall-ocr-policy-test`: 30초 우선 OCR, 60초 fallback, 성공 후 재OCR 억제,
-    2회 실패 UNKNOWN 정책
-12. `hall-capture-coordinator-test`: SQLite 세션 ID 유지, 이미지·OCR·타이머 연결
-13. `hall-capture-pipeline-test`: 메모리 RTSP frame → ROI JPEG → IMAGE_LOG,
-    30/60초 중복·종료 세션 차단과 MQTT 발행 실패 격리
-14. `fire-alarm-test`: OPEN → ACKNOWLEDGED → RESOLVED 전이, 잘못된·중복 ACK,
-    반복 DETECTED 및 역순 sequence 억제
+19. `hall-capture-pipeline-test`: Snapshot/RTSP 촬영 port → ROI JPEG → IMAGE_LOG/OCR
+20. `camera-snapshot-api-client-test`: `/startserver`, discovery, generate, JPEG 검증/재시도
+21. `http-api-test`: 슬롯·세션·이미지·설정 API와 data root 경로 보안
 
 `hall-timer-integration-test`는 카메라 대신 메모리의 OpenCV frame을 사용하지만 실제
 `SnapshotStorage`와 SQLite를 사용한다. OCCUPIED 중복 방지, VACANT 시 OCR 취소,
@@ -45,7 +49,7 @@ ctest --test-dir cmake-build --output-on-failure
 
 ## 실기기 수동 검증
 
-1. 카메라 RTSP 연결 후 초기 frame 로그를 확인한다.
+1. `camera snapshot API ready` 로그와 `/images/generate` 촬영을 확인한다.
 2. `parking/v1/events/+`, `parking/v1/state/+`를 구독한다.
 3. `SENSOR:HALL01:OCCUPIED:1`을 `parking/sensor/hall`에 QoS 1로 발행한다.
 4. EV01의 실제 JPEG, ACTIVE 세션, `SLOT_OCCUPIED`를 확인한다.
