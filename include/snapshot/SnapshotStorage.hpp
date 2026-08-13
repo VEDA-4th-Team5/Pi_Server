@@ -64,6 +64,15 @@ public:
         const std::vector<unsigned char>& enhanced_jpeg
     );
 
+    /** @brief 세션이 없는 IVA 이벤트의 original/enhanced JPEG를 ROI로 잘라 저장한다. */
+    StoredImagePair saveCameraApiIvaSnapshot(
+        const std::string& channel_id,
+        const std::string& slot_id,
+        const NormalizedRoi& roi,
+        const std::vector<unsigned char>& original_jpeg,
+        const std::vector<unsigned char>& enhanced_jpeg
+    );
+
 private:
     std::string saveAreaSnapshot(
         const std::shared_ptr<camera::CameraChannel>& channel,

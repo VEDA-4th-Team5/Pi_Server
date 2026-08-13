@@ -2,6 +2,7 @@
 
 #include "app/AppConfig.hpp"
 #include "camera/CameraChannel.hpp"
+#include "camera/CameraSnapshotApiClient.hpp"
 #include "database/EventDatabase.hpp"
 #include "event/CameraEvent.hpp"
 #include "event/IvaOccupancyCoordinator.hpp"
@@ -115,6 +116,8 @@ public:
         std::function<RegularEgressPermit()>;
     using RoiResolver = std::function<std::optional<parking::AppliedParkingRoi>(
         const std::string& slot_id)>;
+    using CameraSnapshotGenerator = std::function<bool(
+        int channel, camera::CameraGeneratedImages& images)>;
 
     MqttEventBridge(
         const app::AppConfig& config,
@@ -139,6 +142,7 @@ public:
     bool bindTransportFactHandler(TransportFactHandler handler);
     bool bindRegularEgressAdmission(RegularEgressAdmission admission);
     bool bindParkingRoiResolver(RoiResolver resolver);
+    bool bindCameraSnapshotGenerator(CameraSnapshotGenerator generator);
 
     /** @brief Broker 연결, topic 구독과 network loop를 시작한다. */
     bool start();
@@ -199,6 +203,7 @@ private:
     TransportFactHandler transport_fact_handler_;
     RegularEgressAdmission regular_egress_admission_;
     RoiResolver roi_resolver_;
+    CameraSnapshotGenerator camera_snapshot_generator_;
 
     notification::TelegramChannelNotifier* telegram_notifier_;
     MqttEndpoint endpoint_;

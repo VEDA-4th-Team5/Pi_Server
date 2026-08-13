@@ -231,6 +231,15 @@ bool MqttEventBridge::bindParkingRoiResolver(RoiResolver resolver) {
     return true;
 }
 
+bool MqttEventBridge::bindCameraSnapshotGenerator(
+    CameraSnapshotGenerator generator) {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (endpoint_.state() != MqttEndpointState::Constructed || !generator)
+        return false;
+    camera_snapshot_generator_ = std::move(generator);
+    return true;
+}
+
 bool MqttEventBridge::start() {
     std::lock_guard lock(lifecycle_mutex_);
     if (config_.fire_alarm_enabled && !fire_ack_handler_) {
@@ -561,11 +570,57 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                            "slot=" + target->slotId);
             return;
         }
-        std::string snapshot_path = snapshot_storage_.saveIvaAreaSnapshot(
-            channel, target->slotId, applied_roi->value);
+        std::string snapshot_path;
         std::string enhanced_path;
-        if (!snapshot_path.empty())
-            enhanced_path = ocr::enhanceIvaSceneImage(snapshot_path);
+        bool camera_api_snapshot_saved = false;
+        if (camera_snapshot_generator_) {
+            int snapshot_api_channel = 0;
+            for (const auto& area : config_.iva_areas) {
+                if (area.slot_id == target->slotId &&
+                    area.area_name == target->areaName &&
+                    area.channel_id == target->channelId) {
+                    snapshot_api_channel = area.snapshot_api_channel;
+                    break;
+                }
+            }
+            camera::CameraGeneratedImages generated;
+            if (camera_snapshot_generator_(snapshot_api_channel, generated)) {
+                const auto paths = snapshot_storage_.saveCameraApiIvaSnapshot(
+                    channel->channel_id, target->slotId, applied_roi->value,
+                    generated.originalJpeg, generated.enhancedJpeg);
+                snapshot_path = paths.originalPath;
+                enhanced_path = paths.enhancedPath;
+                camera_api_snapshot_saved = !snapshot_path.empty() &&
+                    !enhanced_path.empty();
+                if (camera_api_snapshot_saved) {
+                    util::logLine(
+                        "CAMERA_SNAPSHOT_API",
+                        "IVA snapshot stored slot=" + target->slotId +
+                        " area=" + target->areaName +
+                        " channel=" + std::to_string(snapshot_api_channel) +
+                        " run_id=" + generated.runId);
+                }
+            } else {
+                util::logError(
+                    "camera snapshot API IVA capture failed slot=" +
+                    target->slotId + " error=" +
+                    (generated.runId.empty() ? "generator error" :
+                     "empty run result"));
+            }
+        }
+        if (!camera_api_snapshot_saved) {
+            if (camera_snapshot_generator_ &&
+                !config_.camera_snapshot_api_rtsp_fallback) {
+                util::logError(
+                    "IVA snapshot rejected: camera API failed and RTSP "
+                    "fallback is disabled slot=" + target->slotId);
+                return;
+            }
+            snapshot_path = snapshot_storage_.saveIvaAreaSnapshot(
+                channel, target->slotId, applied_roi->value);
+            if (!snapshot_path.empty())
+                enhanced_path = ocr::enhanceIvaSceneImage(snapshot_path);
+        }
         std::string payload_json = event::EventPayloadBuilder::buildJson(
             config_.camera_id, channel->channel_id, camera_event, snapshot_path,
             &*applied_roi);
@@ -595,11 +650,20 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
         // Gemini에는 ROI 원본과 개선본을 함께 보내며, 이후 Plate BestShot OCR이
         // 도착하면 주차 세션의 최종 판독값으로 사용한다.
 
-        std::string qt_topic = config_.qt_event_topic_prefix + "/" +
-            config_.camera_id + "/" + channel->channel_id + "/event";
+        const std::string event_topic =
+            "parking/v1/events/" + target->slotId;
+        const std::string state_topic =
+            "parking/v1/state/" + target->slotId;
         // QoS1 packet identifiers cannot be reused while in flight. QoS0
         // completion callbacks could otherwise alias a durable Fire PUBACK.
-        publish(qt_topic, payload_json, 1, false);
+        const bool event_published =
+            publishQtEvent(event_topic, payload_json, 1, false);
+        const bool state_published =
+            publishQtEvent(state_topic, payload_json, 1, true);
+        if (!event_published || !state_published) {
+            util::logWarn("Qt IVA MQTT publish failed: slot=" +
+                          target->slotId);
+        }
         util::logLine("IVA_SNAPSHOT", "slot=" + target->slotId +
                       " area=" + target->areaName +
                       " rule=" + target->ruleName +

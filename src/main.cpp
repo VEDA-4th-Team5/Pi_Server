@@ -904,6 +904,19 @@ int main() {
         util::logError("MQTT runtime ROI resolver binding failed");
         return 1;
     }
+    if (camera_snapshot_api) {
+        auto* const camera_snapshot_api_target = camera_snapshot_api.get();
+        if (!mqtt_bridge.bindCameraSnapshotGenerator(
+                [camera_snapshot_api_target](
+                    const int channel,
+                    camera::CameraGeneratedImages& images) {
+                    return camera_snapshot_api_target != nullptr &&
+                        camera_snapshot_api_target->generate(channel, images);
+                })) {
+            util::logError("MQTT camera snapshot generator binding failed");
+            return 1;
+        }
+    }
     capture_mqtt_bridge = &mqtt_bridge;
 
     std::shared_ptr<event::FireAlarmService> fire_alarm_service;

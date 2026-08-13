@@ -245,6 +245,83 @@ StoredImagePair SnapshotStorage::saveCameraApiHallCapture(
     return {original_path.string(), enhanced_path.string()};
 }
 
+StoredImagePair SnapshotStorage::saveCameraApiIvaSnapshot(
+    const std::string& channel_id,
+    const std::string& slot_id,
+    const NormalizedRoi& roi,
+    const std::vector<unsigned char>& original_jpeg,
+    const std::vector<unsigned char>& enhanced_jpeg
+) {
+    if (channel_id.empty() || slot_id.empty() || original_jpeg.empty() ||
+        enhanced_jpeg.empty()) {
+        util::logError("camera API IVA snapshot contains an empty field or JPEG");
+        return {};
+    }
+    const auto cropped_original = cropJpeg(original_jpeg, roi);
+    const auto cropped_enhanced = cropJpeg(enhanced_jpeg, roi);
+    if (!cropped_original || !cropped_enhanced) {
+        util::logError("camera API IVA ROI crop failed: slot=" + slot_id);
+        return {};
+    }
+
+    const fs::path iva_dir = fs::path(snapshot_dir_) /
+        channelDirectoryName(channel_id) / slot_id / "events" / "iva";
+    const fs::path original_dir = iva_dir / "original";
+    const fs::path enhanced_dir = iva_dir / "enhanced";
+    std::error_code error;
+    fs::create_directories(original_dir, error);
+    if (error) {
+        util::logError("camera API IVA original directory create failed: " +
+                       error.message());
+        return {};
+    }
+    fs::create_directories(enhanced_dir, error);
+    if (error) {
+        util::logError("camera API IVA enhanced directory create failed: " +
+                       error.message());
+        return {};
+    }
+
+    const std::string unique = util::nowStringForFilename() + "_" +
+        std::to_string(next_file_sequence_.fetch_add(1));
+    const std::string prefix = "slot_" + slot_id +
+        "_IVA_CAMERA_API_" + unique;
+    const fs::path original_path = original_dir / (prefix + "_original.jpg");
+    const fs::path enhanced_path = enhanced_dir / (prefix + "_enhanced.jpg");
+    const fs::path original_temp = original_path.string() + ".tmp";
+    const fs::path enhanced_temp = enhanced_path.string() + ".tmp";
+
+    if (!writeBytes(original_temp, *cropped_original) ||
+        !writeBytes(enhanced_temp, *cropped_enhanced)) {
+        fs::remove(original_temp, error);
+        fs::remove(enhanced_temp, error);
+        util::logError("camera API IVA JPEG file write failed: slot=" +
+                       slot_id);
+        return {};
+    }
+    fs::rename(original_temp, original_path, error);
+    if (error) {
+        const std::string message = error.message();
+        std::error_code ignored;
+        fs::remove(original_temp, ignored);
+        fs::remove(enhanced_temp, ignored);
+        util::logError("camera API IVA original JPEG commit failed: " +
+                       message);
+        return {};
+    }
+    fs::rename(enhanced_temp, enhanced_path, error);
+    if (error) {
+        const std::string message = error.message();
+        std::error_code ignored;
+        fs::remove(original_path, ignored);
+        fs::remove(enhanced_temp, ignored);
+        util::logError("camera API IVA enhanced JPEG commit failed: " +
+                       message);
+        return {};
+    }
+    return {original_path.string(), enhanced_path.string()};
+}
+
 std::string SnapshotStorage::saveAreaSnapshot(
     const std::shared_ptr<camera::CameraChannel>& channel,
     const std::string& slot_id,
