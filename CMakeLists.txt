@@ -248,6 +248,7 @@ add_executable(uart-lora-driver-test
     src/device/UartDriver.cpp
     src/device/LoRaDriver.cpp
     src/device/SensorLinkManager.cpp
+    src/sensor/SensorProtocolParser.cpp
     src/event/SystemEventReporter.cpp
     src/util/StringUtil.cpp
     src/util/Logger.cpp)

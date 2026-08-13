@@ -9,6 +9,12 @@
 
 namespace sensor {
 
+// STM32가 재부팅하면 legacy 카운터가 1부터 다시 시작한다. 직전 값보다 이만큼
+// "크게" 줄어들면 역순 프레임이 아니라 재부팅으로 보고 새 카운터를 받아들인다.
+// 무선 구간에서 이 정도로 되돌아가는 재정렬은 일어나지 않는다는 것이 LoRa 규격
+// v1.1의 전제다.
+inline constexpr std::uint64_t kLegacySequenceRebootDropThreshold = 1000;
+
 enum class SensorSequenceMode {
     Unseen,
     Legacy,
@@ -67,6 +73,10 @@ struct SensorSequenceDecision {
                     "duplicate sensor sequence"};
         }
         if (*fact.sequence < *state.lastSequence) {
+            if (*state.lastSequence - *fact.sequence >
+                kLegacySequenceRebootDropThreshold) {
+                return {SensorSequenceDecisionCode::Accept, {}};
+            }
             return {SensorSequenceDecisionCode::Stale,
                     "stale sensor sequence"};
         }

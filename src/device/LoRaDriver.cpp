@@ -83,7 +83,8 @@ std::vector<LoRaFrame> LoRaDriver::consume(
         }
         buffer_.erase(buffer_.begin(), sof);
         if (buffer_.size() < 10) break;
-        if (buffer_[2] != kVersion) {
+        const std::uint8_t version = buffer_[2];
+        if (version != kVersionLegacy && version != kVersionNodeAware) {
             ++rejected_frames_;
             buffer_.erase(buffer_.begin());
             continue;
@@ -105,6 +106,7 @@ std::vector<LoRaFrame> LoRaDriver::consume(
             continue;
         }
         LoRaFrame frame;
+        frame.version = version;
         frame.type = static_cast<LoRaMessageType>(buffer_[3]);
         frame.sequence = readU32(buffer_.data() + 4);
         frame.payload.assign(buffer_.begin() + 10,
@@ -119,6 +121,23 @@ bool LoRaDriver::send(const LoRaFrame& frame, std::string* error) {
     try {
         const auto encoded = encode(frame);
         return uart_.writeAll(encoded, error);
+    } catch (const std::exception& exception) {
+        if (error != nullptr) *error = exception.what();
+        return false;
+    }
+}
+
+bool LoRaDriver::sendTo(const LoRaDestination& destination,
+                        const LoRaFrame& frame, std::string* error) {
+    try {
+        auto encoded = encode(frame);
+        std::vector<std::uint8_t> out;
+        out.reserve(3 + encoded.size());
+        out.push_back(destination.addressHigh);
+        out.push_back(destination.addressLow);
+        out.push_back(destination.channel);
+        out.insert(out.end(), encoded.begin(), encoded.end());
+        return uart_.writeAll(out, error);
     } catch (const std::exception& exception) {
         if (error != nullptr) *error = exception.what();
         return false;
