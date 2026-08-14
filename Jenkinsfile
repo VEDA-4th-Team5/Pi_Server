@@ -24,10 +24,14 @@ pipeline {
         }
         stage('Deploy') {
             when {
-                expression { env.GIT_BRANCH == 'origin/main' }
+                expression {
+                    env.GIT_BRANCH == 'origin/main' ||
+                    env.GIT_BRANCH == 'origin/release' ||
+                    env.GIT_BRANCH.startsWith('origin/release/')
+                }
             }
             steps {
-                sh 'cp cmake-build/pi-server /home/hun/Pi_server_develop/cmake-build/pi-server'
+                sh 'cp cmake-build/pi-server /home/vedaproject/VEDA_FINAL_PROJECT/Pi_Server_develop/cmake-build/pi-server'
                 sh 'sudo systemctl restart pi-server'
                 sh 'sleep 3 && sudo systemctl status pi-server'
             }
