@@ -466,13 +466,13 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                 util::logError("IVA occupancy handler is not configured");
                 return;
             }
-            // 원본 WiseAI 관측만 점유를 변경한다. 정확한 소스 시각과 객체
-            // 식별자가 없으면 broker 재전송과 새 차량 생애주기를 구별할 수 없다.
-            if (!camera_event.timestamp_from_source ||
-                camera_event.object_id.empty()) {
+            // 원본 WiseAI 관측만 점유를 변경한다. 고정된 주차면의 점유는
+            // camera/token/rule 영역 상태로 판단하며 ObjectId는 진단용
+            // 메타데이터일 뿐 점유 생애주기의 식별자로 사용하지 않는다.
+            if (!camera_event.timestamp_from_source) {
                 util::logWarn(
-                    "IVA occupancy rejected: source timestamp/object identity "
-                    "is missing topic=" + raw_topic);
+                    "IVA occupancy rejected: source timestamp is missing "
+                    "topic=" + raw_topic);
                 return;
             }
             const auto source_time = parseCameraUtc(camera_event.timestamp);
@@ -493,11 +493,10 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
             signal.authoritativeExit = true;
             signal.occupancyAuthority = true;
             signal.sourceIdentity = stableEventIdentity(
-                raw_topic, camera_event.raw_payload,
+                raw_topic, {},
                 target->slotId + "|" + camera_event.video_source_token +
-                    "|" + target->ruleName + "|" +
-                    camera_event.object_id + "|" + camera_event.action + "|" +
-                    camera_event.timestamp);
+                    "|" + target->ruleName + "|" + camera_event.action +
+                    "|" + camera_event.timestamp);
             signal.occurredAt = *source_time;
             signal.occurredAtFromSource = true;
             if (!iva_occupancy_handler_(signal)) {

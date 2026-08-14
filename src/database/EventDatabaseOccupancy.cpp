@@ -1212,13 +1212,6 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 area_key.empty()) {
                 throw std::invalid_argument("camera area topology is missing");
             }
-            if ((action == "INTRUSION" ||
-                 (action == "EXIT" && authoritative_exit)) &&
-                observation_object_id.empty()) {
-                throw std::invalid_argument(
-                    "authoritative camera observation has no ObjectId");
-            }
-
             if (!occupancy_authority) {
                 if (action != "INTRUSION" ||
                     observation_object_id.empty()) {
@@ -1268,20 +1261,22 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 throw std::runtime_error(
                     "camera observation state lookup failed");
 
-            const auto normalize_tracks = [&areas](const std::string& key)
-                -> nlohmann::json& {
-                auto& tracks = areas[key];
-                if (tracks.is_null()) tracks = nlohmann::json::array();
-                if (tracks.is_boolean()) {
-                    const bool legacy_active = tracks.get<bool>();
-                    tracks = nlohmann::json::array();
-                    if (legacy_active) tracks.push_back("__legacy_active__");
+            const auto area_is_active = [&areas](const std::string& key) {
+                auto& state = areas[key];
+                if (state.is_null()) {
+                    state = false;
+                    return false;
                 }
-                if (!tracks.is_array()) {
-                    throw std::runtime_error(
-                        "camera track state has an invalid shape");
+                if (state.is_boolean()) return state.get<bool>();
+                if (state.is_array()) {
+                    // 이전 버전의 ObjectId 배열은 영역 활성 여부로만
+                    // 축약한다. 비어 있지 않은 배열은 활성 영역이다.
+                    const bool active = !state.empty();
+                    state = active;
+                    return active;
                 }
-                return tracks;
+                throw std::runtime_error(
+                    "camera area state has an invalid shape");
             };
 
             const auto active_at_observation = action == "EXIT"
@@ -1300,24 +1295,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 outcome.code = parking::CommittedOccupancyCode::NoChange;
                 outcome.message = "camera action ignored by occupancy policy";
             } else if (action == "INTRUSION") {
-                const std::string& object_id = observation_object_id;
-                const std::string track_id = object_id.empty()
-                    ? "__area_active__" : object_id;
-                auto& tracks = normalize_tracks(area_key);
-                // A legacy boolean state has no object identity. The first
-                // exact observation transfers ownership to that track instead
-                // of leaving an immortal sentinel behind.
-                nlohmann::json exact_tracks = nlohmann::json::array();
-                for (const auto& track : tracks) {
-                    if (!track.is_string() ||
-                        track.get<std::string>() != "__legacy_active__") {
-                        exact_tracks.push_back(track);
-                    }
-                }
-                tracks = std::move(exact_tracks);
-                const bool changed = std::find(
-                    tracks.begin(), tracks.end(), track_id) == tracks.end();
-                if (changed) tracks.push_back(track_id);
+                const bool changed = !area_is_active(area_key);
+                areas[area_key] = true;
                 if (changed || observed_state != "OCCUPIED") ++generation;
                 Statement supersede(db_,
                     "UPDATE OCCUPANCY_EXIT_DEADLINE SET state='SUPERSEDED',"
@@ -1343,9 +1322,7 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                     attempt_id = "occupancy:" + command_id;
                     outcome.sessionId = create_session(
                         attempt_id, "CAMERA_IVA_OCCUPIED",
-                        "area=" + area_key + " object=" +
-                            payload.value("object_id", "") +
-                            " command=" + command_id);
+                        "area=" + area_key + " command=" + command_id);
                     outcome.code =
                         parking::CommittedOccupancyCode::SessionStarted;
                     outcome.message = "camera occupancy session committed";
@@ -1355,27 +1332,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 outcome.correlationId = commit_correlation(
                     attempt_id, outcome.sessionId);
             } else if (action == "EXIT") {
-                const std::string& object_id = observation_object_id;
-                auto& tracks = normalize_tracks(area_key);
-                const auto before = tracks.size();
-                if (object_id.empty()) {
-                    tracks = nlohmann::json::array();
-                } else {
-                    nlohmann::json retained = nlohmann::json::array();
-                    for (const auto& track : tracks) {
-                        if (!track.is_string()) {
-                            throw std::runtime_error(
-                                "camera track state contains a non-string id");
-                        }
-                        const auto stored_track = track.get<std::string>();
-                        if (stored_track != object_id &&
-                            stored_track != "__legacy_active__") {
-                            retained.push_back(track);
-                        }
-                    }
-                    tracks = std::move(retained);
-                }
-                const bool changed = tracks.size() != before;
+                const bool changed = area_is_active(area_key);
+                areas[area_key] = false;
                 if (changed) ++generation;
                 bool all_known = true;
                 bool any_active = false;
@@ -1385,7 +1343,7 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                         all_known = false;
                         continue;
                     }
-                    any_active = any_active || !normalize_tracks(key).empty();
+                    any_active = any_active || area_is_active(key);
                 }
                 const auto active = active_at_observation;
                 if (!active || !all_known || any_active) {

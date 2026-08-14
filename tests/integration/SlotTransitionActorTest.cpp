@@ -258,6 +258,23 @@ parking::SlotTransitionCommand hybridCameraCommand(
     return command;
 }
 
+parking::SlotTransitionCommand cameraAreaCommand(
+    const std::string& command_id,
+    const std::string& action,
+    const std::string& object_id,
+    const std::string& area_key,
+    const std::vector<std::string>& configured_areas,
+    const std::int64_t occurred_epoch_ms,
+    const std::int64_t deadline_epoch_ms) {
+    auto command = cameraCommand(command_id, action, object_id,
+                                 occurred_epoch_ms, deadline_epoch_ms);
+    auto payload = nlohmann::json::parse(command.payloadJson);
+    payload["area_key"] = area_key;
+    payload["configured_areas"] = configured_areas;
+    command.payloadJson = payload.dump();
+    return command;
+}
+
 parking::SlotTransitionActor makeActor(
     database::SessionTransitionStore& store) {
     return parking::SlotTransitionActor(
@@ -1372,7 +1389,7 @@ void testEffectFailureDoesNotBlockAuthoritativeVacant() {
             "nonblocking-effect actor did not stop");
 }
 
-void testCameraObjectOverlapAndLegacyTakeover() {
+void testCameraAreaStateIgnoresObjectIdentity() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     initialize(database);
@@ -1385,8 +1402,8 @@ void testCameraObjectOverlapAndLegacyTakeover() {
         "camera-overlap-a-in", "INTRUSION", "object-A", base, 0);
     const auto object_b = cameraCommand(
         "camera-overlap-b-in", "INTRUSION", "object-B", base + 10, 0);
-    const auto object_a_exit = cameraCommand(
-        "camera-overlap-a-out", "EXIT", "object-A", base + 20, future);
+    const auto object_c_exit = cameraCommand(
+        "camera-overlap-c-out", "EXIT", "object-C", base + 20, future);
     require(store.admit(object_a, 100).accepted(),
             "object A admission failed");
     require(store.apply(object_a.commandId).code ==
@@ -1396,38 +1413,108 @@ void testCameraObjectOverlapAndLegacyTakeover() {
             "object B admission failed");
     require(store.apply(object_b.commandId).code ==
                 parking::CommittedOccupancyCode::NoChange,
-            "object B did not join the active area set");
-    require(store.admit(object_a_exit, 100).accepted(),
-            "object A exit admission failed");
-    require(store.apply(object_a_exit.commandId).code ==
-                parking::CommittedOccupancyCode::NoChange,
-            "object A exit ignored the still-active object B");
-    require(probe.integer(
-                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
-                "slot_id='EV01' AND state='SCHEDULED';") == 0,
-            "object A exit scheduled departure while object B remained");
+            "object B changed the already-active area");
     require(probe.text(
                 "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
-                "WHERE slot_id='EV01';") == "{\"IVA1\":[\"object-B\"]}",
-            "camera reducer did not retain the exact active object set");
-
-    // Simulate an old database whose area state was a boolean. The first
-    // exact observation must take over that anonymous state, otherwise its
-    // sentinel can keep the slot occupied forever.
-    probe.execute(
-        "UPDATE IVA_SLOT_OBSERVATION_STATE SET "
-        "area_states_json='{\"IVA1\":true}' WHERE slot_id='EV01';");
-    const auto takeover_exit = cameraCommand(
-        "camera-legacy-b-out", "EXIT", "object-B", base + 30, future);
-    require(store.admit(takeover_exit, 100).accepted(),
-            "legacy takeover exit admission failed");
-    require(store.apply(takeover_exit.commandId).code ==
+                "WHERE slot_id='EV01';") == "{\"IVA1\":true}",
+            "camera reducer retained ObjectIds instead of area state");
+    require(store.admit(object_c_exit, 100).accepted(),
+            "object C exit admission failed");
+    require(store.apply(object_c_exit.commandId).code ==
                 parking::CommittedOccupancyCode::ExitScheduled,
-            "legacy sentinel survived the first exact EXIT after upgrade");
+            "area exit depended on the intrusion ObjectId");
     require(probe.integer(
                 "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
                 "slot_id='EV01' AND state='SCHEDULED';") == 1,
-            "exact final object exit did not persist its deadline");
+            "area exit did not schedule departure");
+    require(probe.text(
+                "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
+                "WHERE slot_id='EV01';") == "{\"IVA1\":false}",
+            "camera reducer did not persist area-level vacancy");
+
+    // Simulate the previous ObjectId-array format. An EXIT with a different
+    // or missing ObjectId must still clear the fixed parking area.
+    probe.execute(
+        "UPDATE OCCUPANCY_EXIT_DEADLINE SET state='SUPERSEDED' "
+        "WHERE slot_id='EV01';");
+    probe.execute(
+        "UPDATE IVA_SLOT_OBSERVATION_STATE SET "
+        "area_states_json='{\"IVA1\":[\"stale-object\"]}',"
+        "observed_state='OCCUPIED' WHERE slot_id='EV01';");
+    const auto takeover_exit = cameraCommand(
+        "camera-legacy-objectless-out", "EXIT", "", base + 30, future);
+    require(store.admit(takeover_exit, 100).accepted(),
+            "legacy objectless exit admission failed");
+    require(store.apply(takeover_exit.commandId).code ==
+                parking::CommittedOccupancyCode::ExitScheduled,
+            "legacy ObjectId array survived an area EXIT");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
+                "slot_id='EV01' AND state='SCHEDULED';") == 1,
+            "objectless area EXIT did not persist its deadline");
+    require(probe.text(
+                "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
+                "WHERE slot_id='EV01';") == "{\"IVA1\":false}",
+            "legacy ObjectId state was not normalized to area state");
+}
+
+void testCameraAreaStatePreservesMultiAreaOr() {
+    TemporaryDatabase temporary;
+    database::EventDatabase database(temporary.path);
+    initialize(database);
+    SqliteProbe probe(temporary.path);
+    database::SessionTransitionStore store(database);
+    const auto base = nowEpochMs() - 1000;
+    const auto future = nowEpochMs() + 1000;
+    const std::vector<std::string> configured{"IVA1", "IVA2"};
+
+    const auto area_one_in = cameraAreaCommand(
+        "camera-area-one-in", "INTRUSION", "object-A", "IVA1",
+        configured, base, 0);
+    const auto area_two_in = cameraAreaCommand(
+        "camera-area-two-in", "INTRUSION", "object-B", "IVA2",
+        configured, base + 10, 0);
+    const auto area_one_out = cameraAreaCommand(
+        "camera-area-one-out", "EXIT", "object-C", "IVA1",
+        configured, base + 20, future);
+    const auto area_two_out = cameraAreaCommand(
+        "camera-area-two-out", "EXIT", "", "IVA2",
+        configured, base + 30, future);
+
+    require(store.admit(area_one_in, 100).accepted(),
+            "area one intrusion admission failed");
+    require(store.apply(area_one_in.commandId).code ==
+                parking::CommittedOccupancyCode::SessionStarted,
+            "area one intrusion did not start a session");
+    require(store.admit(area_two_in, 100).accepted(),
+            "area two intrusion admission failed");
+    require(store.apply(area_two_in.commandId).code ==
+                parking::CommittedOccupancyCode::NoChange,
+            "area two intrusion created a duplicate session");
+    require(store.admit(area_one_out, 100).accepted(),
+            "area one exit admission failed");
+    require(store.apply(area_one_out.commandId).code ==
+                parking::CommittedOccupancyCode::NoChange,
+            "area one exit ignored the still-active area two");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
+                "slot_id='EV01' AND state='SCHEDULED';") == 0,
+            "one-area exit scheduled departure while another area was active");
+    require(probe.text(
+                "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
+                "WHERE slot_id='EV01';") ==
+                "{\"IVA1\":false,\"IVA2\":true}",
+            "multi-area OR state was not persisted");
+
+    require(store.admit(area_two_out, 100).accepted(),
+            "area two objectless exit admission failed");
+    require(store.apply(area_two_out.commandId).code ==
+                parking::CommittedOccupancyCode::ExitScheduled,
+            "final area exit did not schedule departure");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
+                "slot_id='EV01' AND state='SCHEDULED';") == 1,
+            "final area exit did not persist one deadline");
 }
 
 void testQueuedIntrusionWinsBeforeDeadlineLinearization() {
@@ -1969,7 +2056,8 @@ int main() {
         testSameSlotOrdinalOccupiedVacantOccupied();
         testCommittedEffectReplaysAfterRestart();
         testEffectFailureDoesNotBlockAuthoritativeVacant();
-        testCameraObjectOverlapAndLegacyTakeover();
+        testCameraAreaStateIgnoresObjectIdentity();
+        testCameraAreaStatePreservesMultiAreaOr();
         testQueuedIntrusionWinsBeforeDeadlineLinearization();
         testOverdueHallConfirmationPrecedesVacant();
         testHybridOrUsesOneSessionAndSourceAwareExit();

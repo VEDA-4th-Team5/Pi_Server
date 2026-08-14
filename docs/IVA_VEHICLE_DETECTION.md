@@ -93,10 +93,10 @@ data/snapshots/ch1/
    ├─ occupancy_start/
    │  ├─ original/
    │  └─ enhanced/
-   ├─ hall_30s/
+   ├─ occupied_30s/
    │  ├─ original/
    │  └─ enhanced/
-   ├─ hall_60s/
+   ├─ occupied_60s/
    │  ├─ original/
    │  └─ enhanced/
    └─ overstay/

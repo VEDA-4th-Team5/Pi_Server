@@ -272,8 +272,8 @@ data/
 │   └── ch1/
 │       └── EV01~EV04/
 │           ├── occupancy_start/
-│           ├── hall_30s/
-│           ├── hall_60s/
+│           ├── occupied_30s/
+│           ├── occupied_60s/
 │           └── overstay/
 └── db/
     └── parking.db

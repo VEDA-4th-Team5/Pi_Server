@@ -200,12 +200,12 @@ Camera full Snapshot
 
 ```text
 data/snapshots/ch1/EV01/
-├── hall_30s/
-│   ├── ..._HALL_30S_original.jpg
-│   └── ..._HALL_30S_enhanced.jpg
-└── hall_60s/
-    ├── ..._HALL_60S_original.jpg
-    └── ..._HALL_60S_enhanced.jpg
+├── occupied_30s/
+│   ├── original/..._HALL_30S_original.jpg
+│   └── enhanced/..._HALL_30S_enhanced.jpg
+└── occupied_60s/
+    ├── original/..._HALL_60S_original.jpg
+    └── enhanced/..._HALL_60S_enhanced.jpg
 ```
 
 `IMAGE_LOG.enhancement_type` 제안:

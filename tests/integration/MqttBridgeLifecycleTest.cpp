@@ -444,7 +444,7 @@ void testRegularPermitCannotCrossReconnectEpoch() {
     require(bridge.stop(), "epoch permit bridge stop failed");
 }
 
-void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
+void testCameraIvaUsesSourceTimeAndAreaIdentity() {
     auto config = fireConfig();
     config.fire_alarm_enabled = false;
     config.parking_occupancy_source = "HYBRID_OR";
@@ -496,7 +496,7 @@ void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
                 received[0].occupancyAuthority &&
                 !received[0].sourceIdentity.empty() &&
                 received[0].sourceIdentity != received[1].sourceIdentity,
-            "bridge lost exact ObjectId/source event identity");
+            "bridge lost diagnostic ObjectId or area event identity");
 
     fake->emitRaw(
         topic,
@@ -504,8 +504,11 @@ void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
     fake->emitRaw(
         topic,
         R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"name1","slot_id":"EV01","event_type":"IVA_AREA","action":"INTRUSION","active":true,"object_id":"41808"})");
-    require(received.size() == 2,
-            "timestampless or objectless publication reached occupancy");
+    require(received.size() == 3 &&
+                received.back().action == event::IvaOccupancyAction::Exit &&
+                received.back().objectId.empty() &&
+                received.back().occurredAtFromSource,
+            "objectless source event did not reach area occupancy");
     fake->emitRaw(config.hall_mqtt_topic, "SENSOR:HALL01:OCCUPIED:1");
     require(hall_received.size() == 1 &&
                 hall_received.front() == "SENSOR:HALL01:OCCUPIED:1",
@@ -649,7 +652,7 @@ int main() {
         testProductionBridgeRejectsMissingFireTarget();
         testHeldProductionFireAckOutlivesShutdownLease();
         testRegularPermitCannotCrossReconnectEpoch();
-        testCameraIvaUsesSourceTimeAndExactObjectIdentity();
+        testCameraIvaUsesSourceTimeAndAreaIdentity();
         testProductionBridgeAndActorOrderBothSidesOfDeadline();
         std::cout << "MQTT bridge lifecycle integration tests passed\n";
         return EXIT_SUCCESS;

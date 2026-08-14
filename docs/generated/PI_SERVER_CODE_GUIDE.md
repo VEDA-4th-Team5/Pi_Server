@@ -286,10 +286,10 @@ WiseAI IVA MQTT → Snapshot API → ROI crop → Gemini OCR이다.
 ```text
 data/snapshots/
 └── ch1/
-    ├── EV01/{occupancy_start,hall_30s,hall_60s,overstay}/
-    ├── EV02/{occupancy_start,hall_30s,hall_60s,overstay}/
-    ├── EV03/{occupancy_start,hall_30s,hall_60s,overstay}/
-    └── EV04/{occupancy_start,hall_30s,hall_60s,overstay}/
+    ├── EV01/{occupancy_start,occupied_30s,occupied_60s,overstay}/
+    ├── EV02/{occupancy_start,occupied_30s,occupied_60s,overstay}/
+    ├── EV03/{occupancy_start,occupied_30s,occupied_60s,overstay}/
+    └── EV04/{occupancy_start,occupied_30s,occupied_60s,overstay}/
 
 data/bestshots/
 ├── vehicle/

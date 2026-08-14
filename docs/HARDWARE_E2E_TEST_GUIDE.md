@@ -287,10 +287,10 @@ find data/snapshots/ch1/EV02 -type f -printf '%TY-%Tm-%Td %TH:%TM:%TS %p\n' | so
 data/snapshots/ch1/EV02/
 ├─ occupancy_start/original/
 ├─ occupancy_start/enhanced/
-├─ hall_30s/original/
-├─ hall_30s/enhanced/
-├─ hall_60s/original/
-├─ hall_60s/enhanced/
+├─ occupied_30s/original/
+├─ occupied_30s/enhanced/
+├─ occupied_60s/original/
+├─ occupied_60s/enhanced/
 └─ overstay/{original,enhanced}/
 ```
 

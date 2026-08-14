@@ -83,7 +83,13 @@ int main() {
         require(fs::path(croppedPair.originalPath).parent_path().filename() ==
                         "original" &&
                     fs::path(croppedPair.enhancedPath).parent_path().filename() ==
-                        "enhanced",
+                        "enhanced" &&
+                    fs::path(croppedPair.originalPath)
+                            .parent_path().parent_path().filename() ==
+                        "occupied_30s" &&
+                    fs::path(croppedPair.enhancedPath)
+                            .parent_path().parent_path().filename() ==
+                        "occupied_30s",
                 "camera API original/enhanced directories were not separated");
         const cv::Mat croppedOriginal = cv::imread(croppedPair.originalPath);
         const cv::Mat croppedEnhanced = cv::imread(croppedPair.enhancedPath);
