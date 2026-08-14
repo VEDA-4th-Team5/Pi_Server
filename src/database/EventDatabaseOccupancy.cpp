@@ -480,11 +480,13 @@ std::size_t EventDatabase::admitDueSlotDeadlines(
             std::int64_t sessionId{};
             std::int64_t generation{};
             std::int64_t dueAt{};
+            std::string occupancyPolicy;
         };
         std::vector<Due> due;
         Statement select(db_,
             "SELECT deadline_id,slot_id,occupancy_attempt_id,"
-            "expected_session_id,observation_generation,due_at_epoch_ms "
+            "expected_session_id,observation_generation,due_at_epoch_ms,"
+            "occupancy_policy "
             "FROM OCCUPANCY_EXIT_DEADLINE WHERE state='SCHEDULED' "
             "AND due_at_epoch_ms<=? ORDER BY due_at_epoch_ms,deadline_id "
             ";");
@@ -504,7 +506,8 @@ std::size_t EventDatabase::admitDueSlotDeadlines(
                            columnText(select.get(), 2),
                            sqlite3_column_int64(select.get(), 3),
                            sqlite3_column_int64(select.get(), 4),
-                           sqlite3_column_int64(select.get(), 5)});
+                           sqlite3_column_int64(select.get(), 5),
+                           columnText(select.get(), 6)});
             if (due.size() >= available) break;
         }
 
@@ -522,7 +525,8 @@ std::size_t EventDatabase::admitDueSlotDeadlines(
                 {"deadline_id", item.deadlineId},
                 {"expected_session_id", item.sessionId},
                 {"observation_generation", item.generation},
-                {"occupancy_attempt_id", item.attemptId}};
+                {"occupancy_attempt_id", item.attemptId},
+                {"occupancy_policy", item.occupancyPolicy}};
             Statement insert(db_,
                 "INSERT OR IGNORE INTO OCCUPANCY_COMMAND_INBOX("
                 "command_id,slot_id,source_kind,sensor_id,source_identity,"
@@ -727,18 +731,25 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
 
         const auto occurred_epoch_ms = payload.value<std::int64_t>(
             "occurred_at_epoch_ms", durable.command.dueAtEpochMs);
+        const bool hybrid_or =
+            payload.value("occupancy_policy", "") == "HYBRID_OR";
 
         struct ActiveSession {
             std::int64_t id{-1};
             std::string attemptId;
             std::int64_t entryEpochMs{};
             std::string entryTime;
+            bool hallConfirmed{};
+            bool ivaConfirmed{};
+            bool hallOccupied{};
+            bool ivaOccupied{};
         };
         const auto find_active = [&]() -> std::optional<ActiveSession> {
             Statement active(db_,
                 "SELECT session_id,COALESCE(occupancy_attempt_id,''),"
                 "COALESCE(entry_time_epoch_ms,CAST((julianday(entry_time)-"
-                "2440587.5)*86400000 AS INTEGER)),entry_time "
+                "2440587.5)*86400000 AS INTEGER)),entry_time,"
+                "hall_confirmed,iva_confirmed,hall_occupied,iva_occupied "
                 "FROM PARKING_SESSION WHERE slot_id=? AND exit_time IS NULL "
                 "AND status IN ('ACTIVE','VIOLATION') "
                 "ORDER BY session_id DESC LIMIT 1;");
@@ -751,7 +762,11 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 sqlite3_column_int64(active.get(), 0),
                 columnText(active.get(), 1),
                 sqlite3_column_int64(active.get(), 2),
-                columnText(active.get(), 3)};
+                columnText(active.get(), 3),
+                sqlite3_column_int(active.get(), 4) != 0,
+                sqlite3_column_int(active.get(), 5) != 0,
+                sqlite3_column_int(active.get(), 6) != 0,
+                sqlite3_column_int(active.get(), 7) != 0};
         };
 
         const auto create_session = [&](const std::string& attempt_id,
@@ -769,12 +784,22 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
             Statement insert(db_,
                 "INSERT INTO PARKING_SESSION(vehicle_id,slot_id,plate_number,"
                 "entry_time,status,occupancy_attempt_id,entry_command_id,"
-                "entry_time_epoch_ms) VALUES(NULL,?,NULL,?,'ACTIVE',?,?,?);");
+                "entry_time_epoch_ms,hall_confirmed,iva_confirmed,"
+                "hall_occupied,iva_occupied) "
+                "VALUES(NULL,?,NULL,?,'ACTIVE',?,?,?,?,?,?,?);");
+            const bool from_hall = durable.command.kind ==
+                parking::SlotCommandKind::HallObservation;
+            const bool from_camera = durable.command.kind ==
+                parking::SlotCommandKind::CameraObservation;
             insert.text(1, durable.command.slotId);
             insert.text(2, durable.command.occurredAt);
             insert.text(3, attempt_id);
             insert.text(4, command_id);
             insert.integer(5, occurred_epoch_ms);
+            insert.integer(6, from_hall ? 1 : 0);
+            insert.integer(7, from_camera ? 1 : 0);
+            insert.integer(8, from_hall ? 1 : 0);
+            insert.integer(9, from_camera ? 1 : 0);
             done(db_, insert.get());
             const auto session_id = sqlite3_last_insert_rowid(db_);
 
@@ -796,7 +821,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
             Statement close(db_,
                 "UPDATE PARKING_SESSION SET status='ENDED',exit_time=?,"
                 "exit_time_epoch_ms=?,duration_sec=MAX(0,(?-"
-                "COALESCE(entry_time_epoch_ms,?))/1000),exit_command_id=? "
+                "COALESCE(entry_time_epoch_ms,?))/1000),exit_command_id=?,"
+                "hall_occupied=0,iva_occupied=0 "
                 "WHERE session_id=? AND slot_id=? AND "
                 "COALESCE(occupancy_attempt_id,'')=? AND exit_time IS NULL "
                 "AND status IN ('ACTIVE','VIOLATION');");
@@ -834,6 +860,15 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
             end_bindings.text(5, active.attemptId);
             done(db_, end_bindings.get());
 
+            Statement clear_iva(db_,
+                "UPDATE IVA_SLOT_OBSERVATION_STATE SET "
+                "occupancy_attempt_id='',active_session_id=NULL,"
+                "observed_state='VACANT',updated_at=CURRENT_TIMESTAMP "
+                "WHERE slot_id=? AND active_session_id=?;");
+            clear_iva.text(1, durable.command.slotId);
+            clear_iva.integer(2, active.id);
+            done(db_, clear_iva.get());
+
             Statement log(db_,
                 "INSERT INTO EVENT_LOG(session_id,slot_id,event_type,message) "
                 "VALUES(?,?,?,?);");
@@ -843,6 +878,40 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
             log.text(4, message);
             done(db_, log.get());
             return true;
+        };
+
+        const auto update_hall_state = [&](const std::int64_t session_id,
+                                           const bool confirmed,
+                                           const bool occupied) {
+            Statement update(db_,
+                "UPDATE PARKING_SESSION SET "
+                "hall_confirmed=MAX(hall_confirmed,?),hall_occupied=? "
+                "WHERE session_id=? AND exit_time IS NULL AND "
+                "status IN ('ACTIVE','VIOLATION');");
+            update.integer(1, confirmed ? 1 : 0);
+            update.integer(2, occupied ? 1 : 0);
+            update.integer(3, session_id);
+            done(db_, update.get());
+            if (sqlite3_changes(db_) != 1)
+                throw std::runtime_error(
+                    "Hall source state update lost active session");
+        };
+
+        const auto update_iva_state = [&](const std::int64_t session_id,
+                                          const bool confirmed,
+                                          const bool occupied) {
+            Statement update(db_,
+                "UPDATE PARKING_SESSION SET "
+                "iva_confirmed=MAX(iva_confirmed,?),iva_occupied=? "
+                "WHERE session_id=? AND exit_time IS NULL AND "
+                "status IN ('ACTIVE','VIOLATION');");
+            update.integer(1, confirmed ? 1 : 0);
+            update.integer(2, occupied ? 1 : 0);
+            update.integer(3, session_id);
+            done(db_, update.get());
+            if (sqlite3_changes(db_) != 1)
+                throw std::runtime_error(
+                    "IVA source state update lost active session");
         };
 
         const auto commit_sequence = [&]() {
@@ -1053,10 +1122,13 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                     sequence_decision.reason;
             } else if (state == "OCCUPIED") {
                 if (const auto active = find_active()) {
+                    update_hall_state(active->id, true, true);
                     outcome.code = parking::CommittedOccupancyCode::NoChange;
                     outcome.sessionId = active->id;
                     attempt_id = active->attemptId;
-                    outcome.message = "slot already has an active session";
+                    outcome.message = hybrid_or
+                        ? "active session confirmed by Hall sensor"
+                        : "slot already has an active session";
                     commit_sequence();
                 } else {
                     attempt_id = "occupancy:" + command_id;
@@ -1088,18 +1160,40 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                     attempt_id = active->attemptId;
                     outcome.message = "VACANT timestamp precedes session entry";
                 } else {
-                    if (!close_session(*active, "HALL_VACANT",
-                                       "hall sensor=" +
-                                           durable.command.sensorId +
-                                           " command=" + command_id)) {
-                        throw std::runtime_error("Hall close timestamp rejected");
-                    }
-                    outcome.code =
-                        parking::CommittedOccupancyCode::SessionEnded;
                     outcome.sessionId = active->id;
                     attempt_id = active->attemptId;
-                    outcome.message = "Hall session ended";
-                    commit_sequence();
+                    if (hybrid_or && !active->hallConfirmed) {
+                        outcome.code =
+                            parking::CommittedOccupancyCode::NoChange;
+                        outcome.message =
+                            "Hall VACANT ignored because Hall never confirmed "
+                            "this session";
+                        commit_sequence();
+                    } else {
+                        update_hall_state(
+                            active->id, active->hallConfirmed, false);
+                        if (hybrid_or && active->ivaConfirmed &&
+                            active->ivaOccupied) {
+                            outcome.code =
+                                parking::CommittedOccupancyCode::NoChange;
+                            outcome.message =
+                                "Hall VACANT recorded; active IVA still holds "
+                                "the session";
+                            commit_sequence();
+                        } else {
+                            if (!close_session(*active, "HALL_VACANT",
+                                               "hall sensor=" +
+                                                   durable.command.sensorId +
+                                                   " command=" + command_id)) {
+                                throw std::runtime_error(
+                                    "Hall close timestamp rejected");
+                            }
+                            outcome.code = parking::CommittedOccupancyCode::
+                                SessionEnded;
+                            outcome.message = "Hall session ended";
+                            commit_sequence();
+                        }
+                    }
                 }
             }
         } else if (durable.command.kind ==
@@ -1118,13 +1212,6 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 area_key.empty()) {
                 throw std::invalid_argument("camera area topology is missing");
             }
-            if ((action == "INTRUSION" ||
-                 (action == "EXIT" && authoritative_exit)) &&
-                observation_object_id.empty()) {
-                throw std::invalid_argument(
-                    "authoritative camera observation has no ObjectId");
-            }
-
             if (!occupancy_authority) {
                 if (action != "INTRUSION" ||
                     observation_object_id.empty()) {
@@ -1150,7 +1237,6 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
 
             nlohmann::json areas = nlohmann::json::object();
             std::string observed_state = "UNKNOWN";
-            std::optional<std::int64_t> iva_session;
             Statement current(db_,
                 "SELECT occupancy_attempt_id,active_session_id,"
                 "observation_generation,observed_state,"
@@ -1160,7 +1246,6 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
             const int current_step = sqlite3_step(current.get());
             if (current_step == SQLITE_ROW) {
                 attempt_id = columnText(current.get(), 0);
-                iva_session = optionalInt64(current.get(), 1);
                 generation = static_cast<std::uint64_t>(
                     std::max<std::int64_t>(
                         0, sqlite3_column_int64(current.get(), 2)));
@@ -1176,20 +1261,22 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 throw std::runtime_error(
                     "camera observation state lookup failed");
 
-            const auto normalize_tracks = [&areas](const std::string& key)
-                -> nlohmann::json& {
-                auto& tracks = areas[key];
-                if (tracks.is_null()) tracks = nlohmann::json::array();
-                if (tracks.is_boolean()) {
-                    const bool legacy_active = tracks.get<bool>();
-                    tracks = nlohmann::json::array();
-                    if (legacy_active) tracks.push_back("__legacy_active__");
+            const auto area_is_active = [&areas](const std::string& key) {
+                auto& state = areas[key];
+                if (state.is_null()) {
+                    state = false;
+                    return false;
                 }
-                if (!tracks.is_array()) {
-                    throw std::runtime_error(
-                        "camera track state has an invalid shape");
+                if (state.is_boolean()) return state.get<bool>();
+                if (state.is_array()) {
+                    // 이전 버전의 ObjectId 배열은 영역 활성 여부로만
+                    // 축약한다. 비어 있지 않은 배열은 활성 영역이다.
+                    const bool active = !state.empty();
+                    state = active;
+                    return active;
                 }
-                return tracks;
+                throw std::runtime_error(
+                    "camera area state has an invalid shape");
             };
 
             const auto active_at_observation = action == "EXIT"
@@ -1208,24 +1295,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 outcome.code = parking::CommittedOccupancyCode::NoChange;
                 outcome.message = "camera action ignored by occupancy policy";
             } else if (action == "INTRUSION") {
-                const std::string& object_id = observation_object_id;
-                const std::string track_id = object_id.empty()
-                    ? "__area_active__" : object_id;
-                auto& tracks = normalize_tracks(area_key);
-                // A legacy boolean state has no object identity. The first
-                // exact observation transfers ownership to that track instead
-                // of leaving an immortal sentinel behind.
-                nlohmann::json exact_tracks = nlohmann::json::array();
-                for (const auto& track : tracks) {
-                    if (!track.is_string() ||
-                        track.get<std::string>() != "__legacy_active__") {
-                        exact_tracks.push_back(track);
-                    }
-                }
-                tracks = std::move(exact_tracks);
-                const bool changed = std::find(
-                    tracks.begin(), tracks.end(), track_id) == tracks.end();
-                if (changed) tracks.push_back(track_id);
+                const bool changed = !area_is_active(area_key);
+                areas[area_key] = true;
                 if (changed || observed_state != "OCCUPIED") ++generation;
                 Statement supersede(db_,
                     "UPDATE OCCUPANCY_EXIT_DEADLINE SET state='SUPERSEDED',"
@@ -1235,19 +1306,23 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 done(db_, supersede.get());
 
                 if (const auto active = find_active()) {
+                    update_iva_state(active->id, true, true);
                     outcome.sessionId = active->id;
                     attempt_id = active->attemptId;
                     outcome.code = parking::CommittedOccupancyCode::NoChange;
-                    outcome.message = changed
-                        ? "camera occupancy refreshed"
-                        : "duplicate camera intrusion";
+                    if (hybrid_or && !active->ivaConfirmed) {
+                        outcome.message =
+                            "active session confirmed by IVA intrusion";
+                    } else {
+                        outcome.message = changed
+                            ? "camera occupancy refreshed"
+                            : "duplicate camera intrusion";
+                    }
                 } else {
                     attempt_id = "occupancy:" + command_id;
                     outcome.sessionId = create_session(
                         attempt_id, "CAMERA_IVA_OCCUPIED",
-                        "area=" + area_key + " object=" +
-                            payload.value("object_id", "") +
-                            " command=" + command_id);
+                        "area=" + area_key + " command=" + command_id);
                     outcome.code =
                         parking::CommittedOccupancyCode::SessionStarted;
                     outcome.message = "camera occupancy session committed";
@@ -1257,27 +1332,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                 outcome.correlationId = commit_correlation(
                     attempt_id, outcome.sessionId);
             } else if (action == "EXIT") {
-                const std::string& object_id = observation_object_id;
-                auto& tracks = normalize_tracks(area_key);
-                const auto before = tracks.size();
-                if (object_id.empty()) {
-                    tracks = nlohmann::json::array();
-                } else {
-                    nlohmann::json retained = nlohmann::json::array();
-                    for (const auto& track : tracks) {
-                        if (!track.is_string()) {
-                            throw std::runtime_error(
-                                "camera track state contains a non-string id");
-                        }
-                        const auto stored_track = track.get<std::string>();
-                        if (stored_track != object_id &&
-                            stored_track != "__legacy_active__") {
-                            retained.push_back(track);
-                        }
-                    }
-                    tracks = std::move(retained);
-                }
-                const bool changed = tracks.size() != before;
+                const bool changed = area_is_active(area_key);
+                areas[area_key] = false;
                 if (changed) ++generation;
                 bool all_known = true;
                 bool any_active = false;
@@ -1287,20 +1343,22 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                         all_known = false;
                         continue;
                     }
-                    any_active = any_active || !normalize_tracks(key).empty();
+                    any_active = any_active || area_is_active(key);
                 }
                 const auto active = active_at_observation;
                 if (!active || !all_known || any_active) {
                     observed_state = active ? "OCCUPIED" : "VACANT";
                     if (active) {
                         attempt_id = active->attemptId;
-                        iva_session = active->id;
+                        persist_iva(
+                            attempt_id,
+                            std::optional<std::int64_t>{active->id},
+                            generation, observed_state, configured, areas);
                     } else {
                         attempt_id.clear();
-                        iva_session.reset();
+                        persist_iva(attempt_id, std::nullopt, generation,
+                                    observed_state, configured, areas);
                     }
-                    persist_iva(attempt_id, iva_session, generation,
-                                observed_state, configured, areas);
                     outcome.code = parking::CommittedOccupancyCode::NoChange;
                     outcome.sessionId = active ? active->id : -1;
                     outcome.message = !all_known
@@ -1325,8 +1383,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                             "INSERT INTO OCCUPANCY_EXIT_DEADLINE("
                             "deadline_id,slot_id,occupancy_attempt_id,"
                             "expected_session_id,observation_generation,"
-                            "due_at_epoch_ms,state) "
-                            "VALUES(?,?,?,?,?,?,'SCHEDULED');");
+                            "due_at_epoch_ms,occupancy_policy,state) "
+                            "VALUES(?,?,?,?,?,?,?,'SCHEDULED');");
                         deadline.text(1, deadline_id);
                         deadline.text(2, durable.command.slotId);
                         deadline.text(3, attempt_id);
@@ -1336,6 +1394,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                         deadline.integer(6, payload.value<std::int64_t>(
                             "deadline_due_at_epoch_ms",
                             durable.command.dueAtEpochMs));
+                        deadline.text(7, hybrid_or ? "HYBRID_OR"
+                                                   : "CAMERA_IVA");
                         done(db_, deadline.get());
                     }
                     if (live_step != SQLITE_ROW && live_step != SQLITE_DONE)
@@ -1410,12 +1470,8 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                         parking::CommittedOccupancyCode::StaleGeneration;
                     outcome.message = "exit deadline generation is stale";
                 } else {
-                    if (!close_session(*active, "CAMERA_IVA_VACANT",
-                                       "deadline=" + deadline_id +
-                                           " command=" + command_id)) {
-                        throw std::runtime_error(
-                            "camera deadline timestamp rejected");
-                    }
+                    update_iva_state(
+                        active->id, active->ivaConfirmed, false);
                     Statement applied(db_,
                         "UPDATE OCCUPANCY_EXIT_DEADLINE SET state='APPLIED',"
                         "updated_at=CURRENT_TIMESTAMP WHERE deadline_id=? "
@@ -1426,14 +1482,32 @@ EventDatabase::applySlotTransitionCommand(const std::string& command_id) {
                         columnText(iva.get(), 4));
                     const auto areas = nlohmann::json::parse(
                         columnText(iva.get(), 5));
-                    persist_iva("", std::nullopt, expected_generation,
-                                "VACANT", configured, areas);
-                    outcome.code =
-                        parking::CommittedOccupancyCode::SessionEnded;
                     outcome.sessionId = active->id;
                     attempt_id = active->attemptId;
                     generation = expected_generation;
-                    outcome.message = "camera exit deadline applied";
+                    if (hybrid_or && active->hallConfirmed &&
+                        active->hallOccupied) {
+                        persist_iva(attempt_id, active->id,
+                                    expected_generation, "VACANT",
+                                    configured, areas);
+                        outcome.code =
+                            parking::CommittedOccupancyCode::NoChange;
+                        outcome.message =
+                            "IVA VACANT recorded; active Hall sensor still "
+                            "holds the session";
+                    } else {
+                        if (!close_session(*active, "CAMERA_IVA_VACANT",
+                                           "deadline=" + deadline_id +
+                                               " command=" + command_id)) {
+                            throw std::runtime_error(
+                                "camera deadline timestamp rejected");
+                        }
+                        persist_iva("", std::nullopt, expected_generation,
+                                    "VACANT", configured, areas);
+                        outcome.code =
+                            parking::CommittedOccupancyCode::SessionEnded;
+                        outcome.message = "camera exit deadline applied";
+                    }
                 }
             }
         }

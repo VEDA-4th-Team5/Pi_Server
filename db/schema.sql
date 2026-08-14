@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS PARKING_SESSION (
     exit_command_id TEXT,
     entry_time_epoch_ms INTEGER,
     exit_time_epoch_ms INTEGER,
+    hall_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (hall_confirmed IN (0, 1)),
+    iva_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (iva_confirmed IN (0, 1)),
+    hall_occupied INTEGER NOT NULL DEFAULT 0 CHECK (hall_occupied IN (0, 1)),
+    iva_occupied INTEGER NOT NULL DEFAULT 0 CHECK (iva_occupied IN (0, 1)),
     FOREIGN KEY (vehicle_id) REFERENCES VEHICLE(vehicle_id),
     FOREIGN KEY (slot_id) REFERENCES PARKING_SLOT(slot_id)
 );
@@ -238,6 +242,9 @@ CREATE TABLE IF NOT EXISTS OCCUPANCY_EXIT_DEADLINE (
     expected_session_id INTEGER NOT NULL,
     observation_generation INTEGER NOT NULL,
     due_at_epoch_ms INTEGER NOT NULL,
+    occupancy_policy TEXT NOT NULL DEFAULT 'CAMERA_IVA' CHECK (
+        occupancy_policy IN ('CAMERA_IVA','HYBRID_OR')
+    ),
     state TEXT NOT NULL CHECK (state IN (
         'SCHEDULED','ADMITTED','SUPERSEDED','APPLIED'
     )),

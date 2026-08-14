@@ -1145,7 +1145,8 @@ int main() {
     if (parking_timer && (config.hall_mqtt_input_enabled ||
                           sensor_link_mode != device::SensorLinkMode::Disabled ||
                           config.parking_occupancy_source == "CAMERA_IVA" ||
-                          config.parking_occupancy_source == "HALL")) {
+                          config.parking_occupancy_source == "HALL" ||
+                          config.parking_occupancy_source == "HYBRID_OR")) {
         hall_service = std::make_shared<sensor::HallParkingService>(
             parking_slot_configs, config, channels, database,
             [&ocr_worker](const int session_id) {
@@ -1170,10 +1171,12 @@ int main() {
     }
 
     const bool hall_mqtt_required = config.hall_mqtt_input_enabled &&
-        config.parking_occupancy_source == "HALL";
+        (config.parking_occupancy_source == "HALL" ||
+         config.parking_occupancy_source == "HYBRID_OR");
     const bool iva_handler_required =
         config.parking_occupancy_source == "CAMERA_IVA" ||
-        config.parking_occupancy_source == "HALL";
+        config.parking_occupancy_source == "HALL" ||
+        config.parking_occupancy_source == "HYBRID_OR";
     if ((hall_mqtt_required || iva_handler_required) && !hall_service) {
         util::logError(
             "parking occupancy callback target could not be constructed");
@@ -1397,7 +1400,8 @@ int main() {
                     }
                     return;
                 }
-                if (config.parking_occupancy_source == "HALL") {
+                if (config.parking_occupancy_source == "HALL" ||
+                    config.parking_occupancy_source == "HYBRID_OR") {
                     if (const auto hall_target = weak_hall.lock())
                         hall_target->handleLine(line, transport);
                 }

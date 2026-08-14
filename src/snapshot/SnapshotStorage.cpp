@@ -43,8 +43,11 @@ bool writeBytes(const fs::path& path,
 std::string stageDirectoryName(const std::string& value) {
     if (value == "OCCUPANCY_START_EVIDENCE") return "occupancy_start";
     if (value == "OVERSTAY_EVIDENCE") return "overstay";
-    if (value == "HALL_30S") return "hall_30s";
-    if (value == "HALL_60S") return "hall_60s";
+    // 점유 감지는 Hall 또는 IVA가 시작할 수 있으므로 저장 경로에는
+    // 특정 센서 이름을 노출하지 않는다. 이름순으로도 세션 단계가
+    // occupancy_start -> occupied_30s -> occupied_60s -> overstay가 된다.
+    if (value == "HALL_30S") return "occupied_30s";
+    if (value == "HALL_60S") return "occupied_60s";
     return "capture";
 }
 

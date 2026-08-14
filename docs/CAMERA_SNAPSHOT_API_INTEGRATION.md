@@ -62,9 +62,9 @@ export CAPTURE_OFFSETS_SEC=5,10
 ## 저장 위치
 
 ```text
-data/snapshots/ch1/EV01/hall_30s/
-├─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_original.jpg
-└─ session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_enhanced.jpg
+data/snapshots/ch1/EV01/occupied_30s/
+├─ original/session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_original.jpg
+└─ enhanced/session_<id>_slot_EV01_HALL_30S_CAMERA_API_<time>_enhanced.jpg
 ```
 
 동일한 규칙으로 시작·장기점유 증거도 저장한다.

@@ -197,6 +197,7 @@ parking::SlotTransitionCommand HallParkingService::makeHallCommand(
     nlohmann::json payload{
         {"state", event.state == parking::ParkingSensorState::Occupied
                       ? "OCCUPIED" : "VACANT"},
+        {"occupancy_policy", app_config_.parking_occupancy_source},
         {"source_protocol", toString(event.sourceProtocolVersion)},
         {"transport", event.sourceTransport},
         {"occurred_at_epoch_ms", epochMs(event.occurredAt)}};
@@ -267,6 +268,7 @@ parking::SlotTransitionCommand HallParkingService::makeCameraCommand(
         {"action", actionName(signal.action)},
         {"authoritative_exit", signal.authoritativeExit},
         {"occupancy_authority", signal.occupancyAuthority},
+        {"occupancy_policy", app_config_.parking_occupancy_source},
         {"area_key", key},
         {"configured_areas", configured_areas},
         {"camera_id", signal.cameraId},
@@ -301,7 +303,8 @@ parking::SlotTransitionCommand HallParkingService::makeCameraCommand(
 
 bool HallParkingService::handleLine(const std::string& line,
                                     const std::string& transport) {
-    if (app_config_.parking_occupancy_source != "HALL") {
+    if (app_config_.parking_occupancy_source != "HALL" &&
+        app_config_.parking_occupancy_source != "HYBRID_OR") {
         util::logLine("HALL_SENSOR",
                       "input ignored because occupancy source is " +
                           app_config_.parking_occupancy_source);
@@ -347,9 +350,11 @@ bool HallParkingService::handleLine(const std::string& line,
 bool HallParkingService::handleCameraIvaSignal(
     const event::IvaOccupancySignal& signal) {
     const bool camera_authoritative =
-        app_config_.parking_occupancy_source == "CAMERA_IVA";
+        app_config_.parking_occupancy_source == "CAMERA_IVA" ||
+        app_config_.parking_occupancy_source == "HYBRID_OR";
     const bool hall_authoritative =
-        app_config_.parking_occupancy_source == "HALL";
+        app_config_.parking_occupancy_source == "HALL" ||
+        app_config_.parking_occupancy_source == "HYBRID_OR";
     if ((!camera_authoritative && !hall_authoritative) ||
         signal.occupancyAuthority != camera_authoritative) {
         return false;
@@ -365,7 +370,7 @@ bool HallParkingService::handleCameraIvaSignal(
         return false;
     }
     if (signal.action == event::IvaOccupancyAction::Unsupported) return false;
-    if (hall_authoritative &&
+    if (app_config_.parking_occupancy_source == "HALL" &&
         signal.action != event::IvaOccupancyAction::Intrusion) {
         return false;
     }
