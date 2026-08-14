@@ -61,17 +61,22 @@ SENSOR:HALL01:OCCUPIED:1
 타이머에 등록합니다. 별도의 세션을 다시 만들지 않으며, 서버 재시작 시 활성 세션도
 남은 시간을 기준으로 복구합니다. 독립 실행형 `parking-timer` 역시 계속 빌드됩니다.
 
-카메라 WiseAI INTRUSION/EXIT를 점유 입력으로 사용할 때는 다음을 설정합니다. 기본값은
-기존 홀센서 호환을 위한 `HALL`입니다.
+카메라 WiseAI와 Hall 센서를 서로 보완하는 운영 모드는 다음과 같습니다. 기본값은
+기존 홀센서 호환을 위한 `HALL`이고, 현재 운영 설정은 `HYBRID_OR`입니다.
 
 ```bash
-export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
+export PARKING_OCCUPANCY_SOURCE=HYBRID_OR
+export PARKING_OCCUPANCY_CONFIRM_MS=5000
 export CAMERA_IVA_EXIT_CONFIRM_MS=20000
 ```
 
-이 모드에서는 INTRUSION만 세션을 만들고 ENTER는 무시합니다. EXIT는 20초 동안
-후속 INTRUSION을 기다린 뒤 출차를 확정합니다. 조기 출차는 이미지와 `IMAGE_LOG`를 삭제하고, `violation_at`이 있는
-위반 세션은 증거를 보존합니다. 자세한 Publication 계약은
+`HYBRID_OR`에서는 IVA INTRUSION 또는 5초 유지된 Hall OCCUPIED 중 먼저 확정된
+입력이 세션 하나를 만들고, 나중 입력은 같은 `session_id`의 센서 확인 상태만
+보강합니다. 출차는 해당 세션을 실제 확인한 센서만 판단에 참여하며, 두 센서가
+모두 확인한 세션은 둘 다 VACANT일 때 종료합니다. IVA EXIT는 20초 동안 후속
+INTRUSION을 기다립니다. 조기 출차는 이미지와 `IMAGE_LOG`를 삭제하고,
+`violation_at`이 있는 위반 세션은 증거를 보존합니다. `HALL`과 `CAMERA_IVA`
+단독 모드도 호환을 위해 유지합니다. 자세한 Publication 계약은
 [`docs/IVA_VEHICLE_DETECTION.md`](docs/IVA_VEHICLE_DETECTION.md)에 있습니다.
 
 ## 빌드 및 테스트
@@ -150,7 +155,7 @@ set +a
 export PARKING_TIMER_ENABLED=true
 export PARKING_OVERSTAY_THRESHOLD_SECONDS=3600
 export PARKING_HALL_WORK_QUEUE_CAPACITY=100
-export PARKING_OCCUPANCY_CONFIRM_MS=10000
+export PARKING_OCCUPANCY_CONFIRM_MS=5000
 export CAPTURE_SCHED_ENABLED=true
 export HALL_CAPTURE_OCR_ENABLED=true
 # 실기기 반복 시험에서만 예: export CAPTURE_OFFSETS_SEC=5,10
@@ -319,7 +324,6 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 
 - [`docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`](docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md): 카메라 MQTT 촬영 요청 목표 규약과 ROI 처리
 - [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md): CV5 카메라 내부 화질 개선 이미지 연동
-- [`docs/IVA_ROI_COORDINATE_TOOL.md`](docs/IVA_ROI_COORDINATE_TOOL.md): 독립 OpenCV 도구로 주차면 ROI 좌표 측정
 - [`docs/HARDWARE_E2E_TEST_GUIDE.md`](docs/HARDWARE_E2E_TEST_GUIDE.md): WiseAI IVA부터 MQTT·촬영·ROI·DB·Qt·출차까지 실기기 E2E 검증
 - [`docs/Pi_Server_Hardware_E2E_Test_Guide.pdf`](docs/Pi_Server_Hardware_E2E_Test_Guide.pdf): 실기기 E2E 테스트 배포·인쇄용 PDF
 - [`docs/GEMINI_OCR_GUIDE.md`](docs/GEMINI_OCR_GUIDE.md): OpenCV 전처리, Gemini HTTPS OCR, DB 반영과 수동 테스트

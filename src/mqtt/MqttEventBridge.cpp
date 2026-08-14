@@ -257,12 +257,14 @@ bool MqttEventBridge::start() {
         return false;
     }
     if (config_.hall_mqtt_input_enabled &&
-        config_.parking_occupancy_source == "HALL" &&
+        (config_.parking_occupancy_source == "HALL" ||
+         config_.parking_occupancy_source == "HYBRID_OR") &&
         !sensor_message_handler_) {
         util::logError("MQTT start rejected: Hall target is not bound");
         return false;
     }
-    if (config_.parking_occupancy_source == "CAMERA_IVA" &&
+    if ((config_.parking_occupancy_source == "CAMERA_IVA" ||
+         config_.parking_occupancy_source == "HYBRID_OR") &&
         !iva_occupancy_handler_) {
         util::logError("MQTT start rejected: CAMERA_IVA target is not bound");
         return false;
@@ -270,7 +272,8 @@ bool MqttEventBridge::start() {
 
     std::vector<MqttSubscription> subscriptions;
     if (config_.hall_mqtt_input_enabled &&
-        config_.parking_occupancy_source == "HALL") {
+        (config_.parking_occupancy_source == "HALL" ||
+         config_.parking_occupancy_source == "HYBRID_OR")) {
         subscriptions.push_back({config_.hall_mqtt_topic, 1});
     }
     if (config_.fire_alarm_enabled) {
@@ -457,7 +460,8 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
         }
 
         const auto iva_action = toOccupancyAction(camera_event.action);
-        if (config_.parking_occupancy_source == "CAMERA_IVA") {
+        if (config_.parking_occupancy_source == "CAMERA_IVA" ||
+            config_.parking_occupancy_source == "HYBRID_OR") {
             if (!iva_occupancy_handler_) {
                 util::logError("IVA occupancy handler is not configured");
                 return;

@@ -147,6 +147,26 @@ BestShot/Plate 이벤트
 동일한 정리 정책을 사용한다. `violation_at IS NULL`이면 예약/OCR/이미지/IMAGE_LOG를
 정리하고, `violation_at IS NOT NULL`이면 위반 증거를 보존한다.
 
+## IVA와 Hall을 함께 사용하는 운영 상태 머신
+
+현재 운영 프로필은 두 센서를 보완 입력으로 사용하는 다음 설정이다.
+
+```bash
+export PARKING_OCCUPANCY_SOURCE=HYBRID_OR
+export PARKING_OCCUPANCY_CONFIRM_MS=5000
+export CAMERA_IVA_EXIT_CONFIRM_MS=20000
+```
+
+입차는 IVA INTRUSION 또는 5초 유지된 Hall OCCUPIED 중 먼저 확정된 입력으로
+세션 하나만 만든다. 나중에 도착한 센서는 새 세션을 만들지 않고 기존 세션의
+`iva_confirmed` 또는 `hall_confirmed` 상태만 보강한다.
+
+출차는 해당 세션을 실제로 확인한 센서만 판단에 참여한다. IVA만 확인한 세션의
+Hall VACANT는 무시하고, Hall만 확인한 세션은 IVA EXIT을 기다리지 않는다. 두
+센서가 모두 확인한 세션은 `iva_occupied=0`과 `hall_occupied=0`이 모두 확인된
+뒤 종료한다. 네 상태는 `PARKING_SESSION`에 저장되므로 재시작 후에도 동일한
+출차 정책을 유지한다.
+
 ## 카메라 MQTT 계약
 
 운영 점유 판정은 카메라가 자동 발행하는 네이티브 IvaArea 상태를 사용한다.

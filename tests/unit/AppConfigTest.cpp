@@ -40,6 +40,8 @@ int main() {
     setValue("HTTP_DATA_ROOT", "data/http");
     setValue("HTTP_TLS_CERT_PATH", "certs/server.crt");
     setValue("HTTP_TLS_KEY_PATH", "certs/server.key");
+    setValue("PARKING_OCCUPANCY_SOURCE", "hybrid_or");
+    clearValue("PARKING_OCCUPANCY_CONFIRM_MS");
 
     const app::AppConfig config = app::AppConfig::loadFromEnv();
     const std::string root = std::filesystem::path("/tmp/pi-server-test-root").string();
@@ -71,6 +73,10 @@ int main() {
                       (std::filesystem::path(root) / "certs/server.key")
                           .lexically_normal().string(),
                   "HTTP_TLS_KEY_PATH must be rooted at PI_SERVER_ROOT");
+    ok &= require(config.parking_occupancy_source == "HYBRID_OR",
+                  "HYBRID_OR occupancy policy must be accepted");
+    ok &= require(config.parking_occupancy_confirm_ms == 5000,
+                  "Hall occupancy confirmation must default to five seconds");
 
     clearValue("PARKING_SLOT_CONFIG");
     const app::AppConfig legacy_config = app::AppConfig::loadFromEnv();
@@ -84,6 +90,7 @@ int main() {
     clearValue("HTTP_DATA_ROOT");
     clearValue("HTTP_TLS_CERT_PATH");
     clearValue("HTTP_TLS_KEY_PATH");
+    clearValue("PARKING_OCCUPANCY_SOURCE");
     clearValue("PI_SERVER_ROOT");
     return ok ? 0 : 1;
 }

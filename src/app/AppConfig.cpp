@@ -156,7 +156,7 @@ AppConfig AppConfig::loadFromEnv() {
     config.sensor_uart_reconnect_ms =
         std::max(1, getEnvIntOrDefault("SENSOR_UART_RECONNECT_MS", 1000));
     config.parking_occupancy_confirm_ms =
-        std::max(0, getEnvIntOrDefault("PARKING_OCCUPANCY_CONFIRM_MS", 0));
+        std::max(0, getEnvIntOrDefault("PARKING_OCCUPANCY_CONFIRM_MS", 5000));
     config.parking_occupancy_source =
         getEnvOrDefault("PARKING_OCCUPANCY_SOURCE", "HALL");
     std::transform(config.parking_occupancy_source.begin(),
@@ -166,7 +166,8 @@ AppConfig AppConfig::loadFromEnv() {
                        return static_cast<char>(std::toupper(value));
                    });
     if (config.parking_occupancy_source != "HALL" &&
-        config.parking_occupancy_source != "CAMERA_IVA") {
+        config.parking_occupancy_source != "CAMERA_IVA" &&
+        config.parking_occupancy_source != "HYBRID_OR") {
         config.parking_occupancy_source = "HALL";
     }
     config.camera_iva_exit_confirm_ms = std::clamp(

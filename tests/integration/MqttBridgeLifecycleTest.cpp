@@ -447,8 +447,9 @@ void testRegularPermitCannotCrossReconnectEpoch() {
 void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
     auto config = fireConfig();
     config.fire_alarm_enabled = false;
-    config.parking_occupancy_source = "CAMERA_IVA";
-    config.hall_mqtt_input_enabled = false;
+    config.parking_occupancy_source = "HYBRID_OR";
+    config.hall_mqtt_input_enabled = true;
+    config.hall_mqtt_topic = "parking/sensor/hall";
     config.iva_areas.push_back(
         {"EV01", "name1", "ch01", 0.0, 0.0, 1.0, 1.0});
     std::vector<parking::ParkingSlotConfig> slots{
@@ -461,12 +462,14 @@ void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
     ocr::OcrWorker ocrWorker(
         ocr::GeminiOcrClient("", "test-model", 1, 1), database, false);
     std::vector<event::IvaOccupancySignal> received;
+    std::vector<std::string> hall_received;
     auto transport = std::make_unique<FakeMqttTransport>();
     auto* fake = transport.get();
 
     mqtt::MqttEventBridge bridge(
         config, channels, database, storage, ocrWorker,
-        std::move(slots), {}, {},
+        std::move(slots),
+        [&](const std::string& line) { hall_received.push_back(line); }, {},
         [&](const event::IvaOccupancySignal& signal) {
             received.push_back(signal);
             return true;
@@ -490,6 +493,7 @@ void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
                 received[1].occurredAt - received[0].occurredAt == 1s,
             "bridge replaced camera UtcTime with receive time");
     require(received[0].objectId == "41808" &&
+                received[0].occupancyAuthority &&
                 !received[0].sourceIdentity.empty() &&
                 received[0].sourceIdentity != received[1].sourceIdentity,
             "bridge lost exact ObjectId/source event identity");
@@ -502,6 +506,10 @@ void testCameraIvaUsesSourceTimeAndExactObjectIdentity() {
         R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"name1","slot_id":"EV01","event_type":"IVA_AREA","action":"INTRUSION","active":true,"object_id":"41808"})");
     require(received.size() == 2,
             "timestampless or objectless publication reached occupancy");
+    fake->emitRaw(config.hall_mqtt_topic, "SENSOR:HALL01:OCCUPIED:1");
+    require(hall_received.size() == 1 &&
+                hall_received.front() == "SENSOR:HALL01:OCCUPIED:1",
+            "HYBRID_OR bridge did not dispatch Hall MQTT input");
     require(bridge.stop(), "CAMERA_IVA bridge stop failed");
 }
 

@@ -56,9 +56,11 @@ Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 
 
 EVDA-192에서는 CH1의 WiseAI `name1`~`name4`를 EV01~EV04에 1:1로
 묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다.
-`PARKING_OCCUPANCY_SOURCE=CAMERA_IVA`이면 영역 하나가 활성일 때 세션을 만들고,
-같은 슬롯의 모든 영역이 비활성인 상태가 10초 유지된 경우에만 Hall VACANT와
-동일한 출차 정리 정책으로 세션을 닫는다. 신규 이미지는
+`PARKING_OCCUPANCY_SOURCE=HYBRID_OR`이면 영역 하나의 INTRUSION 또는 5초 유지된
+Hall OCCUPIED 중 먼저 확정된 입력으로 세션 하나를 만들고, 나중 입력은 동일
+세션의 확인 상태만 보강한다. IVA만 확인한 세션은 IVA EXIT, Hall만 확인한 세션은
+Hall VACANT이 종료 권한을 가지며, 둘 다 확인한 세션은 두 입력이 모두 VACANT일
+때 종료한다. IVA EXIT는 기본 20초 확인 후 확정한다. 신규 이미지는
 `ch1/EV01/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
 API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 
@@ -343,7 +345,9 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 - SQLite와 `IVA_EVxx_ROI_*` 설정에 ROI가 모두 없으면 해당 슬롯 ROI는
   미설정 상태로 유지한다. 촬영/OCR은 전체 프레임을 임의로 사용하지 않고
   명확한 오류를 남긴 뒤 건너뛴다.
-- 점유 입력은 `PARKING_OCCUPANCY_SOURCE=HALL|CAMERA_IVA`로 단일 주체를 선택한다.
+- 점유 입력은 `PARKING_OCCUPANCY_SOURCE=HALL|CAMERA_IVA|HYBRID_OR`로 선택한다.
+  현재 운영값 `HYBRID_OR`는 입차를 OR로 확정하되 세션별 센서 확인 상태에 따라
+  출차 권한을 제한한다.
   `PARKING_HALL_ENABLED`는 현재 로드만 되는 구형 설정이다.
 - `FIRE_ALARM_ENABLED=true`이면 `SensorLinkManager` → `FireAlarmManager` → Qt MQTT와
   ACK 명령 경로가 `main.cpp`에 배선된다.

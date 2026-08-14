@@ -51,9 +51,9 @@ WiseAI Intrusion
 | Pi HTTP | `http://<PI_IP>:8080` |
 | MQTT Broker | Raspberry Pi Mosquitto, TCP `1883` |
 | Camera MQTT 구독 | `+/onvif-ej/#` |
-| 점유 입력 | `PARKING_OCCUPANCY_SOURCE=CAMERA_IVA` |
-| 입차 권한 | WiseAI 또는 호환 Publication의 `INTRUSION` |
-| 출차 권한 | 카메라 원본 WiseAI `Data.Action=Exit`만 인정 |
+| 점유 입력 | `PARKING_OCCUPANCY_SOURCE=HYBRID_OR` |
+| 입차 권한 | WiseAI `INTRUSION` 또는 Hall `OCCUPIED` 5초 유지 |
+| 출차 권한 | 세션을 실제 확인한 센서의 `Exit`/`VACANT` |
 | 출차 확인 | 기본 20초, `CAMERA_IVA_EXIT_CONFIRM_MS` |
 | 촬영 | Camera Snapshot API 우선 |
 | RTSP fallback | 운영 설정에 따라 결정; 현재 API 전용 모드에서는 보통 `false` |
@@ -115,7 +115,7 @@ for key in CAMERA_OPEN_API_BASE CAMERA_IMAGE_BASE CAMERA_API_USERNAME CAMERA_API
 
 ```text
 CAMERA_EVENT_SUB_TOPIC=+/onvif-ej/#
-PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
+PARKING_OCCUPANCY_SOURCE=HYBRID_OR
 CAMERA_SNAPSHOT_API_ENABLED=true
 CAMERA_SNAPSHOT_API_RTSP_FALLBACK=false
 IVA_EV01_AREA_NAME=name1

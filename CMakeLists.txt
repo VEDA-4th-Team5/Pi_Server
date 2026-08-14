@@ -274,22 +274,6 @@ add_executable(parking-link-tool
 target_include_directories(parking-link-tool PRIVATE include)
 target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
 
-# 설치된 카메라 화면에서 주차면 ROI를 측정하는 독립 C++/OpenCV 도구.
-# 운영 pi-server와 별도 프로세스이며, RTSP URL은 환경변수로만 전달한다.
-add_executable(check_coordinates tools/check_coordinates.cpp)
-target_compile_options(check_coordinates PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(check_coordinates PRIVATE
-    PkgConfig::OPENCV PkgConfig::HTTPLIB Threads::Threads)
-add_test(NAME check-coordinates-test
-    COMMAND check_coordinates
-            --image ${CMAKE_SOURCE_DIR}/tests/fixtures/roi_checker_test.ppm
-            --slot EV01
-            --rect 1,0,2,1
-            --output ${CMAKE_CURRENT_BINARY_DIR}/roi_checker_test_preview.png)
-set_tests_properties(check-coordinates-test PROPERTIES
-    PASS_REGULAR_EXPRESSION
-        "IVA_EV01_ROI_X=0.250000;IVA_EV01_ROI_WIDTH=0.500000")
-
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
