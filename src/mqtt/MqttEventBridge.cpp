@@ -197,6 +197,14 @@ bool MqttEventBridge::bindFireAckHandler(FireAckHandler handler) {
     return true;
 }
 
+bool MqttEventBridge::bindFireClearHandler(FireClearHandler handler) {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (endpoint_.state() != MqttEndpointState::Constructed || !handler)
+        return false;
+    fire_clear_handler_ = std::move(handler);
+    return true;
+}
+
 bool MqttEventBridge::bindIvaOccupancyHandler(IvaOccupancyHandler handler) {
     std::lock_guard lock(lifecycle_mutex_);
     if (endpoint_.state() != MqttEndpointState::Constructed || !handler)
@@ -373,15 +381,29 @@ void MqttEventBridge::onMessage(const std::string& raw_topic,
         }
         try {
             const auto body = nlohmann::json::parse(raw_payload);
-            if (!body.is_object() ||
-                body.value("command", std::string{}) != "ALARM_ACK") {
-                util::logWarn("Fire ACK rejected: unsupported command");
+            if (!body.is_object()) {
+                util::logWarn("Fire command rejected: JSON object required");
                 return;
             }
+            const std::string command =
+                body.value("command", std::string{});
             const std::string payload_channel =
                 body.value("channel_id", std::string{});
             if (!payload_channel.empty() && payload_channel != channel_id) {
-                util::logWarn("Fire ACK rejected: topic/payload channel mismatch");
+                util::logWarn(
+                    "Fire command rejected: topic/payload channel mismatch");
+                return;
+            }
+            if (command == "ALARM_CLEAR") {
+                if (!fire_clear_handler_ ||
+                    !fire_clear_handler_(channel_id)) {
+                    util::logWarn(
+                        "Fire clear was not applied: channel=" + channel_id);
+                }
+                return;
+            }
+            if (command != "ALARM_ACK") {
+                util::logWarn("Fire command rejected: unsupported command");
                 return;
             }
             const std::string alarm_id =
@@ -757,8 +779,23 @@ MqttTrackedPublishResult MqttEventBridge::publishTrackedFire(
     const bool retain,
     MqttPublishCorrelation correlation,
     const MqttConnectionEpoch expectedEpoch) {
-    return endpoint_.publishTracked(
+    auto result = endpoint_.publishTracked(
         topic, payload, retain, std::move(correlation), expectedEpoch);
+    // 화재 lifecycle은 일반 Qt publish 경로와 분리돼 있으므로 여기서
+    // Telegram 알림 큐에 연결한다. retained 상태는 formatter가 제외한다.
+    if (result.accepted && telegram_notifier_) {
+        notification::TelegramMessage message{
+            .topic = topic,
+            .payload = payload,
+            .qos = 1,
+            .retain = retain,
+        };
+        if (!telegram_notifier_->enqueue(std::move(message))) {
+            util::logWarn("Failed to enqueue Telegram Fire event: topic=" +
+                          topic);
+        }
+    }
+    return result;
 }
 
 }

@@ -108,6 +108,8 @@ public:
     using FireAckHandler =
         std::function<bool(const std::string& channel_id,
                            const std::string& alarm_id)>;
+    using FireClearHandler =
+        std::function<bool(const std::string& channel_id)>;
     using IvaOccupancyHandler =
         std::function<bool(const event::IvaOccupancySignal& signal)>;
     using TransportFactHandler =
@@ -138,6 +140,7 @@ public:
 
     bool bindSensorMessageHandler(SensorMessageHandler handler);
     bool bindFireAckHandler(FireAckHandler handler);
+    bool bindFireClearHandler(FireClearHandler handler);
     bool bindIvaOccupancyHandler(IvaOccupancyHandler handler);
     bool bindTransportFactHandler(TransportFactHandler handler);
     bool bindRegularEgressAdmission(RegularEgressAdmission admission);
@@ -199,6 +202,7 @@ private:
     const std::vector<parking::ParkingSlotConfig> parking_slot_configs_;
     SensorMessageHandler sensor_message_handler_;
     FireAckHandler fire_ack_handler_;
+    FireClearHandler fire_clear_handler_;
     IvaOccupancyHandler iva_occupancy_handler_;
     TransportFactHandler transport_fact_handler_;
     RegularEgressAdmission regular_egress_admission_;

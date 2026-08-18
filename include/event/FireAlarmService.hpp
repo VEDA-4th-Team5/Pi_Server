@@ -95,6 +95,8 @@ public:
     FireCommandResult submitSignal(FireSignal signal);
     FireCommandResult submitAcknowledge(std::string channel_id,
                                         std::string alarm_id);
+    /** Resolves an active alarm without advancing the physical sensor cursor. */
+    FireCommandResult submitManualClear(std::string channel_id);
 
     void closeIngress() noexcept;
     bool drainCommitted(std::chrono::milliseconds timeout);
@@ -105,7 +107,7 @@ public:
     [[nodiscard]] std::size_t bindingCount() const noexcept;
 
 private:
-    enum class CommandKind { Signal, Acknowledge };
+    enum class CommandKind { Signal, Acknowledge, ManualClear };
     struct Command {
         CommandKind kind{CommandKind::Signal};
         std::uint64_t ticket{};
@@ -122,6 +124,7 @@ private:
     FireCommandResult processSignal(const Command& command,
                                     const FireChannelBinding& binding);
     FireCommandResult processAcknowledge(const Command& command);
+    FireCommandResult processManualClear(const Command& command);
     FireStoreMutationResult applyTransition(
         const FireStateMutation& mutation);
     const FireChannelBinding* findBySensor(const std::string& sensor_id) const;

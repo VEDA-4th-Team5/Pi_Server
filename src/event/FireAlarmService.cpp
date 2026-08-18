@@ -407,6 +407,14 @@ FireCommandResult FireAlarmService::submitAcknowledge(
     return enqueue(std::move(command));
 }
 
+FireCommandResult FireAlarmService::submitManualClear(
+    std::string channel_id) {
+    Command command;
+    command.kind = CommandKind::ManualClear;
+    command.channelId = std::move(channel_id);
+    return enqueue(std::move(command));
+}
+
 FireCommandResult FireAlarmService::enqueue(Command command) {
     std::lock_guard lock(mutex_);
     command.ticket = next_ticket_++;
@@ -633,6 +641,9 @@ FireCommandResult FireAlarmService::process(const Command& command) {
     if (command.kind == CommandKind::Acknowledge) {
         return processAcknowledge(command);
     }
+    if (command.kind == CommandKind::ManualClear) {
+        return processManualClear(command);
+    }
     const auto* binding = findBySensor(command.signal.sensorId);
     if (!binding) {
         return {command.ticket, FireCommandStatus::Rejected, {}, 0,
@@ -832,6 +843,84 @@ FireCommandResult FireAlarmService::processAcknowledge(
     mutation.lifecycleDelivery = makeDelivery(
         FireDeliverySinkKind::LifecycleEvent, lifecycle_id, next.lastEventId,
         next, next.lastEventId, command.alarmId,
+        joinTopic(config_.lifecycleTopicPrefix, command.channelId),
+        lifecycle_payload, next.updatedAt);
+    const auto result = applyTransition(mutation);
+    return mutationResult(command.ticket, command.channelId, result);
+}
+
+FireCommandResult FireAlarmService::processManualClear(
+    const Command& command) {
+    const auto* binding = findByChannel(command.channelId);
+    if (!binding) {
+        return {command.ticket, FireCommandStatus::Rejected,
+                command.channelId, 0, "Fire clear channel is invalid"};
+    }
+    const auto current = database_.getFireAlarmState(command.channelId);
+    if (!current) {
+        return retryableResult(command.ticket, command.channelId, 0,
+                               "Fire durable state is unavailable");
+    }
+    if (!activeLifecycle(current->desiredLifecycle)) {
+        return {command.ticket, FireCommandStatus::Idempotent,
+                command.channelId, current->fireRevision, {}};
+    }
+    if (current->fireRevision == kMaxFireRevision) {
+        return failedResult(command.ticket, command.channelId,
+                            current->fireRevision,
+                            "Fire revision exhausted");
+    }
+    if (current->activeAlarmId.empty()) {
+        return failedResult(command.ticket, command.channelId,
+                            current->fireRevision,
+                            "manual Fire clear lost alarm identity");
+    }
+
+    auto signal = deserializeSignal(current->lastSignalJson);
+    if (!signal) {
+        signal = FireSignal{};
+        signal->sensorId = current->sensorId;
+        signal->sourceProtocolVersion =
+            current->protocolMode == FireProtocolMode::Versioned
+            ? sensor::SensorProtocolVersion::BootEpochV2
+            : sensor::SensorProtocolVersion::LegacyV1;
+        signal->sourceBootId = current->activeBootId;
+        signal->sourceSequence = current->lastSourceSequence;
+    }
+    signal->detected = false;
+    signal->occurredAt = std::chrono::system_clock::now();
+    signal->sourceTransport = "manual-control";
+    signal->rawPayload = "MANUAL_FIRE_CLEAR:" + command.channelId;
+
+    FireAlarmStateRecord next = *current;
+    next.desiredLifecycle = FireAlarmLifecycle::Resolved;
+    next.fireRevision = current->fireRevision + 1;
+    next.lastEventId = fireEventId(command.channelId, next.fireRevision);
+    next.updatedAt = util::isoString(signal->occurredAt);
+    const std::string alarm_id = current->activeAlarmId;
+    next.activeAlarmId.clear();
+
+    const std::string retained_id = retainedDeliveryId(command.channelId);
+    const std::string lifecycle_id = lifecycleDeliveryId(next.lastEventId);
+    const std::string retained_payload = EventPayloadBuilder::buildFireJson(
+        config_.cameraId, command.channelId, *signal,
+        FireAlarmLifecycle::Resolved, next.lastEventId,
+        alarm_id, next.fireRevision, retained_id);
+    const std::string lifecycle_payload = EventPayloadBuilder::buildFireJson(
+        config_.cameraId, command.channelId, *signal,
+        FireAlarmLifecycle::Resolved, next.lastEventId,
+        alarm_id, next.fireRevision, lifecycle_id);
+
+    FireStateMutation mutation;
+    mutation.expectedRevision = current->fireRevision;
+    mutation.nextState = next;
+    mutation.retainedDelivery = makeDelivery(
+        FireDeliverySinkKind::RetainedState, retained_id,
+        binding->retainedTopic, next, next.lastEventId, alarm_id,
+        binding->retainedTopic, retained_payload, next.updatedAt);
+    mutation.lifecycleDelivery = makeDelivery(
+        FireDeliverySinkKind::LifecycleEvent, lifecycle_id, next.lastEventId,
+        next, next.lastEventId, alarm_id,
         joinTopic(config_.lifecycleTopicPrefix, command.channelId),
         lifecycle_payload, next.updatedAt);
     const auto result = applyTransition(mutation);

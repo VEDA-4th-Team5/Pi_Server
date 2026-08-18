@@ -271,6 +271,8 @@ void testProductionBridgeSeesPreconstructedFireTarget() {
     auto transport = std::make_unique<FakeMqttTransport>();
     auto* fake = transport.get();
     fake->emitFireAckDuringStart = true;
+    std::atomic<int> clear_calls{0};
+    std::string clear_channel;
 
     mqtt::MqttEventBridge bridge(
         config, channels, database, storage, ocrWorker,
@@ -289,10 +291,21 @@ void testProductionBridgeSeesPreconstructedFireTarget() {
                 return permitForEpoch(1);
             }),
             "Fire-priority egress gate bind failed");
+    require(bridge.bindFireClearHandler(
+                [&](const std::string& channel_id) {
+                    clear_channel = channel_id;
+                    ++clear_calls;
+                    return true;
+                }),
+            "Fire clear target bind failed");
     require(bridge.start(), "production bridge failed to start with fake transport");
     require(target->calls.load() == 1 && target->lastChannel == "CH1" &&
                 target->lastAlarm == "A1",
             "Fire ACK delivered inside transport start missed its live target");
+    fake->emitRaw("parking/v1/fire/ack/CH1",
+                  R"({"command":"ALARM_CLEAR","channel_id":"CH1"})");
+    require(clear_calls.load() == 1 && clear_channel == "CH1",
+            "live ALARM_CLEAR did not reach its target");
 
     require(bridge.stop(), "production bridge stop failed");
     fake->emitRaw("parking/v1/fire/ack/CH1",
