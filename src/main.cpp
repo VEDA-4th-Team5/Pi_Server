@@ -1238,7 +1238,14 @@ int main() {
                     channel_id, alarm_id);
                 return result.status == event::FireCommandStatus::Queued;
             });
-        if (!facts_bound || !egress_bound || !ack_bound) {
+        const bool clear_bound = mqtt_bridge.bindFireClearHandler(
+            [weak_fire](const std::string& channel_id) {
+                const auto service = weak_fire.lock();
+                if (!service) return false;
+                const auto result = service->submitManualClear(channel_id);
+                return result.status == event::FireCommandStatus::Queued;
+            });
+        if (!facts_bound || !egress_bound || !ack_bound || !clear_bound) {
             util::logError("Fire ACK callback binding failed while stopped");
             return shutdown_and_return(1);
         }

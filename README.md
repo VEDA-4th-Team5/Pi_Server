@@ -245,7 +245,7 @@ ABI, 권한 설정, `read/write/ioctl/poll` 검증 방법은
 STM32가 아직 연결되지 않은 동안에는 FIFO로 같은 수신 경로를 검증할 수 있습니다.
 
 ```bash
-tools/fake_fire_sensor.sh --create-fifo /tmp/fake-uart
+tools/fire/fake_fire_sensor.sh --create-fifo /tmp/fake-uart
 
 FIRE_ALARM_ENABLED=true \
 SENSOR_LINK_MODE=uart-line \
@@ -254,7 +254,7 @@ FIRE_SENSOR_CHANNEL_MAP='FLAME01=ch01,FLAME02=ch02,FLAME03=ch03,FLAME04=ch04' \
   ./cmake-build/pi-server
 
 # 다른 터미널에서
-tools/fake_fire_sensor.sh /tmp/fake-uart FLAME01 detected
+tools/fire/fake_fire_sensor.sh /tmp/fake-uart FLAME01 detected
 mosquitto_sub -h localhost -t 'parking/fire/#' -v
 ```
 

@@ -7,15 +7,15 @@
 #
 # 사용법:
 #   1) 터미널 A(PTY pair는 실제 termios UART와 같은 인터페이스를 제공한다):
-#        tools/fake_fire_sensor.sh --create-pty /tmp/fake-uart-rx /tmp/fake-uart-tx
+#        tools/fire/fake_fire_sensor.sh --create-pty /tmp/fake-uart-rx /tmp/fake-uart-tx
 #        FIRE_ALARM_ENABLED=true \
 #        SENSOR_UART_DEVICE=/tmp/fake-uart-rx \
 #        FIRE_SENSOR_SLOT_MAP='FIRE01=EV01,FIRE02=EV02' \
 #          ./build/pi-server
 #   2) 터미널 B:
-#        tools/fake_fire_sensor.sh /tmp/fake-uart-tx FIRE01 detected
-#        tools/fake_fire_sensor.sh /tmp/fake-uart-tx FIRE01 cleared
-#        tools/fake_fire_sensor.sh --loop /tmp/fake-uart-tx FIRE01
+#        tools/fire/fake_fire_sensor.sh /tmp/fake-uart-tx FIRE01 detected
+#        tools/fire/fake_fire_sensor.sh /tmp/fake-uart-tx FIRE01 cleared
+#        tools/fire/fake_fire_sensor.sh --loop /tmp/fake-uart-tx FIRE01
 #   3) 확인:
 #        mosquitto_sub -h localhost -t 'parking/fire/#' -v
 
