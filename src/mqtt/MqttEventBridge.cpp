@@ -757,8 +757,23 @@ MqttTrackedPublishResult MqttEventBridge::publishTrackedFire(
     const bool retain,
     MqttPublishCorrelation correlation,
     const MqttConnectionEpoch expectedEpoch) {
-    return endpoint_.publishTracked(
+    auto result = endpoint_.publishTracked(
         topic, payload, retain, std::move(correlation), expectedEpoch);
+    // 화재 lifecycle은 일반 Qt publish 경로와 분리돼 있으므로 여기서
+    // Telegram 알림 큐에 연결한다. retained 상태는 formatter가 제외한다.
+    if (result.accepted && telegram_notifier_) {
+        notification::TelegramMessage message{
+            .topic = topic,
+            .payload = payload,
+            .qos = 1,
+            .retain = retain,
+        };
+        if (!telegram_notifier_->enqueue(std::move(message))) {
+            util::logWarn("Failed to enqueue Telegram Fire event: topic=" +
+                          topic);
+        }
+    }
+    return result;
 }
 
 }

@@ -457,6 +457,15 @@ target_compile_options(callback-lifecycle-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(callback-lifecycle-test PRIVATE Threads::Threads)
 add_test(NAME callback-lifecycle-test COMMAND callback-lifecycle-test)
 
+add_executable(telegram-message-formatter-test
+    tests/unit/TelegramMessageFormatterTest.cpp
+    src/notification/TelegramMessageFormatter.cpp)
+target_include_directories(telegram-message-formatter-test PRIVATE include)
+target_compile_options(telegram-message-formatter-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME telegram-message-formatter-test
+    COMMAND telegram-message-formatter-test)
+
 # 실제 MqttEventBridge 조립 경로에서 target-before-start와 stop/join 이후
 # callback 차단을 검증한다. main만 제외하고 운영 source를 그대로 링크한다.
 set(MQTT_BRIDGE_LIFECYCLE_SOURCES ${SERVER_CPP})

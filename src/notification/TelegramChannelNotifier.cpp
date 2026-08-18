@@ -51,6 +51,19 @@ bool TelegramChannelNotifier::enqueue(TelegramMessage message) {
     if (!config_.enabled) {
         return false;
     }
+    // 일반 입출차, retained 상태 및 디버그 MQTT는 Telegram으로 보내지 않는다.
+    if (!formatter_.shouldNotify(message)) return true;
+    const std::string event_id = formatter_.eventId(message);
+    if (!event_id.empty()) {
+        if (recent_event_id_set_.contains(event_id)) return true;
+        recent_event_ids_.push_back(event_id);
+        recent_event_id_set_.insert(event_id);
+        const std::size_t recent_capacity = config_.queue_capacity * 4;
+        while (recent_event_ids_.size() > recent_capacity) {
+            recent_event_id_set_.erase(recent_event_ids_.front());
+            recent_event_ids_.pop_front();
+        }
+    }
     if (queue_.size() >= config_.queue_capacity && !queue_.empty()) {
         util::logWarn("Telegram queue full; dropping oldest message");
         queue_.pop_front();
@@ -86,6 +99,7 @@ void TelegramChannelNotifier::run() {
         lock.unlock();
 
         const std::string formatted = formatter_.format(message);
+        if (formatted.empty()) continue;
         if (!sendWithRetry(message, formatted)) {
             util::logWarn("Telegram queue send failed for topic=" + message.topic);
         }
