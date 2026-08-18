@@ -274,18 +274,6 @@ add_executable(parking-link-tool
 target_include_directories(parking-link-tool PRIVATE include)
 target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
 
-# 운영 중 생성된 화재 경보를 기존 도메인 서비스로 조회/해제하는 유지보수 도구.
-# pi-server를 먼저 종료한 뒤 clear를 실행해야 SQLite writer가 충돌하지 않는다.
-add_executable(fire-alarm-ctl
-    tools/fire/fire_alarm_ctl.cpp
-    src/event/FireAlarmService.cpp
-    src/event/EventPayloadBuilder.cpp
-    src/util/StringUtil.cpp
-    src/util/TimeUtil.cpp)
-target_include_directories(fire-alarm-ctl PRIVATE include)
-target_compile_options(fire-alarm-ctl PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(fire-alarm-ctl PRIVATE parking-timer-core Threads::Threads)
-
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
