@@ -19,3 +19,14 @@ VALUES
     ('P02', 'NORMAL', 'VACANT', 'HALL'),
     ('P03', 'NORMAL', 'VACANT', 'HALL'),
     ('P04', 'NORMAL', 'VACANT', 'HALL');
+
+-- EV 슬롯 기본 ROI(전체 프레임, x=0 y=0 width=1 height=1 revision=1). Qt의
+-- ROI 웹 도구로 실제 좌표를 저장하면 ParkingRoiSettingsService가 이 값을
+-- 덮어쓴다. 이 기본값은 개발/테스트 중 DB를 초기화해도 캡처가 즉시 동작하도록
+-- 하기 위한 것이며, 정확한 크롭 좌표가 아니다.
+INSERT OR IGNORE INTO SYSTEM_SETTINGS(key, value)
+VALUES
+    ('parking_slot_roi.EV01', '0,0,1,1,1'),
+    ('parking_slot_roi.EV02', '0,0,1,1,1'),
+    ('parking_slot_roi.EV03', '0,0,1,1,1'),
+    ('parking_slot_roi.EV04', '0,0,1,1,1');
