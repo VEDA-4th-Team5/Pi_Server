@@ -202,7 +202,7 @@ std::string buildQtParkingEvent(
     const std::string_view timestamp,
     const std::string_view detail,
     const int overstay_threshold_seconds,
-    const parking::AppliedParkingRoi& applied_roi) {
+    const std::optional<parking::AppliedParkingRoi>& applied_roi) {
     const auto* area = findArea(config, std::string(slot_id));
     std::string external_type(event_type);
     if (event_type == "VIOLATION_TRIGGERED") external_type = "OVERTIME_VIOLATION";
@@ -239,11 +239,16 @@ std::string buildQtParkingEvent(
            << "\"alarm_kind\":\"" << alarm_kind << "\","
            << "\"alarm\":\"" << alarm_kind << "\","
            << "\"alarm_state\":\"" << (alarm ? "OPEN" : "NONE") << "\","
-           << "\"roi\":{\"x\":" << applied_roi.value.x << ','
-           << "\"y\":" << applied_roi.value.y << ','
-           << "\"width\":" << applied_roi.value.width << ','
-           << "\"height\":" << applied_roi.value.height << "},"
-           << "\"roi_revision\":" << applied_roi.revision << ','
+           << "\"roi_configured\":" << (applied_roi ? "true" : "false")
+           << ",\"roi\":{\"x\":"
+           << (applied_roi ? applied_roi->value.x : 0.0) << ','
+           << "\"y\":" << (applied_roi ? applied_roi->value.y : 0.0) << ','
+           << "\"width\":"
+           << (applied_roi ? applied_roi->value.width : 0.0) << ','
+           << "\"height\":"
+           << (applied_roi ? applied_roi->value.height : 0.0) << "},"
+           << "\"roi_revision\":"
+           << (applied_roi ? applied_roi->revision : 0) << ','
            << "\"session_images_url\":\"/api/v1/parking-sessions/"
            << session_id << "/images\","
            << "\"evidence_path\":\"" << util::jsonEscape(std::string(detail)) << "\","
@@ -1145,7 +1150,8 @@ int main() {
     if (parking_timer && (config.hall_mqtt_input_enabled ||
                           sensor_link_mode != device::SensorLinkMode::Disabled ||
                           config.parking_occupancy_source == "CAMERA_IVA" ||
-                          config.parking_occupancy_source == "HALL")) {
+                          config.parking_occupancy_source == "HALL" ||
+                          config.parking_occupancy_source == "HYBRID_OR")) {
         hall_service = std::make_shared<sensor::HallParkingService>(
             parking_slot_configs, config, channels, database,
             [&ocr_worker](const int session_id) {
@@ -1170,10 +1176,12 @@ int main() {
     }
 
     const bool hall_mqtt_required = config.hall_mqtt_input_enabled &&
-        config.parking_occupancy_source == "HALL";
+        (config.parking_occupancy_source == "HALL" ||
+         config.parking_occupancy_source == "HYBRID_OR");
     const bool iva_handler_required =
         config.parking_occupancy_source == "CAMERA_IVA" ||
-        config.parking_occupancy_source == "HALL";
+        config.parking_occupancy_source == "HALL" ||
+        config.parking_occupancy_source == "HYBRID_OR";
     if ((hall_mqtt_required || iva_handler_required) && !hall_service) {
         util::logError(
             "parking occupancy callback target could not be constructed");
@@ -1230,7 +1238,14 @@ int main() {
                     channel_id, alarm_id);
                 return result.status == event::FireCommandStatus::Queued;
             });
-        if (!facts_bound || !egress_bound || !ack_bound) {
+        const bool clear_bound = mqtt_bridge.bindFireClearHandler(
+            [weak_fire](const std::string& channel_id) {
+                const auto service = weak_fire.lock();
+                if (!service) return false;
+                const auto result = service->submitManualClear(channel_id);
+                return result.status == event::FireCommandStatus::Queued;
+            });
+        if (!facts_bound || !egress_bound || !ack_bound || !clear_bound) {
             util::logError("Fire ACK callback binding failed while stopped");
             return shutdown_and_return(1);
         }
@@ -1311,14 +1326,19 @@ int main() {
                 const auto applied_roi = roi_settings.resolveForUse(
                     std::string(slot_id));
                 if (!applied_roi) {
-                    util::logError("Qt parking event ROI is missing: slot=" +
-                                   std::string(slot_id));
-                    return false;
+                    // ROI 미설정은 Qt 상태 이벤트 발행 실패가 아니다. 실패로
+                    // 반환하면 이미 커밋된 점유 effect가 계속 재시도되어 동일
+                    // 촬영 예약과 로그가 반복된다. crop/OCR 경로는 별도로 ROI를
+                    // 검증하므로 여기서는 좌표 없는 상태 이벤트를 한 번 발행한다.
+                    util::logWarn(
+                        "Qt parking event published without ROI: slot=" +
+                        std::string(slot_id) +
+                        " roi_configured=false");
                 }
                 const std::string payload = buildQtParkingEvent(
                     config, database, event_type, session_id, slot_id, plate,
                     timestamp, detail,
-                    overstay_settings.thresholdSeconds(), *applied_roi);
+                    overstay_settings.thresholdSeconds(), applied_roi);
                 const std::string event_topic =
                     "parking/v1/events/" + std::string(slot_id);
                 const std::string state_topic =
@@ -1397,7 +1417,8 @@ int main() {
                     }
                     return;
                 }
-                if (config.parking_occupancy_source == "HALL") {
+                if (config.parking_occupancy_source == "HALL" ||
+                    config.parking_occupancy_source == "HYBRID_OR") {
                     if (const auto hall_target = weak_hall.lock())
                         hall_target->handleLine(line, transport);
                 }

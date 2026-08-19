@@ -276,6 +276,22 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                 executeSqlUnlocked(
                     "ALTER TABLE PARKING_SESSION ADD COLUMN "
                     "exit_time_epoch_ms INTEGER;");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "hall_confirmed"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN hall_confirmed "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (hall_confirmed IN (0,1));");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "iva_confirmed"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN iva_confirmed "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (iva_confirmed IN (0,1));");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "hall_occupied"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN hall_occupied "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (hall_occupied IN (0,1));");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "iva_occupied"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN iva_occupied "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (iva_occupied IN (0,1));");
         }
         if (tableHasColumn(db_, "IMAGE_LOG", "image_id")) {
             if (!tableHasColumn(db_, "IMAGE_LOG", "evidence_reason"))
@@ -454,6 +470,30 @@ void EventDatabase::migrateRuntimeSchema() {
                 "ALTER TABLE PARKING_SESSION "
                 "ADD COLUMN exit_time_epoch_ms INTEGER;");
         }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "hall_confirmed")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION ADD COLUMN hall_confirmed "
+                "INTEGER NOT NULL DEFAULT 0 CHECK (hall_confirmed IN (0,1));");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "iva_confirmed")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION ADD COLUMN iva_confirmed "
+                "INTEGER NOT NULL DEFAULT 0 CHECK (iva_confirmed IN (0,1));");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "hall_occupied")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION ADD COLUMN hall_occupied "
+                "INTEGER NOT NULL DEFAULT 0 CHECK (hall_occupied IN (0,1));");
+        }
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id") &&
+            !tableHasColumn(db_, "PARKING_SESSION", "iva_occupied")) {
+            executeSqlUnlocked(
+                "ALTER TABLE PARKING_SESSION ADD COLUMN iva_occupied "
+                "INTEGER NOT NULL DEFAULT 0 CHECK (iva_occupied IN (0,1));");
+        }
         if (tableHasColumn(db_, "PARKING_SESSION", "occupancy_attempt_id")) {
             executeSqlUnlocked(
                 "UPDATE PARKING_SESSION SET "
@@ -471,6 +511,18 @@ void EventDatabase::migrateRuntimeSchema() {
                 "UPDATE PARKING_SESSION SET exit_time_epoch_ms="
                 "CAST((julianday(exit_time)-2440587.5)*86400000 AS INTEGER) "
                 "WHERE exit_time IS NOT NULL AND exit_time_epoch_ms IS NULL;");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET hall_confirmed=1,"
+                "hall_occupied=CASE WHEN exit_time IS NULL AND status IN "
+                "('ACTIVE','VIOLATION') THEN 1 ELSE 0 END WHERE "
+                "entry_command_id LIKE 'hall:%' AND hall_confirmed=0 AND "
+                "iva_confirmed=0 AND hall_occupied=0 AND iva_occupied=0;");
+            executeSqlUnlocked(
+                "UPDATE PARKING_SESSION SET iva_confirmed=1,"
+                "iva_occupied=CASE WHEN exit_time IS NULL AND status IN "
+                "('ACTIVE','VIOLATION') THEN 1 ELSE 0 END WHERE "
+                "entry_command_id LIKE 'camera:%' AND hall_confirmed=0 AND "
+                "iva_confirmed=0 AND hall_occupied=0 AND iva_occupied=0;");
             Statement invalid_timestamp(db_,
                 "SELECT 1 FROM PARKING_SESSION WHERE entry_time_epoch_ms IS NULL "
                 "OR (exit_time IS NOT NULL AND exit_time_epoch_ms IS NULL) "
@@ -627,6 +679,8 @@ void EventDatabase::migrateRuntimeSchema() {
             "deadline_id TEXT PRIMARY KEY,slot_id TEXT NOT NULL,"
             "occupancy_attempt_id TEXT NOT NULL,expected_session_id INTEGER NOT NULL,"
             "observation_generation INTEGER NOT NULL,due_at_epoch_ms INTEGER NOT NULL,"
+            "occupancy_policy TEXT NOT NULL DEFAULT 'CAMERA_IVA' CHECK "
+            "(occupancy_policy IN ('CAMERA_IVA','HYBRID_OR')),"
             "state TEXT NOT NULL CHECK (state IN "
             "('SCHEDULED','ADMITTED','SUPERSEDED','APPLIED')),"
             "admitted_command_id TEXT UNIQUE,"
@@ -634,6 +688,13 @@ void EventDatabase::migrateRuntimeSchema() {
             "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
             "FOREIGN KEY(slot_id) REFERENCES PARKING_SLOT(slot_id),"
             "FOREIGN KEY(expected_session_id) REFERENCES PARKING_SESSION(session_id));");
+        if (!tableHasColumn(db_, "OCCUPANCY_EXIT_DEADLINE",
+                            "occupancy_policy")) {
+            executeSqlUnlocked(
+                "ALTER TABLE OCCUPANCY_EXIT_DEADLINE ADD COLUMN "
+                "occupancy_policy TEXT NOT NULL DEFAULT 'CAMERA_IVA' CHECK "
+                "(occupancy_policy IN ('CAMERA_IVA','HYBRID_OR'));");
+        }
         executeSqlUnlocked(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_occupancy_live_deadline_slot "
             "ON OCCUPANCY_EXIT_DEADLINE(slot_id) "

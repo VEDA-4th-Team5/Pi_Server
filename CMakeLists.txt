@@ -274,22 +274,6 @@ add_executable(parking-link-tool
 target_include_directories(parking-link-tool PRIVATE include)
 target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
 
-# 설치된 카메라 화면에서 주차면 ROI를 측정하는 독립 C++/OpenCV 도구.
-# 운영 pi-server와 별도 프로세스이며, RTSP URL은 환경변수로만 전달한다.
-add_executable(check_coordinates tools/check_coordinates.cpp)
-target_compile_options(check_coordinates PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(check_coordinates PRIVATE
-    PkgConfig::OPENCV PkgConfig::HTTPLIB Threads::Threads)
-add_test(NAME check-coordinates-test
-    COMMAND check_coordinates
-            --image ${CMAKE_SOURCE_DIR}/tests/fixtures/roi_checker_test.ppm
-            --slot EV01
-            --rect 1,0,2,1
-            --output ${CMAKE_CURRENT_BINARY_DIR}/roi_checker_test_preview.png)
-set_tests_properties(check-coordinates-test PROPERTIES
-    PASS_REGULAR_EXPRESSION
-        "IVA_EV01_ROI_X=0.250000;IVA_EV01_ROI_WIDTH=0.500000")
-
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
@@ -472,6 +456,15 @@ target_include_directories(callback-lifecycle-test PRIVATE include)
 target_compile_options(callback-lifecycle-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(callback-lifecycle-test PRIVATE Threads::Threads)
 add_test(NAME callback-lifecycle-test COMMAND callback-lifecycle-test)
+
+add_executable(telegram-message-formatter-test
+    tests/unit/TelegramMessageFormatterTest.cpp
+    src/notification/TelegramMessageFormatter.cpp)
+target_include_directories(telegram-message-formatter-test PRIVATE include)
+target_compile_options(telegram-message-formatter-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME telegram-message-formatter-test
+    COMMAND telegram-message-formatter-test)
 
 # 실제 MqttEventBridge 조립 경로에서 target-before-start와 stop/join 이후
 # callback 차단을 검증한다. main만 제외하고 운영 source를 그대로 링크한다.

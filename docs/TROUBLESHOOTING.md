@@ -167,7 +167,7 @@ mosquitto_pub -h localhost -q 1 \
 
 가짜 UART를 일반 FIFO로 만들면 `tcgetattr failed: Inappropriate ioctl for device`가
 발생한다. 운영 `UartDriver`는 termios 장치를 요구하므로
-`tools/fake_fire_sensor.sh --create-pty <server_device> <writer_device>`로 socat PTY pair를
+`tools/fire/fake_fire_sensor.sh --create-pty <server_device> <writer_device>`로 socat PTY pair를
 만들어야 한다. 서버는 `server_device`를 열고 테스트 프레임은 `writer_device`로 보낸다.
 
 ## 5. 홀센서와 점유 처리

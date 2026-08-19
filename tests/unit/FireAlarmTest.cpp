@@ -793,6 +793,43 @@ void testRestartRestoresPendingClear() {
     std::filesystem::remove(path);
 }
 
+void testManualClearPreservesPhysicalSensorCursor() {
+    const auto path = uniqueDatabasePath("manual-clear");
+    {
+        database::EventDatabase database(path);
+        database.migrateRuntimeSchema();
+        ResultCollector collector;
+        auto service = makeService(database, collector);
+        require(service.initialize() && service.start(),
+                "manual-clear fixture must start");
+
+        const auto open = service.submitSignal(signal(true, 10));
+        require(collector.wait(open.ticket).fireRevision == 2,
+                "manual-clear fixture OPEN must commit");
+        const auto clear = service.submitManualClear("ch01");
+        const auto cleared = collector.wait(clear.ticket);
+        require(cleared.status == event::FireCommandStatus::DurablyCommitted &&
+                    cleared.fireRevision == 3,
+                "manual clear must commit a new revision");
+        const auto state = database.getFireAlarmState("ch01");
+        require(state &&
+                    state->desiredLifecycle ==
+                        event::FireAlarmLifecycle::Resolved &&
+                    state->lastSourceSequence == 10,
+                "manual clear must preserve the physical sensor cursor");
+
+        const auto duplicate = service.submitManualClear("ch01");
+        require(collector.wait(duplicate.ticket).status ==
+                    event::FireCommandStatus::Idempotent,
+                "repeated manual clear must be idempotent");
+        const auto reopen = service.submitSignal(signal(true, 11));
+        require(collector.wait(reopen.ticket).fireRevision == 4,
+                "newer physical DETECTED must reopen after manual clear");
+        require(service.stop(), "manual-clear fixture must stop");
+    }
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main() {
@@ -809,6 +846,7 @@ int main() {
         testRepeatedEarlyAcknowledgeIsCoalescedBeforeSensorClear();
         testTransientFailureBlocksOnlyItsChannel();
         testRestartRestoresPendingClear();
+        testManualClearPreservesPhysicalSensorCursor();
     } catch (const std::exception& error) {
         std::cerr << "FireAlarmTest failed: " << error.what() << '\n';
         return 1;

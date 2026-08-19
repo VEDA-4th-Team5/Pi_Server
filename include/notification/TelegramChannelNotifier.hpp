@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <unordered_set>
 
 namespace notification {
 
@@ -42,6 +44,8 @@ private:
     const TelegramApiClient& api_client_;
     const TelegramMessageFormatter formatter_;
     std::deque<TelegramMessage> queue_;
+    std::deque<std::string> recent_event_ids_;
+    std::unordered_set<std::string> recent_event_id_set_;
     bool stopped_{true};
     bool stop_requested_{false};
     std::mutex queue_mutex_;

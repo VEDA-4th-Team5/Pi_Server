@@ -229,6 +229,52 @@ parking::SlotTransitionCommand cameraCommand(
     return command;
 }
 
+parking::SlotTransitionCommand hybridHallCommand(
+    const std::string& command_id,
+    const std::uint64_t sequence,
+    const std::string& state,
+    const std::int64_t occurred_epoch_ms,
+    const std::int64_t due_epoch_ms = 0) {
+    auto command = hallCommand(command_id, sequence, state,
+                               occurred_epoch_ms, due_epoch_ms);
+    command.slotId = "EV01";
+    auto payload = nlohmann::json::parse(command.payloadJson);
+    payload["occupancy_policy"] = "HYBRID_OR";
+    command.payloadJson = payload.dump();
+    return command;
+}
+
+parking::SlotTransitionCommand hybridCameraCommand(
+    const std::string& command_id,
+    const std::string& action,
+    const std::string& object_id,
+    const std::int64_t occurred_epoch_ms,
+    const std::int64_t deadline_epoch_ms) {
+    auto command = cameraCommand(command_id, action, object_id,
+                                 occurred_epoch_ms, deadline_epoch_ms);
+    auto payload = nlohmann::json::parse(command.payloadJson);
+    payload["occupancy_policy"] = "HYBRID_OR";
+    command.payloadJson = payload.dump();
+    return command;
+}
+
+parking::SlotTransitionCommand cameraAreaCommand(
+    const std::string& command_id,
+    const std::string& action,
+    const std::string& object_id,
+    const std::string& area_key,
+    const std::vector<std::string>& configured_areas,
+    const std::int64_t occurred_epoch_ms,
+    const std::int64_t deadline_epoch_ms) {
+    auto command = cameraCommand(command_id, action, object_id,
+                                 occurred_epoch_ms, deadline_epoch_ms);
+    auto payload = nlohmann::json::parse(command.payloadJson);
+    payload["area_key"] = area_key;
+    payload["configured_areas"] = configured_areas;
+    command.payloadJson = payload.dump();
+    return command;
+}
+
 parking::SlotTransitionActor makeActor(
     database::SessionTransitionStore& store) {
     return parking::SlotTransitionActor(
@@ -1343,7 +1389,7 @@ void testEffectFailureDoesNotBlockAuthoritativeVacant() {
             "nonblocking-effect actor did not stop");
 }
 
-void testCameraObjectOverlapAndLegacyTakeover() {
+void testCameraAreaStateIgnoresObjectIdentity() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     initialize(database);
@@ -1356,8 +1402,8 @@ void testCameraObjectOverlapAndLegacyTakeover() {
         "camera-overlap-a-in", "INTRUSION", "object-A", base, 0);
     const auto object_b = cameraCommand(
         "camera-overlap-b-in", "INTRUSION", "object-B", base + 10, 0);
-    const auto object_a_exit = cameraCommand(
-        "camera-overlap-a-out", "EXIT", "object-A", base + 20, future);
+    const auto object_c_exit = cameraCommand(
+        "camera-overlap-c-out", "EXIT", "object-C", base + 20, future);
     require(store.admit(object_a, 100).accepted(),
             "object A admission failed");
     require(store.apply(object_a.commandId).code ==
@@ -1367,38 +1413,108 @@ void testCameraObjectOverlapAndLegacyTakeover() {
             "object B admission failed");
     require(store.apply(object_b.commandId).code ==
                 parking::CommittedOccupancyCode::NoChange,
-            "object B did not join the active area set");
-    require(store.admit(object_a_exit, 100).accepted(),
-            "object A exit admission failed");
-    require(store.apply(object_a_exit.commandId).code ==
-                parking::CommittedOccupancyCode::NoChange,
-            "object A exit ignored the still-active object B");
-    require(probe.integer(
-                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
-                "slot_id='EV01' AND state='SCHEDULED';") == 0,
-            "object A exit scheduled departure while object B remained");
+            "object B changed the already-active area");
     require(probe.text(
                 "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
-                "WHERE slot_id='EV01';") == "{\"IVA1\":[\"object-B\"]}",
-            "camera reducer did not retain the exact active object set");
-
-    // Simulate an old database whose area state was a boolean. The first
-    // exact observation must take over that anonymous state, otherwise its
-    // sentinel can keep the slot occupied forever.
-    probe.execute(
-        "UPDATE IVA_SLOT_OBSERVATION_STATE SET "
-        "area_states_json='{\"IVA1\":true}' WHERE slot_id='EV01';");
-    const auto takeover_exit = cameraCommand(
-        "camera-legacy-b-out", "EXIT", "object-B", base + 30, future);
-    require(store.admit(takeover_exit, 100).accepted(),
-            "legacy takeover exit admission failed");
-    require(store.apply(takeover_exit.commandId).code ==
+                "WHERE slot_id='EV01';") == "{\"IVA1\":true}",
+            "camera reducer retained ObjectIds instead of area state");
+    require(store.admit(object_c_exit, 100).accepted(),
+            "object C exit admission failed");
+    require(store.apply(object_c_exit.commandId).code ==
                 parking::CommittedOccupancyCode::ExitScheduled,
-            "legacy sentinel survived the first exact EXIT after upgrade");
+            "area exit depended on the intrusion ObjectId");
     require(probe.integer(
                 "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
                 "slot_id='EV01' AND state='SCHEDULED';") == 1,
-            "exact final object exit did not persist its deadline");
+            "area exit did not schedule departure");
+    require(probe.text(
+                "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
+                "WHERE slot_id='EV01';") == "{\"IVA1\":false}",
+            "camera reducer did not persist area-level vacancy");
+
+    // Simulate the previous ObjectId-array format. An EXIT with a different
+    // or missing ObjectId must still clear the fixed parking area.
+    probe.execute(
+        "UPDATE OCCUPANCY_EXIT_DEADLINE SET state='SUPERSEDED' "
+        "WHERE slot_id='EV01';");
+    probe.execute(
+        "UPDATE IVA_SLOT_OBSERVATION_STATE SET "
+        "area_states_json='{\"IVA1\":[\"stale-object\"]}',"
+        "observed_state='OCCUPIED' WHERE slot_id='EV01';");
+    const auto takeover_exit = cameraCommand(
+        "camera-legacy-objectless-out", "EXIT", "", base + 30, future);
+    require(store.admit(takeover_exit, 100).accepted(),
+            "legacy objectless exit admission failed");
+    require(store.apply(takeover_exit.commandId).code ==
+                parking::CommittedOccupancyCode::ExitScheduled,
+            "legacy ObjectId array survived an area EXIT");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
+                "slot_id='EV01' AND state='SCHEDULED';") == 1,
+            "objectless area EXIT did not persist its deadline");
+    require(probe.text(
+                "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
+                "WHERE slot_id='EV01';") == "{\"IVA1\":false}",
+            "legacy ObjectId state was not normalized to area state");
+}
+
+void testCameraAreaStatePreservesMultiAreaOr() {
+    TemporaryDatabase temporary;
+    database::EventDatabase database(temporary.path);
+    initialize(database);
+    SqliteProbe probe(temporary.path);
+    database::SessionTransitionStore store(database);
+    const auto base = nowEpochMs() - 1000;
+    const auto future = nowEpochMs() + 1000;
+    const std::vector<std::string> configured{"IVA1", "IVA2"};
+
+    const auto area_one_in = cameraAreaCommand(
+        "camera-area-one-in", "INTRUSION", "object-A", "IVA1",
+        configured, base, 0);
+    const auto area_two_in = cameraAreaCommand(
+        "camera-area-two-in", "INTRUSION", "object-B", "IVA2",
+        configured, base + 10, 0);
+    const auto area_one_out = cameraAreaCommand(
+        "camera-area-one-out", "EXIT", "object-C", "IVA1",
+        configured, base + 20, future);
+    const auto area_two_out = cameraAreaCommand(
+        "camera-area-two-out", "EXIT", "", "IVA2",
+        configured, base + 30, future);
+
+    require(store.admit(area_one_in, 100).accepted(),
+            "area one intrusion admission failed");
+    require(store.apply(area_one_in.commandId).code ==
+                parking::CommittedOccupancyCode::SessionStarted,
+            "area one intrusion did not start a session");
+    require(store.admit(area_two_in, 100).accepted(),
+            "area two intrusion admission failed");
+    require(store.apply(area_two_in.commandId).code ==
+                parking::CommittedOccupancyCode::NoChange,
+            "area two intrusion created a duplicate session");
+    require(store.admit(area_one_out, 100).accepted(),
+            "area one exit admission failed");
+    require(store.apply(area_one_out.commandId).code ==
+                parking::CommittedOccupancyCode::NoChange,
+            "area one exit ignored the still-active area two");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
+                "slot_id='EV01' AND state='SCHEDULED';") == 0,
+            "one-area exit scheduled departure while another area was active");
+    require(probe.text(
+                "SELECT area_states_json FROM IVA_SLOT_OBSERVATION_STATE "
+                "WHERE slot_id='EV01';") ==
+                "{\"IVA1\":false,\"IVA2\":true}",
+            "multi-area OR state was not persisted");
+
+    require(store.admit(area_two_out, 100).accepted(),
+            "area two objectless exit admission failed");
+    require(store.apply(area_two_out.commandId).code ==
+                parking::CommittedOccupancyCode::ExitScheduled,
+            "final area exit did not schedule departure");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM OCCUPANCY_EXIT_DEADLINE WHERE "
+                "slot_id='EV01' AND state='SCHEDULED';") == 1,
+            "final area exit did not persist one deadline");
 }
 
 void testQueuedIntrusionWinsBeforeDeadlineLinearization() {
@@ -1525,6 +1641,230 @@ void testOverdueHallConfirmationPrecedesVacant() {
             "overdue confirmation actor did not stop");
 }
 
+void testHybridOrUsesOneSessionAndSourceAwareExit() {
+    TemporaryDatabase temporary;
+    database::EventDatabase database(temporary.path);
+    initialize(database);
+    SqliteProbe probe(temporary.path);
+    database::SessionTransitionStore store(database);
+    auto actor = makeActor(store);
+    require(actor.start(), "hybrid OR actor did not start");
+
+    const auto base = nowEpochMs() - 1000;
+
+    // IVA-only: an unrelated Hall VACANT cannot terminate a session that the
+    // Hall sensor never confirmed.
+    requireSubmitted(actor.submit(hybridCameraCommand(
+        "hybrid-iva-only-in", "INTRUSION", "iva-only", base, 0)),
+        "hybrid IVA-only intrusion failed");
+    require(actor.waitUntilIdle(3s), "hybrid IVA-only entry did not settle");
+    const auto iva_only_session = probe.integer(
+        "SELECT session_id FROM PARKING_SESSION WHERE slot_id='EV01' "
+        "AND exit_time IS NULL;");
+    require(probe.integer(
+                "SELECT iva_confirmed*1000+iva_occupied*100+"
+                "hall_confirmed*10+hall_occupied FROM PARKING_SESSION WHERE "
+                "session_id=" + std::to_string(iva_only_session) + ";") == 1100,
+            "IVA-only session source state is incorrect");
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-iva-only-hall-vacant", 1, "VACANT", base + 100)),
+        "hybrid IVA-only Hall VACANT failed");
+    require(actor.waitUntilIdle(3s),
+            "hybrid IVA-only Hall VACANT did not settle");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM PARKING_SESSION WHERE session_id=" +
+                std::to_string(iva_only_session) +
+                " AND exit_time IS NULL;") == 1,
+            "Hall VACANT closed an IVA-only session");
+    requireSubmitted(actor.submit(hybridCameraCommand(
+        "hybrid-iva-only-out", "EXIT", "iva-only", base + 200,
+        nowEpochMs() + 40)), "hybrid IVA-only exit failed");
+    require(waitUntil([&] {
+                return probe.integer(
+                           "SELECT COUNT(*) FROM PARKING_SESSION WHERE "
+                           "session_id=" + std::to_string(iva_only_session) +
+                           " AND exit_time IS NOT NULL;") == 1;
+            }), "IVA-only session did not close on confirmed IVA Exit");
+
+    // Hall-only: the durable Hall confirmation creates the session and Hall
+    // VACANT owns its exit without waiting for a camera event.
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-hall-only-in", 2, "OCCUPIED", base + 300)),
+        "hybrid Hall-only entry failed");
+    require(actor.waitUntilIdle(3s), "hybrid Hall-only entry did not settle");
+    const auto hall_only_session = probe.integer(
+        "SELECT session_id FROM PARKING_SESSION WHERE slot_id='EV01' "
+        "AND exit_time IS NULL;");
+    require(hall_only_session != iva_only_session,
+            "Hall-only entry reused an ended session");
+    require(probe.integer(
+                "SELECT iva_confirmed*1000+iva_occupied*100+"
+                "hall_confirmed*10+hall_occupied FROM PARKING_SESSION WHERE "
+                "session_id=" + std::to_string(hall_only_session) + ";") == 11,
+            "Hall-only session source state is incorrect");
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-hall-only-out", 3, "VACANT", base + 400)),
+        "hybrid Hall-only exit failed");
+    require(waitUntil([&] {
+                return probe.integer(
+                           "SELECT COUNT(*) FROM PARKING_SESSION WHERE "
+                           "session_id=" + std::to_string(hall_only_session) +
+                           " AND exit_time IS NOT NULL;") == 1;
+            }), "Hall-only session did not close on Hall VACANT");
+
+    // Both sensors: the second arrival enriches the same session. Hall VACANT
+    // alone is recorded but must not close while IVA remains occupied.
+    requireSubmitted(actor.submit(hybridCameraCommand(
+        "hybrid-both-camera-in", "INTRUSION", "both-a", base + 500, 0)),
+        "hybrid both-sensor camera entry failed");
+    require(actor.waitUntilIdle(3s),
+            "hybrid both-sensor camera entry did not settle");
+    const auto both_session = probe.integer(
+        "SELECT session_id FROM PARKING_SESSION WHERE slot_id='EV01' "
+        "AND exit_time IS NULL;");
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-both-hall-in", 4, "OCCUPIED", base + 600)),
+        "hybrid both-sensor Hall confirmation failed");
+    require(actor.waitUntilIdle(3s),
+            "hybrid both-sensor Hall confirmation did not settle");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM PARKING_SESSION WHERE slot_id='EV01' "
+                "AND exit_time IS NULL;") == 1 &&
+                probe.integer(
+                    "SELECT hall_confirmed+iva_confirmed+hall_occupied+"
+                    "iva_occupied FROM PARKING_SESSION WHERE session_id=" +
+                    std::to_string(both_session) + ";") == 4,
+            "second sensor created a duplicate session or failed to confirm");
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-both-hall-out", 5, "VACANT", base + 700)),
+        "hybrid both-sensor Hall VACANT failed");
+    require(actor.waitUntilIdle(3s),
+            "hybrid both-sensor Hall VACANT did not settle");
+    require(probe.integer(
+                "SELECT hall_occupied*10+iva_occupied FROM PARKING_SESSION "
+                "WHERE session_id=" + std::to_string(both_session) + ";") == 1,
+            "Hall VACANT did not preserve the active IVA-owned session");
+    requireSubmitted(actor.submit(hybridCameraCommand(
+        "hybrid-both-camera-out", "EXIT", "both-a", base + 800,
+        nowEpochMs() + 40)), "hybrid both-sensor camera exit failed");
+    require(waitUntil([&] {
+                return probe.integer(
+                           "SELECT COUNT(*) FROM PARKING_SESSION WHERE "
+                           "session_id=" + std::to_string(both_session) +
+                           " AND exit_time IS NOT NULL;") == 1;
+            }), "both-sensor session did not close after both sources vacated");
+
+    // Reverse order: IVA Exit becomes vacant but Hall keeps the same session
+    // alive until its own VACANT observation arrives.
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-reverse-hall-in", 6, "OCCUPIED", base + 900)),
+        "hybrid reverse Hall entry failed");
+    require(actor.waitUntilIdle(3s), "hybrid reverse Hall entry did not settle");
+    const auto reverse_session = probe.integer(
+        "SELECT session_id FROM PARKING_SESSION WHERE slot_id='EV01' "
+        "AND exit_time IS NULL;");
+    requireSubmitted(actor.submit(hybridCameraCommand(
+        "hybrid-reverse-camera-in", "INTRUSION", "both-b", base + 1000, 0)),
+        "hybrid reverse IVA confirmation failed");
+    require(actor.waitUntilIdle(3s),
+            "hybrid reverse IVA confirmation did not settle");
+    requireSubmitted(actor.submit(hybridCameraCommand(
+        "hybrid-reverse-camera-out", "EXIT", "both-b", base + 1100,
+        nowEpochMs() + 40)), "hybrid reverse IVA exit failed");
+    require(waitUntil([&] {
+                return probe.integer(
+                           "SELECT iva_occupied FROM PARKING_SESSION WHERE "
+                           "session_id=" + std::to_string(reverse_session) +
+                           ";") == 0;
+            }), "hybrid reverse IVA exit did not record source vacancy");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM PARKING_SESSION WHERE session_id=" +
+                std::to_string(reverse_session) +
+                " AND exit_time IS NULL;") == 1,
+            "IVA Exit closed a session still held by Hall");
+    requireSubmitted(actor.submit(hybridHallCommand(
+        "hybrid-reverse-hall-out", 7, "VACANT", base + 1200)),
+        "hybrid reverse Hall exit failed");
+    require(waitUntil([&] {
+                return probe.integer(
+                           "SELECT COUNT(*) FROM PARKING_SESSION WHERE "
+                           "session_id=" + std::to_string(reverse_session) +
+                           " AND exit_time IS NOT NULL;") == 1;
+            }), "reverse-order session did not close after Hall VACANT");
+
+    require(actor.stopAndDrain(2s), "hybrid OR actor did not stop");
+}
+
+void testHybridSourceStateSurvivesDatabaseReopen() {
+    TemporaryDatabase temporary;
+    std::int64_t session_id{};
+    const auto base = nowEpochMs() - 1000;
+
+    {
+        database::EventDatabase database(temporary.path);
+        initialize(database);
+        SqliteProbe probe(temporary.path);
+        database::SessionTransitionStore store(database);
+        auto actor = makeActor(store);
+        require(actor.start(), "hybrid reopen first actor did not start");
+
+        requireSubmitted(actor.submit(hybridCameraCommand(
+            "hybrid-reopen-camera-in", "INTRUSION", "reopen-object",
+            base, 0)), "hybrid reopen camera entry failed");
+        requireSubmitted(actor.submit(hybridHallCommand(
+            "hybrid-reopen-hall-in", 81, "OCCUPIED", base + 100)),
+            "hybrid reopen Hall confirmation failed");
+        require(actor.waitUntilIdle(3s),
+                "hybrid reopen source confirmations did not settle");
+        session_id = probe.integer(
+            "SELECT session_id FROM PARKING_SESSION WHERE slot_id='EV01' "
+            "AND exit_time IS NULL;");
+
+        requireSubmitted(actor.submit(hybridHallCommand(
+            "hybrid-reopen-hall-out", 82, "VACANT", base + 200)),
+            "hybrid reopen Hall VACANT failed");
+        require(actor.waitUntilIdle(3s),
+                "hybrid reopen Hall VACANT did not settle");
+        require(probe.integer(
+                    "SELECT hall_confirmed*1000+hall_occupied*100+"
+                    "iva_confirmed*10+iva_occupied FROM PARKING_SESSION "
+                    "WHERE session_id=" + std::to_string(session_id) + ";") ==
+                    1011,
+                "pre-reopen hybrid source state is incorrect");
+        require(actor.stopAndDrain(2s),
+                "hybrid reopen first actor did not stop");
+    }
+
+    {
+        database::EventDatabase database(temporary.path);
+        database.migrateRuntimeSchema();
+        database.migrateRuntimeSchema();
+        SqliteProbe probe(temporary.path);
+        require(probe.integer(
+                    "SELECT hall_confirmed*1000+hall_occupied*100+"
+                    "iva_confirmed*10+iva_occupied FROM PARKING_SESSION "
+                    "WHERE session_id=" + std::to_string(session_id) + ";") ==
+                    1011,
+                "runtime migration overwrote persisted hybrid source state");
+
+        database::SessionTransitionStore store(database);
+        auto actor = makeActor(store);
+        require(actor.start(), "hybrid reopen second actor did not start");
+        requireSubmitted(actor.submit(hybridCameraCommand(
+            "hybrid-reopen-camera-out", "EXIT", "reopen-object",
+            base + 300, nowEpochMs() + 40)),
+            "hybrid reopen camera exit failed");
+        require(waitUntil([&] {
+                    return probe.integer(
+                               "SELECT COUNT(*) FROM PARKING_SESSION WHERE "
+                               "session_id=" + std::to_string(session_id) +
+                               " AND exit_time IS NOT NULL;") == 1;
+                }), "reopened hybrid session did not close after IVA Exit");
+        require(actor.stopAndDrain(2s),
+                "hybrid reopen second actor did not stop");
+    }
+}
+
 void testInitializeMigratesOldDatabaseAndIsIdempotent() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
@@ -1561,6 +1901,11 @@ void testInitializeMigratesOldDatabaseAndIsIdempotent() {
                 "'exit_command_id','entry_time_epoch_ms','exit_time_epoch_ms');") ==
                 5,
             "old PARKING_SESSION did not receive actor identity columns");
+    require(probe.integer(
+                "SELECT COUNT(*) FROM pragma_table_info('PARKING_SESSION') "
+                "WHERE name IN ('hall_confirmed','iva_confirmed',"
+                "'hall_occupied','iva_occupied');") == 4,
+            "old PARKING_SESSION did not receive hybrid source-state columns");
     require(probe.text(
                 "SELECT occupancy_attempt_id FROM PARKING_SESSION WHERE "
                 "session_id=1;") == "legacy-attempt:1",
@@ -1711,9 +2056,12 @@ int main() {
         testSameSlotOrdinalOccupiedVacantOccupied();
         testCommittedEffectReplaysAfterRestart();
         testEffectFailureDoesNotBlockAuthoritativeVacant();
-        testCameraObjectOverlapAndLegacyTakeover();
+        testCameraAreaStateIgnoresObjectIdentity();
+        testCameraAreaStatePreservesMultiAreaOr();
         testQueuedIntrusionWinsBeforeDeadlineLinearization();
         testOverdueHallConfirmationPrecedesVacant();
+        testHybridOrUsesOneSessionAndSourceAwareExit();
+        testHybridSourceStateSurvivesDatabaseReopen();
         testInitializeMigratesOldDatabaseAndIsIdempotent();
         testMigrationFailureKeepsActorIngressClosed();
         std::cout << "[PASS] slot transition actor SQLite integration\n";
