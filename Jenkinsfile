@@ -31,7 +31,14 @@ pipeline {
                 }
             }
             steps {
-                sh 'cp cmake-build/pi-server /home/vedaproject/VEDA_FINAL_PROJECT/Pi_Server_develop/cmake-build/pi-server'
+                // 대상 바이너리가 실행 중이면 직접 덮어쓰다 "Text file busy"로
+                // 실패한다. 같은 파일시스템의 임시 파일로 복사 후 원자적으로
+                // rename하면 실행 중인 프로세스를 건드리지 않고 교체된다.
+                sh '''
+                    dest=/home/vedaproject/VEDA_FINAL_PROJECT/Pi_Server_develop/cmake-build/pi-server
+                    cp cmake-build/pi-server "$dest.new"
+                    mv -f "$dest.new" "$dest"
+                '''
                 sh 'sudo systemctl restart pi-server'
                 sh 'sleep 3 && sudo systemctl status pi-server'
             }
