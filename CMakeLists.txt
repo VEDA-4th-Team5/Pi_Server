@@ -274,6 +274,18 @@ add_executable(parking-link-tool
 target_include_directories(parking-link-tool PRIVATE include)
 target_compile_options(parking-link-tool PRIVATE -Wall -Wextra -Wpedantic)
 
+# 운영 드라이버로 LoRa v1.0/v1.1 수신, CRC/sequence 통계 및 LED 명령을
+# 대화형으로 확인하는 headless 진단 콘솔이다.
+add_executable(lora-console
+    tools/lora_console.cpp
+    src/device/UartDriver.cpp
+    src/device/LoRaDriver.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/sensor/FireSensorMessage.cpp)
+target_include_directories(lora-console PRIVATE include)
+target_compile_options(lora-console PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(lora-console PRIVATE Threads::Threads)
+
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
