@@ -14,6 +14,7 @@ pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4)
 pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
+pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE SERVER_CPP CONFIGURE_DEPENDS src/*.cpp)
@@ -27,7 +28,7 @@ target_compile_definitions(pi-server PRIVATE
     VEDA_RUNTIME_SQL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/db")
 target_link_libraries(pi-server PRIVATE
     PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
-    PkgConfig::HTTPLIB mosquitto sqlite3 Threads::Threads)
+    PkgConfig::HTTPLIB PkgConfig::SODIUM mosquitto sqlite3 Threads::Threads)
 target_link_options(pi-server PRIVATE -Wl,--gc-sections)
 if(NOT CMAKE_NM)
     message(FATAL_ERROR "nm is required for the production occupancy gate")
@@ -359,6 +360,7 @@ add_custom_target(parking-alert-module
 # ---- parking timer (timer_ 프로젝트 통합분) ----
 add_library(parking-timer-core STATIC
     src/database/EventDatabase.cpp
+    src/database/EventDatabaseAuth.cpp
     src/database/EventDatabaseCorrelation.cpp
     src/database/EventDatabaseFire.cpp
     src/database/EventDatabaseOccupancy.cpp
@@ -379,6 +381,14 @@ target_compile_options(parking-timer-core PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow
     -ffunction-sections -fdata-sections)
 target_link_libraries(parking-timer-core PUBLIC sqlite3 Threads::Threads)
+
+add_executable(app-user
+    tools/app_user.cpp
+    src/auth/AuthService.cpp)
+target_include_directories(app-user PRIVATE include)
+target_compile_options(app-user PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(app-user PRIVATE
+    parking-timer-core PkgConfig::SODIUM sqlite3 Threads::Threads)
 
 # 메인 서버에서도 동일한 타이머 코어를 사용한다. parking-timer 독립 실행 파일도 유지한다.
 target_link_libraries(pi-server PRIVATE parking-timer-core)
@@ -505,6 +515,7 @@ add_test(NAME camera-snapshot-api-client-test
 add_executable(http-api-test
     tests/integration/HttpApiTest.cpp
     src/app/RuntimeShutdown.cpp
+    src/auth/AuthService.cpp
     src/http/ParkingHttpServer.cpp
     src/mqtt/MqttEndpoint.cpp
     src/settings/OverstayThresholdService.cpp
@@ -512,8 +523,18 @@ add_executable(http-api-test
 target_include_directories(http-api-test PRIVATE include)
 target_compile_options(http-api-test PRIVATE -Wall -Wextra)
 target_link_libraries(http-api-test PRIVATE
-    parking-timer-core PkgConfig::HTTPLIB sqlite3 Threads::Threads)
+    parking-timer-core PkgConfig::HTTPLIB PkgConfig::SODIUM
+    sqlite3 Threads::Threads)
 add_test(NAME http-api-test COMMAND http-api-test)
+
+add_executable(auth-service-test
+    tests/integration/AuthServiceTest.cpp
+    src/auth/AuthService.cpp)
+target_include_directories(auth-service-test PRIVATE include)
+target_compile_options(auth-service-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(auth-service-test PRIVATE
+    parking-timer-core PkgConfig::SODIUM sqlite3 Threads::Threads)
+add_test(NAME auth-service-test COMMAND auth-service-test)
 
 add_executable(callback-lifecycle-test
     tests/unit/CallbackLifecycleTest.cpp
@@ -548,7 +569,7 @@ target_compile_definitions(mqtt-bridge-lifecycle-test PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 target_link_libraries(mqtt-bridge-lifecycle-test PRIVATE
     parking-timer-core PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
-    PkgConfig::HTTPLIB mosquitto sqlite3 Threads::Threads)
+    PkgConfig::HTTPLIB PkgConfig::SODIUM mosquitto sqlite3 Threads::Threads)
 add_test(NAME mqtt-bridge-lifecycle-test COMMAND mqtt-bridge-lifecycle-test)
 
 add_executable(parking-correlation-integration-test

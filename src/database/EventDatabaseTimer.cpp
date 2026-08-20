@@ -376,6 +376,22 @@ void EventDatabase::migrateRuntimeSchema() {
             "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
             "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);");
         executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS app_users ("
+            "user_id INTEGER PRIMARY KEY,"
+            "account_id TEXT NOT NULL UNIQUE,"
+            "password_hash TEXT NOT NULL,display_name TEXT,"
+            "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),"
+            "created_at_utc INTEGER NOT NULL,updated_at_utc INTEGER NOT NULL);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS app_sessions ("
+            "session_id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,"
+            "token_hash BLOB NOT NULL UNIQUE,created_at_utc INTEGER NOT NULL,"
+            "expires_at_utc INTEGER NOT NULL,revoked_at_utc INTEGER,"
+            "FOREIGN KEY(user_id) REFERENCES app_users(user_id));");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_app_sessions_user_active "
+            "ON app_sessions(user_id,expires_at_utc,revoked_at_utc);");
+        executeSqlUnlocked(
         "CREATE TABLE IF NOT EXISTS FIRE_ALARM_STATE ("
         "channel_id TEXT PRIMARY KEY,"
         "sensor_id TEXT UNIQUE NOT NULL,"

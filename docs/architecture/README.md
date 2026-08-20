@@ -309,6 +309,8 @@ Qt → Pi HTTP/HTTPS:
 
 ```text
 GET /api/v1/health
+POST /api/v1/auth/login
+POST /api/v1/auth/logout
 GET /api/v1/parking-slots
 GET /api/v1/parking-slots/{slot_id}
 GET /api/v1/parking-sessions/active
@@ -317,9 +319,10 @@ GET /api/v1/images/{image_id}/original
 GET /api/v1/images/{image_id}/enhanced
 ```
 
-인증서와 개인키를 둘 다 설정하면 `cpp-httplib` `SSLServer`로 HTTPS를 사용하고,
-둘 다 비우면 HTTP로 동작한다. 현재 API token, 로그인, 클라이언트 인증서는
-구현되지 않았다.
+`GET /api/v1/health`와 `POST /api/v1/auth/login`만 공개한다. 나머지 API는
+SQLite `app_sessions`에 저장한 SHA-256 token digest로 Bearer 인증한다. 비밀번호는
+libsodium Argon2id PHC 문자열로 저장한다. 원격 listener는 인증서와 개인키가
+없거나 잘못되면 시작을 거부하며 HTTP로 fallback하지 않는다.
 
 ## 8. 오류 보고와 동시성
 

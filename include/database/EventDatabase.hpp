@@ -66,6 +66,25 @@ struct ImageView {
     std::uint64_t roi_revision{};
 };
 
+/** @brief 앱 로그인 계정의 인증 및 관리용 DB 레코드다. */
+struct AppUserRecord {
+    std::int64_t user_id{-1};
+    std::string account_id;
+    std::string password_hash;
+    std::string display_name;
+    bool enabled{};
+    std::int64_t created_at_utc{};
+    std::int64_t updated_at_utc{};
+};
+
+/** @brief 유효한 Bearer 세션과 사용자를 조인한 인증 결과다. */
+struct AppSessionPrincipal {
+    std::int64_t user_id{-1};
+    std::string account_id;
+    std::string display_name;
+    std::int64_t expires_at_utc{};
+};
+
 enum class EvidenceInsertResult {
     Inserted,
     Duplicate,
@@ -133,6 +152,38 @@ public:
     bool getImage(int image_id, ImageView& row);
     /** @brief 파일 삭제가 끝난 조기 출차 세션의 IMAGE_LOG 행을 모두 제거한다. */
     bool deleteSessionImageRecords(int session_id);
+
+    /** @brief 정규화된 account ID로 앱 사용자를 조회한다. */
+    std::optional<AppUserRecord> findAppUser(
+        const std::string& account_id) const;
+    /** @brief Argon2id PHC 문자열을 가진 앱 사용자를 생성한다. */
+    bool createAppUser(const std::string& account_id,
+                       const std::string& password_hash,
+                       const std::string& display_name,
+                       std::int64_t now_utc,
+                       std::int64_t* user_id);
+    /** @brief 비밀번호 해시를 제외한 앱 사용자 목록을 반환한다. */
+    std::vector<AppUserRecord> listAppUsers() const;
+    /** @brief 계정 활성 상태를 변경하며 비활성화 시 세션을 모두 폐기한다. */
+    bool setAppUserEnabled(const std::string& account_id,
+                           bool enabled,
+                           std::int64_t now_utc);
+    /** @brief 비밀번호를 교체하고 해당 사용자의 세션을 모두 폐기한다. */
+    bool resetAppUserPassword(const std::string& account_id,
+                              const std::string& password_hash,
+                              std::int64_t now_utc);
+    /** @brief 원문 토큰이 아닌 SHA-256 digest로 로그인 세션을 만든다. */
+    bool createAppSession(std::int64_t user_id,
+                          const std::vector<unsigned char>& token_hash,
+                          std::int64_t created_at_utc,
+                          std::int64_t expires_at_utc);
+    /** @brief digest와 현재 시각으로 활성 세션을 검증한다. */
+    std::optional<AppSessionPrincipal> findActiveAppSession(
+        const std::vector<unsigned char>& token_hash,
+        std::int64_t now_utc) const;
+    /** @brief 현재 토큰 하나만 폐기한다. */
+    bool revokeAppSession(const std::vector<unsigned char>& token_hash,
+                          std::int64_t now_utc);
 
     /** @brief 런타임 설정 문자열을 조회한다. 키가 없으면 nullopt를 반환한다. */
     std::optional<std::string> getSystemSetting(const std::string& key) const;

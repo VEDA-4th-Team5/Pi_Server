@@ -10,6 +10,7 @@
 #include <thread>
 
 namespace database { class EventDatabase; }
+namespace auth { class AuthService; }
 namespace httplib { class Server; }
 namespace settings { class OverstayThresholdService; }
 namespace settings { class ParkingRoiSettingsService; }
@@ -25,11 +26,13 @@ struct ServerConfig {
     std::string tls_private_key_path;
     std::string data_root{"data"};
     std::size_t max_image_bytes{10U * 1024U * 1024U};
+    bool require_tls{true};
 };
 
 class ParkingHttpServer {
 public:
-    ParkingHttpServer(database::EventDatabase& database, ServerConfig config,
+    ParkingHttpServer(database::EventDatabase& database,
+                      auth::AuthService& auth_service, ServerConfig config,
                       settings::OverstayThresholdService* overstay_settings = nullptr,
                       settings::ParkingRoiSettingsService* roi_settings = nullptr);
     ~ParkingHttpServer();
@@ -47,6 +50,7 @@ private:
     void stopListenerLocked() noexcept;
     void registerRoutes();
     database::EventDatabase& database_;
+    auth::AuthService& auth_service_;
     settings::OverstayThresholdService* overstay_settings_{};
     settings::ParkingRoiSettingsService* roi_settings_{};
     ServerConfig config_;

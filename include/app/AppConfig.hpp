@@ -154,6 +154,12 @@ struct AppConfig {
     std::string http_tls_private_key_path;
     std::string http_data_root;
     int http_max_image_mb;
+    bool http_require_tls;
+
+    int auth_session_ttl_seconds;
+    int auth_login_window_seconds;
+    int auth_login_max_failures;
+    int auth_login_cooldown_seconds;
 
     std::vector<RtspChannelConfig> rtsp_channels;
     std::vector<IvaAreaConfig> iva_areas;

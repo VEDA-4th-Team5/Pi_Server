@@ -13,7 +13,7 @@
 | I-07 Pi ↔ Local Vehicle DB | `EventDatabase::classifyVehicle`, `db_get_vehicle_by_plate` | 구현 |
 | I-08 Pi ↔ SQLite/File Storage | `EventDatabase`, `db_manager.c`, `SnapshotStorage`, `data/` | 구현 |
 | I-09 Pi ↔ Qt MQTT | `EventManager` publisher, `MqttEventBridge::publishQtEvent`, fire ACK subscriber | 구현: 주차 상태·OCR·위반·출차 발행, 화재 ACK 수신 |
-| I-10 Qt ↔ Pi HTTP | `ParkingHttpServer`의 health/slot/session/image API | 구현: 조회 API, 인증 미구현 |
+| I-10 Qt ↔ Pi HTTPS | `ParkingHttpServer`의 login/Bearer/health/slot/session/image API | 구현: Argon2id 계정, SQLite 세션, TLS fail-closed |
 | I-11 Flame Sensor → STM32 | 코드 없음 | 미구현 |
 | I-12 STM32 → LoRa 송신 UART | `LoRaDriver` binary framing 규격과 C++ 진단 도구 | 부분 구현: Pi 호환 규격 구현, STM32 송신 코드 미구현 |
 | I-13 LoRa 무선 구간 | 투명 UART 모뎀 전제; 무선 칩 설정은 하드웨어 미확정 | 부분 구현: frame/CRC만 구현 |

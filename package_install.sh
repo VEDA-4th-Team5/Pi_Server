@@ -25,6 +25,7 @@ sudo apt install -y \
     libavformat-dev libavcodec-dev libavutil-dev \
     libcurl4-openssl-dev \
     libcpp-httplib-dev \
+    libsodium-dev \
     libmosquitto-dev \
     libsqlite3-dev \
     nlohmann-json3-dev

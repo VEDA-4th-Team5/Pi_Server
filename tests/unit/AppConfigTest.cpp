@@ -40,6 +40,11 @@ int main() {
     setValue("HTTP_DATA_ROOT", "data/http");
     setValue("HTTP_TLS_CERT_PATH", "certs/server.crt");
     setValue("HTTP_TLS_KEY_PATH", "certs/server.key");
+    setValue("HTTP_REQUIRE_TLS", "false");
+    setValue("AUTH_SESSION_TTL_SECONDS", "30000");
+    setValue("AUTH_LOGIN_WINDOW_SECONDS", "240");
+    setValue("AUTH_LOGIN_MAX_FAILURES", "4");
+    setValue("AUTH_LOGIN_COOLDOWN_SECONDS", "90");
     setValue("PARKING_OCCUPANCY_SOURCE", "hybrid_or");
     clearValue("PARKING_OCCUPANCY_CONFIRM_MS");
 
@@ -73,6 +78,12 @@ int main() {
                       (std::filesystem::path(root) / "certs/server.key")
                           .lexically_normal().string(),
                   "HTTP_TLS_KEY_PATH must be rooted at PI_SERVER_ROOT");
+    ok &= require(!config.http_require_tls &&
+                      config.auth_session_ttl_seconds == 30000 &&
+                      config.auth_login_window_seconds == 240 &&
+                      config.auth_login_max_failures == 4 &&
+                      config.auth_login_cooldown_seconds == 90,
+                  "authentication settings must preserve explicit values");
     ok &= require(config.parking_occupancy_source == "HYBRID_OR",
                   "HYBRID_OR occupancy policy must be accepted");
     ok &= require(config.parking_occupancy_confirm_ms == 5000,
@@ -90,6 +101,11 @@ int main() {
     clearValue("HTTP_DATA_ROOT");
     clearValue("HTTP_TLS_CERT_PATH");
     clearValue("HTTP_TLS_KEY_PATH");
+    clearValue("HTTP_REQUIRE_TLS");
+    clearValue("AUTH_SESSION_TTL_SECONDS");
+    clearValue("AUTH_LOGIN_WINDOW_SECONDS");
+    clearValue("AUTH_LOGIN_MAX_FAILURES");
+    clearValue("AUTH_LOGIN_COOLDOWN_SECONDS");
     clearValue("PARKING_OCCUPANCY_SOURCE");
     clearValue("PI_SERVER_ROOT");
     return ok ? 0 : 1;

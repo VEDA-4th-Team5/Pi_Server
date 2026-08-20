@@ -48,11 +48,11 @@ tail -n 0 -F data/logs/pi-server.log \
 
 ## 3. HTTP API 접속 거부
 
-### TS-001 Pi IP는 맞지만 8080 접속 불가
+### TS-001 Pi IP는 맞지만 HTTPS 접속 불가
 
 - 상태: 해결 방법 확인
-- 증상: `http://<PI_IP>:8080` 또는 Qt 연결이 즉시 거부된다.
-- 확인 결과 사례: Pi IP는 `172.20.32.97`이었지만 `pi-server` 프로세스와 8080 listener가 없었다.
+- 증상: `https://<PI_HOST>:<HTTPS_PORT>` 또는 Qt 연결이 즉시 거부된다.
+- 확인 결과 사례: Pi IP는 맞았지만 `pi-server` 프로세스와 HTTPS listener가 없었다.
 - 원인: IP 문제가 아니라 서버 프로세스가 실행되지 않은 상태였다.
 
 확인:
@@ -60,8 +60,9 @@ tail -n 0 -F data/logs/pi-server.log \
 ```bash
 hostname -I
 pgrep -a pi-server
-ss -lntp | grep ':8080'
-curl --max-time 3 http://127.0.0.1:8080/api/v1/health
+ss -lntp | grep ':8443'
+curl --cacert <CA_CERT> --max-time 3 \
+  https://<PI_HOST>:8443/api/v1/health
 ```
 
 해결:
@@ -73,13 +74,13 @@ curl --max-time 3 http://127.0.0.1:8080/api/v1/health
 정상 확인 주소:
 
 ```text
-http://<PI_IP>:8080/api/v1/health
+https://<PI_HOST>:8443/api/v1/health
 ```
 
 정상 응답:
 
 ```json
-{"service":"pi-server","status":"ok"}
+{"success":true,"status":"ok"}
 ```
 
 루트 `/`는 health API가 아니다. Qt의 API base URL과 실제 Pi IP가 일치하는지도 확인한다.
@@ -93,7 +94,7 @@ http://<PI_IP>:8080/api/v1/health
 - 확인 결과 사례:
   - `parking/fire/ch01` retained 메시지 존재
   - `event_id`, `event_type=FIRE_SUSPECTED`, `channel_id=ch01` 존재
-  - Pi HTTP API 8080은 `200 OK`
+  - Pi HTTPS health API는 `200 OK`
   - Qt PC가 Pi Mosquitto 1883에 TCP 연결된 상태
 
 Pi 확인:
@@ -101,7 +102,8 @@ Pi 확인:
 ```bash
 mosquitto_sub -h localhost -v -C 1 -W 2 -t 'parking/fire/ch01'
 ss -ntp | grep ':1883'
-curl --max-time 3 http://<PI_IP>:8080/api/v1/health
+curl --cacert <CA_CERT> --max-time 3 \
+  https://<PI_HOST>:8443/api/v1/health
 ```
 
 최소 화재 계약:
