@@ -1,4 +1,5 @@
 #include "app/RuntimeShutdown.hpp"
+#include "auth/AuthService.hpp"
 #include "database/EventDatabase.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEndpoint.hpp"
@@ -124,6 +125,22 @@ bool expect(bool condition, const std::string& message) {
     if (!condition) std::cerr << "FAIL: " << message << '\n';
     return condition;
 }
+void configureTlsClient(httplib::Client& client, bool test_tls,
+                        const char* tls_ca) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    if (!test_tls) return;
+    if (tls_ca != nullptr) {
+        client.set_ca_cert_path(tls_ca);
+        client.enable_server_certificate_verification(true);
+    } else {
+        client.enable_server_certificate_verification(false);
+    }
+#else
+    (void)client;
+    (void)test_tls;
+    (void)tls_ca;
+#endif
+}
 }
 
 int main() {
@@ -141,6 +158,12 @@ int main() {
     // 구형 IMAGE_LOG에서 시작해도 migration이 반복 실행 가능해야 한다.
     database.migrateRuntimeSchema();
     database.migrateRuntimeSchema();
+    auth::AuthService auth_service(database);
+    std::int64_t app_user_id{};
+    std::string auth_error;
+    if (!auth_service.addUser("operator", "pass",
+                              "Parking Operator", &app_user_id,
+                              &auth_error)) return 1;
     settings::OverstayThresholdService overstay_settings(database);
     if (!overstay_settings.initialize()) return 1;
     const std::vector<app::IvaAreaConfig> roi_bootstrap{
@@ -164,27 +187,138 @@ int main() {
             "2026-07-15T13:00:00") !=
         database::EvidenceInsertResult::Inserted) return 1;
     http::ServerConfig config;
-    config.listen_address = "127.0.0.1";
+    const char* test_listen = std::getenv("HTTP_TEST_LISTEN_ADDRESS");
+    config.listen_address = test_listen == nullptr
+        ? "127.0.0.1" : std::string(test_listen);
     config.port = 18081;
     config.data_root = data.string();
     const char* tls_cert = std::getenv("HTTP_TEST_TLS_CERT");
     const char* tls_key = std::getenv("HTTP_TEST_TLS_KEY");
+    const char* tls_ca = std::getenv("HTTP_TEST_TLS_CA");
     const bool test_tls = tls_cert != nullptr && tls_key != nullptr;
     if (test_tls) {
         config.tls_certificate_path = tls_cert;
         config.tls_private_key_path = tls_key;
     }
-    http::ParkingHttpServer server(database, config, &overstay_settings,
+    http::ParkingHttpServer server(database, auth_service, config,
+                                   &overstay_settings,
                                    &roi_settings);
     if (!server.start()) return 1;
     httplib::Client client(std::string(test_tls ? "https://" : "http://") +
                            "127.0.0.1:" + std::to_string(config.port));
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    if (test_tls) client.enable_server_certificate_verification(false);
-#endif
+    configureTlsClient(client, test_tls, tls_ca);
     bool success = true;
+    {
+        http::ServerConfig insecure_config = config;
+        insecure_config.listen_address = "0.0.0.0";
+        insecure_config.port = 18082;
+        insecure_config.tls_certificate_path.clear();
+        insecure_config.tls_private_key_path.clear();
+        insecure_config.require_tls = true;
+        http::ParkingHttpServer insecure_server(
+            database, auth_service, insecure_config);
+        success &= expect(!insecure_server.start(),
+                          "remote HTTP does not bypass required TLS");
+    }
+    {
+        http::ServerConfig invalid_tls_config = config;
+        invalid_tls_config.port = 18083;
+        invalid_tls_config.tls_certificate_path = "/missing/server.crt";
+        invalid_tls_config.tls_private_key_path = "/missing/server.key";
+        invalid_tls_config.require_tls = true;
+        http::ParkingHttpServer invalid_tls_server(
+            database, auth_service, invalid_tls_config);
+        success &= expect(!invalid_tls_server.start(),
+                          "invalid TLS configuration has no HTTP fallback");
+    }
     auto health = client.Get("/api/v1/health");
-    success &= expect(health && health->status == 200, "health endpoint");
+    success &= expect(health && health->status == 200 &&
+        nlohmann::json::parse(health->body).at("success") == true,
+        "public health endpoint");
+    auto unauthenticated = client.Get("/api/v1/parking-slots");
+    success &= expect(unauthenticated && unauthenticated->status == 401 &&
+        unauthenticated->get_header_value("Cache-Control") == "no-store",
+        "protected endpoint rejects missing token");
+    auto malformed_login = client.Post("/api/v1/auth/login", "not-json",
+                                        "application/json");
+    success &= expect(malformed_login && malformed_login->status == 400,
+                      "malformed login request");
+    auto wrong_content_type = client.Post(
+        "/api/v1/auth/login",
+        R"({"accountId":"operator","password":"pass"})",
+        "text/plain");
+    success &= expect(wrong_content_type && wrong_content_type->status == 400,
+                      "non-JSON login content type rejected");
+    auto wrong_login = client.Post(
+        "/api/v1/auth/login",
+        R"({"accountId":"operator","password":"nope"})",
+        "application/json");
+    success &= expect(wrong_login && wrong_login->status == 401,
+                      "wrong password rejected");
+    auto login = client.Post(
+        "/api/v1/auth/login",
+        R"({"accountId":" Operator ","password":"pass"})",
+        "application/json");
+    success &= expect(login && login->status == 200 &&
+        login->get_header_value("Cache-Control") == "no-store",
+        "valid login");
+    const auto login_body = login
+        ? nlohmann::json::parse(login->body) : nlohmann::json{};
+    const std::string access_token = login_body.value("accessToken", "");
+    success &= expect(login_body.value("success", false) &&
+        login_body.value("tokenType", "") == "Bearer" &&
+        !access_token.empty() &&
+        login_body.at("user").at("id").get<std::int64_t>() == app_user_id &&
+        login_body.at("user").at("accountId") == "operator" &&
+        login_body.at("user").at("displayName") == "Parking Operator" &&
+        !login_body.value("expiresAt", "").empty(),
+        "Qt login response contract");
+    client.set_default_headers({{"Authorization", "Bearer " + access_token}});
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        auto failed = client.Post(
+            "/api/v1/auth/login",
+            R"({"accountId":"rate-limit-user","password":"nope"})",
+            "application/json");
+        success &= expect(failed && failed->status == 401,
+                          "login rate-limit admitted failure");
+    }
+    auto limited = client.Post(
+        "/api/v1/auth/login",
+        R"({"accountId":"rate-limit-user","password":"nope"})",
+        "application/json");
+    int retry_after{};
+    if (limited) {
+        try {
+            retry_after = std::stoi(
+                limited->get_header_value("Retry-After"));
+        } catch (...) {
+            retry_after = 0;
+        }
+    }
+    success &= expect(limited && limited->status == 429 &&
+        retry_after >= 1 && retry_after <= 60,
+        "login rate-limit response contract");
+
+    auto logout_login = client.Post(
+        "/api/v1/auth/login",
+        R"({"accountId":"operator","password":"pass"})",
+        "application/json");
+    const auto logout_body = logout_login
+        ? nlohmann::json::parse(logout_login->body) : nlohmann::json{};
+    const std::string logout_token = logout_body.value("accessToken", "");
+    httplib::Client logout_client(
+        std::string(test_tls ? "https://" : "http://") +
+        "127.0.0.1:" + std::to_string(config.port));
+    configureTlsClient(logout_client, test_tls, tls_ca);
+    logout_client.set_default_headers(
+        {{"Authorization", "Bearer " + logout_token}});
+    auto logout = logout_client.Post("/api/v1/auth/logout", "",
+                                     "application/json");
+    auto after_logout = logout_client.Get("/api/v1/parking-slots");
+    success &= expect(logout_login && logout_login->status == 200 &&
+        !logout_token.empty() && logout && logout->status == 200 &&
+        after_logout && after_logout->status == 401,
+        "logout revokes current Bearer session");
     auto threshold = client.Get("/api/v1/settings/overstay-threshold");
     const auto initial_threshold = threshold
         ? nlohmann::json::parse(threshold->body) : nlohmann::json{};
@@ -279,10 +413,9 @@ int main() {
             httplib::Client concurrent_client(
                 std::string(test_tls ? "https://" : "http://") +
                 "127.0.0.1:" + std::to_string(config.port));
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-            if (test_tls)
-                concurrent_client.enable_server_certificate_verification(false);
-#endif
+            configureTlsClient(concurrent_client, test_tls, tls_ca);
+            concurrent_client.set_default_headers(
+                {{"Authorization", "Bearer " + access_token}});
             for (int request = 0; request < 5; ++request) {
                 const int seconds = 1800 + ((index + request) % 4) * 60;
                 const auto put = concurrent_client.Put(
@@ -412,10 +545,9 @@ int main() {
         httplib::Client held_client(
             std::string(test_tls ? "https://" : "http://") +
             "127.0.0.1:" + std::to_string(config.port));
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        if (test_tls)
-            held_client.enable_server_certificate_verification(false);
-#endif
+        configureTlsClient(held_client, test_tls, tls_ca);
+        held_client.set_default_headers(
+            {{"Authorization", "Bearer " + access_token}});
         const auto response = held_client.Put(
             "/api/v1/settings/overstay-threshold",
             "{\"thresholdSeconds\":1860}", "application/json");
@@ -469,10 +601,9 @@ int main() {
         httplib::Client late_client(
             std::string(test_tls ? "https://" : "http://") +
             "127.0.0.1:" + std::to_string(config.port));
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        if (test_tls)
-            late_client.enable_server_certificate_verification(false);
-#endif
+        configureTlsClient(late_client, test_tls, tls_ca);
+        late_client.set_default_headers(
+            {{"Authorization", "Bearer " + access_token}});
         const auto response = late_client.Put(
             "/api/v1/settings/overstay-threshold",
             "{\"thresholdSeconds\":1920}", "application/json");

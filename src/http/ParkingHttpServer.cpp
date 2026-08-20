@@ -1,5 +1,6 @@
 #include "http/ParkingHttpServer.hpp"
 
+#include "auth/AuthService.hpp"
 #include "database/EventDatabase.hpp"
 #include "settings/OverstayThresholdService.hpp"
 #include "settings/ParkingRoiSettingsService.hpp"
@@ -100,14 +101,29 @@ json roiJson(const snapshot::NormalizedRoi& roi) {
     return {{"x", roi.x}, {"y", roi.y}, {"width", roi.width},
             {"height", roi.height}};
 }
+bool isLoopbackAddress(const std::string& address) {
+    return address == "127.0.0.1" || address == "::1" ||
+           address == "localhost";
+}
+void preventAuthenticationCaching(httplib::Response& response) {
+    response.set_header("Cache-Control", "no-store");
+}
+void sendAuthenticationRequired(httplib::Response& response) {
+    preventAuthenticationCaching(response);
+    sendJson(response,
+             {{"success", false}, {"error", "authentication required"}},
+             401);
+}
 }
 
 namespace http {
 ParkingHttpServer::ParkingHttpServer(database::EventDatabase& database,
+                                     auth::AuthService& auth_service,
                                      ServerConfig config,
                                      settings::OverstayThresholdService* overstay_settings,
                                      settings::ParkingRoiSettingsService* roi_settings)
-    : database_(database), overstay_settings_(overstay_settings),
+    : database_(database), auth_service_(auth_service),
+      overstay_settings_(overstay_settings),
       roi_settings_(roi_settings),
       config_(std::move(config)) {}
 ParkingHttpServer::~ParkingHttpServer() {
@@ -122,6 +138,12 @@ bool ParkingHttpServer::start() {
     const bool key_set = !config_.tls_private_key_path.empty();
     if (cert_set != key_set) {
         util::logError("HTTP API TLS certificate/key must be configured together");
+        return false;
+    }
+    if (config_.require_tls && !cert_set &&
+        !isLoopbackAddress(config_.listen_address)) {
+        util::logError(
+            "HTTP API refused insecure non-loopback listener; configure TLS");
         return false;
     }
     if (cert_set) {
@@ -233,8 +255,9 @@ HttpServerState ParkingHttpServer::state() const noexcept {
 }
 
 void ParkingHttpServer::registerRoutes() {
-    const auto guarded = [this](auto handler) {
-        return [this, handler = std::move(handler)](
+    const auto guarded = [this](auto handler,
+                                const bool authentication_required = true) {
+        return [this, handler = std::move(handler), authentication_required](
                    const httplib::Request& request,
                    httplib::Response& response) mutable {
             auto lease = request_gate_.tryAcquire();
@@ -243,13 +266,93 @@ void ParkingHttpServer::registerRoutes() {
                           "서버가 종료 중이어서 요청을 처리할 수 없습니다.");
                 return;
             }
+            if (authentication_required) {
+                if (request.get_header_value_count("Authorization") != 1 ||
+                    !auth_service_.authenticateBearer(
+                        request.get_header_value("Authorization"))) {
+                    sendAuthenticationRequired(response);
+                    return;
+                }
+            }
             handler(request, response);
         };
     };
 
-    server_->Get("/api/v1/health", guarded([](const httplib::Request&, httplib::Response& res) {
-        sendJson(res, {{"status", "ok"}, {"service", "pi-server"}});
-    }));
+    server_->Get("/api/v1/health", guarded(
+        [](const httplib::Request&, httplib::Response& res) {
+            sendJson(res, {{"success", true}, {"status", "ok"}});
+        }, false));
+    server_->Post("/api/v1/auth/login", guarded(
+        [this](const httplib::Request& req, httplib::Response& res) {
+            preventAuthenticationCaching(res);
+            const std::string content_type =
+                req.get_header_value("Content-Type");
+            if (req.body.size() > 4096 ||
+                content_type.rfind("application/json", 0) != 0) {
+                sendJson(res, {{"success", false},
+                    {"error", "invalid request"}}, 400);
+                return;
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (...) {
+                sendJson(res, {{"success", false},
+                    {"error", "invalid request"}}, 400);
+                return;
+            }
+            if (!body.is_object() || !body.contains("accountId") ||
+                !body["accountId"].is_string() ||
+                !body.contains("password") ||
+                !body["password"].is_string()) {
+                sendJson(res, {{"success", false},
+                    {"error", "invalid request"}}, 400);
+                return;
+            }
+
+            const auto result = auth_service_.login(
+                body["accountId"].get<std::string>(),
+                body["password"].get<std::string>(), req.remote_addr);
+            switch (result.status) {
+            case auth::LoginStatus::Success:
+                sendJson(res, {{"success", true},
+                    {"accessToken", result.access_token},
+                    {"tokenType", "Bearer"},
+                    {"expiresAt", result.expires_at},
+                    {"user", {{"id", result.user.id},
+                        {"accountId", result.user.account_id},
+                        {"displayName", result.user.display_name}}}});
+                return;
+            case auth::LoginStatus::InvalidRequest:
+                sendJson(res, {{"success", false},
+                    {"error", "invalid request"}}, 400);
+                return;
+            case auth::LoginStatus::InvalidCredentials:
+                sendJson(res, {{"success", false},
+                    {"error", "invalid account or password"}}, 401);
+                return;
+            case auth::LoginStatus::RateLimited:
+                res.set_header("Retry-After",
+                    std::to_string(std::max(1, result.retry_after_seconds)));
+                sendJson(res, {{"success", false},
+                    {"error", "too many login attempts; retry later"}}, 429);
+                return;
+            case auth::LoginStatus::Unavailable:
+                sendJson(res, {{"success", false},
+                    {"error", "authentication service unavailable"}}, 500);
+                return;
+            }
+        }, false));
+    server_->Post("/api/v1/auth/logout", guarded(
+        [this](const httplib::Request& req, httplib::Response& res) {
+            preventAuthenticationCaching(res);
+            if (!auth_service_.logoutBearer(
+                    req.get_header_value("Authorization"))) {
+                sendAuthenticationRequired(res);
+                return;
+            }
+            sendJson(res, {{"success", true}});
+        }));
     if (overstay_settings_ != nullptr) {
         const auto get_threshold = guarded([this](const httplib::Request&,
                                           httplib::Response& res) {

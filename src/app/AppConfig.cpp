@@ -314,6 +314,17 @@ AppConfig AppConfig::loadFromEnv() {
         "HTTP_TLS_KEY_PATH", "");
     config.http_data_root = resolveProjectPath("HTTP_DATA_ROOT", "data");
     config.http_max_image_mb = getEnvIntOrDefault("HTTP_MAX_IMAGE_MB", 10);
+    config.http_require_tls = getEnvBoolOrDefault("HTTP_REQUIRE_TLS", true);
+
+    // 잘못된 인증 설정을 조용히 보정하지 않고 AuthService 시작 단계에서 거부한다.
+    config.auth_session_ttl_seconds =
+        getEnvIntOrDefault("AUTH_SESSION_TTL_SECONDS", 36000);
+    config.auth_login_window_seconds =
+        getEnvIntOrDefault("AUTH_LOGIN_WINDOW_SECONDS", 300);
+    config.auth_login_max_failures =
+        getEnvIntOrDefault("AUTH_LOGIN_MAX_FAILURES", 5);
+    config.auth_login_cooldown_seconds =
+        getEnvIntOrDefault("AUTH_LOGIN_COOLDOWN_SECONDS", 60);
 
     for (int i = 1; i <= 4; ++i) {
         std::ostringstream env_key;

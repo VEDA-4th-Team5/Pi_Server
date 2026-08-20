@@ -207,11 +207,30 @@ export SENSOR_UART_BAUD=115200
 
 ## C++ 진단 도구
 
+단일 frame 인코딩·송수신 확인:
+
 ```bash
-./build/parking-link-tool encode sensor 1 'SENSOR:HALL01:OCCUPIED:1'
-./build/parking-link-tool send /dev/ttyUSB0 115200 sensor 1 \
+./cmake-build/parking-link-tool encode sensor 1 'SENSOR:HALL01:OCCUPIED:1'
+./cmake-build/parking-link-tool send /dev/ttyUSB0 115200 sensor 1 \
   'SENSOR:HALL01:OCCUPIED:1'
-./build/parking-link-tool listen /dev/ttyUSB0 115200
+./cmake-build/parking-link-tool listen /dev/ttyUSB0 115200
+```
+
+대화형 LoRa 수신·CRC/sequence 통계 및 HALL01~04 LED 명령 확인:
+
+```bash
+cmake --build cmake-build --target lora-console -j4
+./cmake-build/lora-console --device /dev/serial0 --baud 115200
+```
+
+콘솔에서는 `1`~`4`로 해당 Hall LED를 토글하고, `on 2`, `off 2`, `raw <payload>`,
+`s`, `q` 명령을 사용할 수 있다. HALL01~02는 STM1, HALL03~04는 STM2 목적지
+주소로 전송한다. 기본 LoRa 채널은 30(`0x1E`)이다.
+
+다른 주소 또는 채널을 직접 지정할 수 있다.
+
+```bash
+./cmake-build/lora-console --device /dev/serial0 --address 2 --channel 30
 ```
 
 서버와 진단 도구가 같은 UART 장치를 동시에 열지 않도록 한다.

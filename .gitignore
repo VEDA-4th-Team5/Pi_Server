@@ -31,4 +31,5 @@ data/snapshots/**
 !data/snapshots/**/.gitkeep
 data/bestshots/
 data/fullframes/
+data/tls/
 *.log

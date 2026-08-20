@@ -1,5 +1,6 @@
 #include "app/AppConfig.hpp"
 #include "app/RuntimeShutdown.hpp"
+#include "auth/AuthService.hpp"
 #include "bestshot/BestShotReceiver.hpp"
 #include "camera/CameraChannel.hpp"
 #include "camera/CameraSnapshotApiClient.hpp"
@@ -401,6 +402,22 @@ int main() {
     settings::ParkingRoiSettingsService roi_settings(database,
                                                       config.iva_areas);
     if (!roi_settings.initialize()) {
+        database.close();
+        return 1;
+    }
+    std::unique_ptr<auth::AuthService> auth_service;
+    try {
+        auth::AuthConfig auth_config;
+        auth_config.session_ttl_seconds = config.auth_session_ttl_seconds;
+        auth_config.login_window_seconds = config.auth_login_window_seconds;
+        auth_config.login_max_failures = config.auth_login_max_failures;
+        auth_config.login_cooldown_seconds =
+            config.auth_login_cooldown_seconds;
+        auth_service = std::make_unique<auth::AuthService>(database,
+                                                           auth_config);
+    } catch (const std::exception& error) {
+        util::logError("App authentication initialization failed: " +
+                       std::string(error.what()));
         database.close();
         return 1;
     }
@@ -1372,8 +1389,10 @@ int main() {
         http_config.data_root = config.http_data_root;
         http_config.max_image_bytes = static_cast<std::size_t>(
             std::max(1, config.http_max_image_mb)) * 1024U * 1024U;
+        http_config.require_tls = config.http_require_tls;
         http_server = std::make_unique<http::ParkingHttpServer>(
-            database, http_config, &overstay_settings, &roi_settings);
+            database, *auth_service, http_config, &overstay_settings,
+            &roi_settings);
         if (!http_server->start()) return shutdown_and_return(1);
     }
 

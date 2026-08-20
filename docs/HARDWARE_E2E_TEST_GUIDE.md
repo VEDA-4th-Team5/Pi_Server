@@ -48,7 +48,7 @@ WiseAI Intrusion
 
 | 구분 | 값/정책 |
 |---|---|
-| Pi HTTP | `http://<PI_IP>:8080` |
+| Pi HTTPS | `https://<PI_HOST>:<HTTPS_PORT>`; health/login 외 Bearer 필수 |
 | MQTT Broker | Raspberry Pi Mosquitto, TCP `1883` |
 | Camera MQTT 구독 | `+/onvif-ej/#` |
 | 점유 입력 | `PARKING_OCCUPANCY_SOURCE=HYBRID_OR` |

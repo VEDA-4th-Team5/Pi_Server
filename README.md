@@ -290,18 +290,30 @@ SQLite 주요 테이블:
 - `PARKING_SESSION`
 - `IMAGE_LOG`
 - `EVENT_LOG`
+- `app_users`
+- `app_sessions`
 
 ## Qt 조회 API
 
-기본 주소:
+운영 주소 예:
 
 ```text
-http://<PI_IP>:8080
+https://<PI_HOST>:8443
+```
+
+원격 listener는 기본적으로 TLS 인증서와 key가 없으면 시작하지 않는다. 초기 앱
+계정은 seed에 없으며 다음 명령에서 비밀번호를 TTY로 두 번 입력해 생성한다.
+
+```bash
+./cmake-build/app-user --db data/db/parking.db \
+  add operator --display-name "Parking Operator"
 ```
 
 | Method | 경로 | 설명 |
 |---|---|---|
-| GET | `/api/v1/health` | 서버 상태 |
+| GET | `/api/v1/health` | 공개 서버 상태 |
+| POST | `/api/v1/auth/login` | 공개 앱 로그인 |
+| POST | `/api/v1/auth/logout` | 현재 Bearer 세션 폐기 |
 | GET | `/api/v1/parking-slots` | 전체 주차면 |
 | GET | `/api/v1/parking-slots/{slot_id}` | 특정 주차면 |
 | GET | `/api/v1/parking-sessions/active` | 활성 세션 |
@@ -309,7 +321,10 @@ http://<PI_IP>:8080
 | GET | `/api/v1/images/{id}/original` | 원본 이미지 |
 | GET | `/api/v1/images/{id}/enhanced` | 전처리 이미지 |
 
-Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사진을 요청합니다.
+health와 login을 제외한 API에는 `Authorization: Bearer <accessToken>`이 필요하다.
+Qt는 이미지 목록에서 받은 상대 URL에 같은 Pi HTTPS origin을 붙여 사진을
+요청한다. 전체 계약과 Windows CA 설치 방법은
+[`docs/HTTP_API.md`](docs/HTTP_API.md)에 있다.
 
 ## 현재 제한
 
@@ -318,13 +333,13 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 - UART/LoRa 소프트웨어 계층은 구현됐지만 실제 STM32·LoRa 장비 검증은 남아 있습니다.
 - 알람 ACK와 STM32 부저/LED 출력은 아직 없습니다.
 - `/dev/parking_alert`는 구현됐지만 타이머 위반 callback과 32면 bit 매핑은 아직 연결 전입니다.
-- API 사용자 인증은 아직 없습니다.
 
 상세 문서:
 
 - [`docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`](docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md): 카메라 MQTT 촬영 요청 목표 규약과 ROI 처리
 - [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md): CV5 카메라 내부 화질 개선 이미지 연동
 - [`docs/HARDWARE_E2E_TEST_GUIDE.md`](docs/HARDWARE_E2E_TEST_GUIDE.md): WiseAI IVA부터 MQTT·촬영·ROI·DB·Qt·출차까지 실기기 E2E 검증
+- [`docs/SENSOR_LINK_HARDWARE_TEST.md`](docs/SENSOR_LINK_HARDWARE_TEST.md): 실제 STM32 Hall/Flame UART·LoRa 반자동 HIL 승인 테스트
 - [`docs/Pi_Server_Hardware_E2E_Test_Guide.pdf`](docs/Pi_Server_Hardware_E2E_Test_Guide.pdf): 실기기 E2E 테스트 배포·인쇄용 PDF
 - [`docs/GEMINI_OCR_GUIDE.md`](docs/GEMINI_OCR_GUIDE.md): OpenCV 전처리, Gemini HTTPS OCR, DB 반영과 수동 테스트
 - [`docs/UART_LORA_PROTOCOL.md`](docs/UART_LORA_PROTOCOL.md): STM32 UART 및 LoRa frame 규약
