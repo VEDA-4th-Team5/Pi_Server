@@ -325,6 +325,7 @@ Qt는 이미지 목록에서 받은 상대 URL에 Pi 서버 주소를 붙여 사
 - [`docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`](docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md): 카메라 MQTT 촬영 요청 목표 규약과 ROI 처리
 - [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](docs/CAMERA_SNAPSHOT_API_INTEGRATION.md): CV5 카메라 내부 화질 개선 이미지 연동
 - [`docs/HARDWARE_E2E_TEST_GUIDE.md`](docs/HARDWARE_E2E_TEST_GUIDE.md): WiseAI IVA부터 MQTT·촬영·ROI·DB·Qt·출차까지 실기기 E2E 검증
+- [`docs/SENSOR_LINK_HARDWARE_TEST.md`](docs/SENSOR_LINK_HARDWARE_TEST.md): 실제 STM32 Hall/Flame UART·LoRa 반자동 HIL 승인 테스트
 - [`docs/Pi_Server_Hardware_E2E_Test_Guide.pdf`](docs/Pi_Server_Hardware_E2E_Test_Guide.pdf): 실기기 E2E 테스트 배포·인쇄용 PDF
 - [`docs/GEMINI_OCR_GUIDE.md`](docs/GEMINI_OCR_GUIDE.md): OpenCV 전처리, Gemini HTTPS OCR, DB 반영과 수동 테스트
 - [`docs/UART_LORA_PROTOCOL.md`](docs/UART_LORA_PROTOCOL.md): STM32 UART 및 LoRa frame 규약
