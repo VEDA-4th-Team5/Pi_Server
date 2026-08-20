@@ -257,6 +257,62 @@ target_compile_options(uart-lora-driver-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(uart-lora-driver-test PRIVATE Threads::Threads util)
 add_test(NAME uart-lora-driver-test COMMAND uart-lora-driver-test)
 
+# HIL 원시 결과를 CSV로 보존하고 Confluence/포트폴리오용 Markdown 통계를 만든다.
+add_library(hardware-test-report STATIC
+    tests/hardware/HardwareTestReport.cpp)
+target_include_directories(hardware-test-report PUBLIC tests/hardware)
+target_compile_options(hardware-test-report PRIVATE
+    -Wall -Wextra -Wpedantic)
+
+add_executable(hardware-test-report-test
+    tests/unit/HardwareTestReportTest.cpp)
+target_include_directories(hardware-test-report-test PRIVATE tests/hardware)
+target_compile_options(hardware-test-report-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(hardware-test-report-test PRIVATE hardware-test-report)
+add_test(NAME hardware-test-report-test COMMAND hardware-test-report-test)
+
+# 실제 STM32/Hall/Flame 장치를 사람이 조작하며 UART/LoRa 상태 전이와
+# 지연시간을 판정하는 반자동 HIL 테스트다. 일반 CTest에서는 77로 SKIP하며
+# RUN_HARDWARE_TESTS=1을 명시했을 때만 물리 UART를 연다.
+add_executable(sensor-link-hardware-test
+    tests/hardware/SensorLinkHardwareAcceptanceTest.cpp
+    src/device/UartDriver.cpp
+    src/device/LoRaDriver.cpp
+    src/device/SensorLinkManager.cpp
+    src/sensor/SensorProtocolParser.cpp
+    src/sensor/FireSensorMessage.cpp
+    src/event/SystemEventReporter.cpp
+    src/util/StringUtil.cpp
+    src/util/Logger.cpp)
+target_include_directories(sensor-link-hardware-test PRIVATE include)
+target_compile_options(sensor-link-hardware-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(sensor-link-hardware-test PRIVATE Threads::Threads util)
+target_link_libraries(sensor-link-hardware-test PRIVATE hardware-test-report)
+
+find_package(Git QUIET)
+set(VEDA_HARDWARE_TEST_GIT_COMMIT "unknown")
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        RESULT_VARIABLE VEDA_GIT_REV_PARSE_RESULT
+        OUTPUT_VARIABLE VEDA_HARDWARE_TEST_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT VEDA_GIT_REV_PARSE_RESULT EQUAL 0)
+        set(VEDA_HARDWARE_TEST_GIT_COMMIT "unknown")
+    endif()
+endif()
+target_compile_definitions(sensor-link-hardware-test PRIVATE
+    VEDA_HARDWARE_TEST_GIT_COMMIT="${VEDA_HARDWARE_TEST_GIT_COMMIT}")
+add_test(NAME sensor-link-hardware-test COMMAND sensor-link-hardware-test)
+set_tests_properties(sensor-link-hardware-test PROPERTIES
+    LABELS hardware
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300)
+
 add_executable(system-event-reporter-test
     tests/unit/SystemEventReporterTest.cpp
     src/event/SystemEventReporter.cpp
