@@ -58,10 +58,21 @@ void stopHandler(int) { running.store(false); }
 
 template <typename Integer>
 Integer parseInteger(const std::string_view text, const std::string& name) {
+    int base = 10;
+    std::string_view digits = text;
+    if (digits.size() > 2 && digits[0] == '0' &&
+        (digits[1] == 'x' || digits[1] == 'X')) {
+        base = 16;
+        digits.remove_prefix(2);
+    }
+    if (digits.empty()) {
+        throw std::invalid_argument(name + " must be an integer");
+    }
     Integer value{};
     const auto result = std::from_chars(
-        text.data(), text.data() + text.size(), value, 0);
-    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) {
+        digits.data(), digits.data() + digits.size(), value, base);
+    if (result.ec != std::errc{} ||
+        result.ptr != digits.data() + digits.size()) {
         throw std::invalid_argument(name + " must be an integer");
     }
     return value;
