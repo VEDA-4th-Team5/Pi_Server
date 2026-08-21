@@ -7,7 +7,7 @@ SQLite 상태와 이미지 파일을 함께 제공한다.
 
 - `HTTP_API_ENABLED`: 기본 `true`
 - `HTTP_LISTEN_ADDRESS`: 기본 `0.0.0.0`
-- `HTTP_PORT`: 기본 `8080`, 운영 권장 `8443`
+- `HTTP_PORT`: 기본 `8080`; TLS 사용 여부와 포트 번호는 독립적이다.
 - `HTTP_TLS_CERT_PATH`, `HTTP_TLS_KEY_PATH`: 서버 인증서와 private key
 - `HTTP_REQUIRE_TLS`: 기본 `true`; non-loopback HTTP listener 시작 금지
 - `HTTP_DATA_ROOT`: 이미지 제공 허용 루트, 기본 `data`
@@ -139,10 +139,21 @@ SQLite 연결은 `PRAGMA foreign_keys=ON`을 사용한다.
 
 서버 인증서 SAN에는 Qt에 입력할 실제 IP 또는 hostname이 있어야 한다. 예를 들어
 Qt origin이 `https://pi-server.local:8443`이면 SAN에 `pi-server.local`을 넣는다.
-주소와 포트는 소스가 아니라 `.env.private`에서 설정한다.
+주소와 포트는 소스가 아니라 환경 설정에서 관리하며, 장비별로 경로가 다르면
+`.env.private`에서 공개 기본값을 덮어쓴다.
+
+현재 시연 Pi에서 자체 서명 인증서를 생성하려면 저장소 루트에서 실행한다.
+
+```bash
+./tools/setup_tls.sh 172.20.32.97
+```
+
+기존 인증서를 의도적으로 재발급할 때만 두 번째 인자로 `--force`를 사용한다.
+private key는 권한 `600`, 인증서 디렉터리는 `700`으로 생성되며 `data/tls/`는
+Git 제외 대상이다.
 
 ```dotenv
-HTTP_PORT=8443
+HTTP_PORT=8080
 HTTP_TLS_CERT_PATH=data/tls/server.crt
 HTTP_TLS_KEY_PATH=data/tls/server.key
 ```

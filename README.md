@@ -298,11 +298,23 @@ SQLite 주요 테이블:
 운영 주소 예:
 
 ```text
-https://<PI_HOST>:8443
+https://<PI_HOST>:8080
 ```
 
 원격 listener는 기본적으로 TLS 인증서와 key가 없으면 시작하지 않는다. 초기 앱
 계정은 seed에 없으며 다음 명령에서 비밀번호를 TTY로 두 번 입력해 생성한다.
+
+시연 장비에서 사용할 자체 서명 인증서는 다음 명령으로 생성한다. 생성된 private
+key와 인증서는 `data/tls/`에 저장되고 Git에 포함되지 않는다.
+
+```bash
+./tools/setup_tls.sh 172.20.32.97
+```
+
+기본 공개 설정은 생성 경로인 `data/tls/server.crt`, `data/tls/server.key`를
+참조하므로 생성 후 서버를 재시작한다. 다른 경로를 사용할 때만 `.env.private`로
+두 경로를 덮어쓴다. Qt/Windows에는 `data/tls/server.crt`를 신뢰 인증서로
+등록하며 인증서 오류 무시는 사용하지 않는다.
 
 ```bash
 ./cmake-build/app-user --db data/db/parking.db \
