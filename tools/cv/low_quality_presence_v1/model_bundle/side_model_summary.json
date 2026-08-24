@@ -1,0 +1,297 @@
+{
+  "experiment_id": "low-quality-presence-rectification-003",
+  "generated_at_utc": "2026-08-20T01:05:40.976166+00:00",
+  "status": "candidate",
+  "phase": "train-validation",
+  "train_rows": 64,
+  "validation_rows": 21,
+  "test_rows_excluded": 22,
+  "detail_rows": 850,
+  "error_count": 0,
+  "errors": [],
+  "quality_threshold": 0.25,
+  "iou_threshold": 0.5,
+  "low_quality_environments": [
+    "downscale_jpeg",
+    "gaussian_blur_07",
+    "low_light",
+    "motion_blur_09"
+  ],
+  "icon_threshold_selection": "Train synthetic-low-quality only; maximize Recall with FPR <= 0.35",
+  "icon_strategy": "logistic",
+  "icon_fallback_gate": "geometry_confidence",
+  "icon_fallback_min": 0.0,
+  "contrastive_edge_weight": 0.7,
+  "logistic_models": {
+    "left": {
+      "feature_names": [
+        "template_edge_margin",
+        "template_robust_margin",
+        "positive_edge_similarity",
+        "negative_edge_similarity",
+        "positive_robust_similarity",
+        "negative_robust_similarity",
+        "blue_ratio",
+        "mean_saturation",
+        "mean_value",
+        "gray_contrast",
+        "edge_density",
+        "laplacian_log",
+        "rectification_geometry_confidence",
+        "rectification_quality",
+        "quality_aware_fallback_used"
+      ],
+      "fold_audit": [
+        {
+          "fold": 0,
+          "fit_annotation_count": 36,
+          "holdout_annotation_count": 12,
+          "group_overlap": 0
+        },
+        {
+          "fold": 1,
+          "fit_annotation_count": 42,
+          "holdout_annotation_count": 6,
+          "group_overlap": 0
+        },
+        {
+          "fold": 2,
+          "fit_annotation_count": 36,
+          "holdout_annotation_count": 12,
+          "group_overlap": 0
+        },
+        {
+          "fold": 3,
+          "fit_annotation_count": 41,
+          "holdout_annotation_count": 7,
+          "group_overlap": 0
+        },
+        {
+          "fold": 4,
+          "fit_annotation_count": 37,
+          "holdout_annotation_count": 11,
+          "group_overlap": 0
+        }
+      ],
+      "final_model": {
+        "mean": [
+          0.006859329955962797,
+          0.08642557470981653,
+          0.36562157697820413,
+          0.35876224702224135,
+          0.3304966373446708,
+          0.24407106263485426,
+          0.5212799460457518,
+          0.16936058303353574,
+          0.4771748209425552,
+          0.19798585496270807,
+          0.13691690144120514,
+          0.32372846468123057,
+          0.5727974900377244,
+          0.350514442952693,
+          0.5677083333333334
+        ],
+        "scale": [
+          0.012941560061811755,
+          0.12554980052362746,
+          0.14369934621382574,
+          0.14245049607452864,
+          0.12065294137912588,
+          0.16651680330289856,
+          0.42024960276058987,
+          0.1209056156834013,
+          0.1681077578074855,
+          0.12174364632351131,
+          0.0918258043425473,
+          0.17020384952407538,
+          0.4001570293886117,
+          0.269146655046931,
+          0.4953943697673822
+        ],
+        "coefficients": [
+          0.1973365212643448,
+          -0.09719002022851012,
+          0.009234743474954975,
+          -0.00861222583518569,
+          -0.07053016620186384,
+          0.02217503321659677,
+          0.6715885946978487,
+          1.3219579266388068,
+          0.06187217373712326,
+          0.11545432409005306,
+          -0.12655900665346662,
+          -0.23294749443378213,
+          -0.18549314248104243,
+          -0.0912523186112373,
+          -0.0834936380767936,
+          -0.5657481472767282
+        ],
+        "positive_count": 56,
+        "negative_count": 136,
+        "iterations": 700,
+        "learning_rate": 0.08,
+        "regularization": 0.02
+      }
+    },
+    "right": {
+      "feature_names": [
+        "template_edge_margin",
+        "template_robust_margin",
+        "positive_edge_similarity",
+        "negative_edge_similarity",
+        "positive_robust_similarity",
+        "negative_robust_similarity",
+        "blue_ratio",
+        "mean_saturation",
+        "mean_value",
+        "gray_contrast",
+        "edge_density",
+        "laplacian_log",
+        "rectification_geometry_confidence",
+        "rectification_quality",
+        "quality_aware_fallback_used"
+      ],
+      "fold_audit": [
+        {
+          "fold": 0,
+          "fit_annotation_count": 36,
+          "holdout_annotation_count": 13,
+          "group_overlap": 0
+        },
+        {
+          "fold": 1,
+          "fit_annotation_count": 43,
+          "holdout_annotation_count": 6,
+          "group_overlap": 0
+        },
+        {
+          "fold": 2,
+          "fit_annotation_count": 37,
+          "holdout_annotation_count": 12,
+          "group_overlap": 0
+        },
+        {
+          "fold": 3,
+          "fit_annotation_count": 42,
+          "holdout_annotation_count": 7,
+          "group_overlap": 0
+        },
+        {
+          "fold": 4,
+          "fit_annotation_count": 38,
+          "holdout_annotation_count": 11,
+          "group_overlap": 0
+        }
+      ],
+      "final_model": {
+        "mean": [
+          0.006739881117733157,
+          0.11506312687368113,
+          0.3694593473052492,
+          0.36271946618751605,
+          0.3664935366535673,
+          0.2514304097798862,
+          0.5223185730817862,
+          0.16873574380864098,
+          0.4897538750409876,
+          0.2058010576904,
+          0.1452418877990907,
+          0.32273302897221207,
+          0.5804659149789442,
+          0.348893857746905,
+          0.576530612244898
+        ],
+        "scale": [
+          0.01524928542431008,
+          0.12264185637986193,
+          0.1354816793731842,
+          0.13148108578023207,
+          0.13194406474675052,
+          0.12751441297714872,
+          0.43378137457210414,
+          0.1226245279845237,
+          0.17410496936065525,
+          0.12462764458528217,
+          0.09308171252748265,
+          0.17611557450592738,
+          0.3996671286365016,
+          0.26694848907649615,
+          0.49410835389560215
+        ],
+        "coefficients": [
+          0.24634489140573015,
+          0.22566091128892787,
+          -0.00943225898497385,
+          -0.038290540571354455,
+          0.04337323895766294,
+          -0.17215804167544077,
+          0.33476319705672447,
+          1.1439928723147363,
+          -0.38401901077293227,
+          -0.3131719879580484,
+          -0.2100489123086887,
+          -0.19580178754735983,
+          -0.19671477660985867,
+          -0.10561448830608146,
+          -0.1599361729563081,
+          -0.4638203739828489
+        ],
+        "positive_count": 60,
+        "negative_count": 136,
+        "iterations": 700,
+        "learning_rate": 0.08,
+        "regularization": 0.02
+      }
+    }
+  },
+  "icon_thresholds": {
+    "baseline": {
+      "left": {
+        "threshold": 0.14247789978981018,
+        "recall": 0.3392857142857143,
+        "fpr": 0.33088235294117646,
+        "positive_count": 56,
+        "negative_count": 136
+      },
+      "right": {
+        "threshold": 0.13182201981544495,
+        "recall": 0.3333333333333333,
+        "fpr": 0.33088235294117646,
+        "positive_count": 60,
+        "negative_count": 136
+      }
+    },
+    "quality_aware": {
+      "left": {
+        "threshold": 0.2128881803178194,
+        "recall": 0.5178571428571429,
+        "fpr": 0.33088235294117646,
+        "positive_count": 56,
+        "negative_count": 136
+      },
+      "right": {
+        "threshold": 0.3362558952145124,
+        "recall": 0.5,
+        "fpr": 0.27941176470588236,
+        "positive_count": 60,
+        "negative_count": 136
+      }
+    }
+  },
+  "gate": {
+    "validation_roi_top3_non_regression": true,
+    "validation_geometric_rectification_at_least_step89": true,
+    "validation_geometric_alignment_at_least_0_3526": true,
+    "validation_icon_macro_recall_improved": true,
+    "validation_vehicle_icon_recall_improved": true,
+    "validation_icon_macro_fpr_increase_le_0_10": true,
+    "normal_geometric_regression_le_0_05": true,
+    "processing_errors_zero": true
+  },
+  "ocr_exact_match": "N/A_no_ground_truth",
+  "ocr_cer": "N/A_no_ground_truth",
+  "formal_test_opened": false,
+  "operational_ev_classifier": false,
+  "real_ir_evaluated": false,
+  "source_images_modified": false
+}

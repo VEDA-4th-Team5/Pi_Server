@@ -1,10 +1,13 @@
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingSlotManager.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -48,6 +51,42 @@ int main(int argc, char* argv[]) {
         auto configs =
             parking::ParkingSlotConfigLoader::loadFromFile(
                 configPath);
+
+        if (argc >= 3 && std::string(argv[2]) == "--validate-production") {
+            require(configs.size() == 8,
+                    "production config must contain EV01 through EV08");
+            for (int index = 1; index <= 8; ++index) {
+                std::ostringstream slotId;
+                slotId << "EV" << std::setw(2) << std::setfill('0')
+                       << index;
+                const std::string expectedSlot = slotId.str();
+                const std::string expectedSensor =
+                    "HALL" + expectedSlot.substr(2);
+                const std::string expectedRule =
+                    "name" + std::to_string(index);
+                const std::string expectedToken =
+                    index <= 4 ? "vs-0" : "vs-2";
+                const auto found = std::find_if(
+                    configs.begin(), configs.end(),
+                    [&expectedSlot](const auto& config) {
+                        return config.slotId == expectedSlot;
+                    });
+                require(found != configs.end() && found->enabled,
+                        expectedSlot + " must be enabled");
+                require(found->sensorId == expectedSensor,
+                        expectedSlot + " sensor mapping mismatch");
+                require(found->cameraBindings.size() == 1 &&
+                            found->cameraBindings.front().enabled &&
+                            found->cameraBindings.front().cameraId == "cam01" &&
+                            found->cameraBindings.front().videoSourceToken ==
+                                expectedToken &&
+                            found->cameraBindings.front().ruleName ==
+                                expectedRule,
+                        expectedSlot + " native WiseAI mapping mismatch");
+            }
+            std::cout << "[PASS] production parking slot config EV01~EV08\n";
+            return EXIT_SUCCESS;
+        }
 
         require(configs.size() == 4,
                 "expected four configured slots");

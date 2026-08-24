@@ -68,7 +68,7 @@ EVDA-192에서는 CH1의 WiseAI `name1`~`name4`를 EV01~EV04에 1:1로
 Hall OCCUPIED 중 먼저 확정된 입력으로 세션 하나를 만들고, 나중 입력은 동일
 세션의 확인 상태만 보강한다. IVA만 확인한 세션은 IVA EXIT, Hall만 확인한 세션은
 Hall VACANT이 종료 권한을 가지며, 둘 다 확인한 세션은 두 입력이 모두 VACANT일
-때 종료한다. IVA EXIT는 기본 20초 확인 후 확정한다. 신규 이미지는
+때 종료한다. IVA EXIT는 기본 10초 확인 후 확정한다. 신규 이미지는
 `ch1/EV01/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
 API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
 

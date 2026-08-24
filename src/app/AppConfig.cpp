@@ -72,6 +72,18 @@ std::string getEnvOrLocalSetting(const char* key,
     return default_value;
 }
 
+std::string resolveProjectLocalPath(const char* key,
+                                    const std::string& default_value,
+                                    const std::string& settings_path) {
+    const std::string configured = getEnvOrLocalSetting(
+        key, default_value, settings_path);
+    if (configured.empty() || std::filesystem::path(configured).is_absolute())
+        return configured;
+    const std::string root = getEnvOrDefault("PI_SERVER_ROOT", "");
+    if (root.empty()) return configured;
+    return (std::filesystem::path(root) / configured).lexically_normal().string();
+}
+
 int getEnvIntOrDefault(const char* key, int default_value) {
     const char* value = std::getenv(key);
 
@@ -170,8 +182,21 @@ AppConfig AppConfig::loadFromEnv() {
         config.parking_occupancy_source != "HYBRID_OR") {
         config.parking_occupancy_source = "HALL";
     }
+    config.camera_iva_event_source = getEnvOrLocalSetting(
+        "CAMERA_IVA_EVENT_SOURCE", "MQTT",
+        localSettingPath(".env.public"));
+    std::transform(config.camera_iva_event_source.begin(),
+                   config.camera_iva_event_source.end(),
+                   config.camera_iva_event_source.begin(),
+                   [](const unsigned char value) {
+                       return static_cast<char>(std::toupper(value));
+                   });
+    if (config.camera_iva_event_source != "MQTT" &&
+        config.camera_iva_event_source != "ONVIF") {
+        config.camera_iva_event_source = "MQTT";
+    }
     config.camera_iva_exit_confirm_ms = std::clamp(
-        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 20000),
+        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 10000),
         1000, 60000);
     config.capture_sched_enabled =
         getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);
@@ -203,6 +228,8 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_RTSP_FALLBACK", false);
     config.camera_open_api_base = getEnvOrLocalSetting(
         "CAMERA_OPEN_API_BASE", "", localSettingPath(".env.private"));
+    config.camera_onvif_event_url = getEnvOrLocalSetting(
+        "CAMERA_ONVIF_EVENT_URL", "", localSettingPath(".env.private"));
     config.camera_image_base = getEnvOrLocalSetting(
         "CAMERA_IMAGE_BASE", "", localSettingPath(".env.private"));
     config.camera_api_username = getEnvOrLocalSetting(
@@ -223,6 +250,84 @@ AppConfig AppConfig::loadFromEnv() {
         1, getEnvIntOrDefault("CAMERA_SNAPSHOT_RETRY_DELAY_MS", 250));
     config.bestshot_enabled =
         getEnvBoolOrDefault("BESTSHOT_ENABLED", false);
+    config.entrance_enabled = getEnvOrLocalBoolOrDefault(
+        "ENTRANCE_ENABLED", false, localSettingPath(".env.public"));
+    config.entrance_camera_id = getEnvOrLocalSetting(
+        "ENTRANCE_CAMERA_ID", config.camera_id, localSettingPath(".env.public"));
+    config.entrance_source_channel_id = getEnvOrLocalSetting(
+        "ENTRANCE_SOURCE_CHANNEL_ID", "ch02", localSettingPath(".env.public"));
+    config.entrance_channel_id = getEnvOrLocalSetting(
+        "ENTRANCE_CHANNEL_ID", "ch02", localSettingPath(".env.public"));
+    config.entrance_output_root = resolveProjectPath(
+        "ENTRANCE_OUTPUT_ROOT", "data/entrance");
+    config.entrance_object_ttl_seconds = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_OBJECT_TTL_SECONDS", 60,
+                                 localSettingPath(".env.public")),
+        5, 3600);
+    config.entrance_pending_capacity = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_PENDING_CAPACITY", 64,
+                                 localSettingPath(".env.public")),
+        1, 4096);
+    config.entrance_image_dedup_window_seconds = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_IMAGE_DEDUP_WINDOW_SECONDS", 20,
+                                 localSettingPath(".env.public")),
+        1, 300);
+    config.entrance_image_dedup_phash_threshold = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_IMAGE_DEDUP_PHASH_THRESHOLD", 10,
+                                 localSettingPath(".env.public")),
+        0, 64);
+    config.entrance_delete_artifacts_on_success =
+        getEnvOrLocalBoolOrDefault(
+            "ENTRANCE_DELETE_ARTIFACTS_ON_SUCCESS", true,
+            localSettingPath(".env.public"));
+    config.entrance_failure_retention_hours = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_FAILURE_RETENTION_HOURS", 24,
+                                 localSettingPath(".env.public")),
+        1, 168);
+    config.entrance_plate_match_window_minutes = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_PLATE_MATCH_WINDOW_MINUTES", 30,
+                                 localSettingPath(".env.public")),
+        1, 180);
+    config.entrance_plate_match_min_confidence = std::clamp(
+        parseDoubleOrDefault(
+            getEnvOrLocalSetting("ENTRANCE_PLATE_MATCH_MIN_CONFIDENCE", "0.85",
+                                 localSettingPath(".env.public")),
+            0.85),
+        0.5, 1.0);
+    config.entrance_ev_analysis_enabled = getEnvOrLocalBoolOrDefault(
+        "ENTRANCE_EV_ANALYSIS_ENABLED", false,
+        localSettingPath(".env.public"));
+    config.entrance_ev_python = getEnvOrLocalSetting(
+        "ENTRANCE_EV_PYTHON", "/usr/bin/python3",
+        localSettingPath(".env.public"));
+    config.entrance_ev_worker_script = resolveProjectLocalPath(
+        "ENTRANCE_EV_WORKER_SCRIPT",
+        "tools/cv/low_quality_presence_v1/runtime/pi_worker.py",
+        localSettingPath(".env.public"));
+    config.entrance_ev_model_bundle = resolveProjectLocalPath(
+        "ENTRANCE_EV_MODEL_BUNDLE",
+        "tools/cv/low_quality_presence_v1/model_bundle",
+        localSettingPath(".env.public"));
+    config.entrance_ev_template_cache = resolveProjectLocalPath(
+        "ENTRANCE_EV_TEMPLATE_CACHE",
+        "tools/cv/low_quality_presence_v1/model_bundle/runtime_template_cache.json",
+        localSettingPath(".env.public"));
+    config.entrance_ev_thresholds = resolveProjectLocalPath(
+        "ENTRANCE_EV_THRESHOLDS",
+        "tools/cv/low_quality_presence_v1/model_bundle/default_thresholds.json",
+        localSettingPath(".env.public"));
+    config.entrance_ev_timeout_ms = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_EV_TIMEOUT_MS", 5000,
+                                 localSettingPath(".env.public")),
+        500, 30000);
+    config.entrance_ev_queue_capacity = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_EV_QUEUE_CAPACITY", 16,
+                                 localSettingPath(".env.public")),
+        1, 256);
+    config.entrance_ev_opencv_threads = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_EV_OPENCV_THREADS", 1,
+                                 localSettingPath(".env.public")),
+        1, 4);
 
     config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
     config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");
@@ -244,6 +349,13 @@ AppConfig AppConfig::loadFromEnv() {
         config.parking_slot_config_path;
     config.parking_hall_work_queue_capacity = std::max(
         1, getEnvIntOrDefault("PARKING_HALL_WORK_QUEUE_CAPACITY", 100));
+    config.parking_alert_driver_enabled =
+        getEnvBoolOrDefault("PARKING_ALERT_DRIVER_ENABLED", false);
+    config.parking_alert_device_path = getEnvOrDefault(
+        "PARKING_ALERT_DEVICE_PATH", "/dev/parking_alert");
+    config.parking_alert_slot_map = getEnvOrDefault(
+        "PARKING_ALERT_SLOT_MAP",
+        "EV01:0,EV02:1,EV03:2,EV04:3,EV05:4,EV06:5,EV07:6,EV08:7");
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.snapshot_dir = resolveProjectPath("SNAPSHOT_DIR", config.snapshot_dir);
@@ -349,15 +461,16 @@ AppConfig AppConfig::loadFromEnv() {
         });
     }
 
-    // EV01~EV04는 카메라 웹 설정의 IVA Area 이름과 동일하게 두는 것이 기본이다.
+    // EV01~EV04는 CH1, EV05~EV08은 CH3의 IVA Area를 사용한다.
     // ROI 네 값이 전혀 없으면 좌표는 "미설정"으로 유지한다. SQLite에 Qt가
     // 저장한 값이 있으면 ParkingRoiSettingsService가 그것을 우선 복원한다.
-    for (int i = 1; i <= 4; ++i) {
+    for (int i = 1; i <= 8; ++i) {
         std::ostringstream slot;
         slot << "EV" << std::setw(2) << std::setfill('0') << i;
-        // 현재 설치에서는 ch01 한 영상의 네 ROI가 EV01~EV04를 담당한다.
-        // 향후 채널 확장 시 IVA_EVxx_CHANNEL_ID로 슬롯별 override한다.
-        const std::string channel = "ch01";
+        const std::string channel = i <= 4 ? "ch01" : "ch03";
+        const int snapshot_api_channel = i <= 4 ? 0 : 2;
+        const std::string default_area_name =
+            "name" + std::to_string(i);
         const std::string prefix = "IVA_" + slot.str() + "_";
         const std::string public_env_path = localSettingPath(".env.public");
         const std::string roi_x = getEnvOrLocalSetting(
@@ -374,8 +487,8 @@ AppConfig AppConfig::loadFromEnv() {
 
         config.iva_areas.push_back({
             slot.str(),
-            getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(), slot.str(),
-                                 public_env_path),
+            getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(),
+                                 default_area_name, public_env_path),
             getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel,
                                  public_env_path),
             parseDoubleOrDefault(roi_x, 0.0),
@@ -383,7 +496,8 @@ AppConfig AppConfig::loadFromEnv() {
             parseDoubleOrDefault(roi_width, 1.0),
             parseDoubleOrDefault(roi_height, 1.0),
             std::max(0, getEnvIntOrDefault(
-                (prefix + "SNAPSHOT_API_CHANNEL").c_str(), 0)),
+                (prefix + "SNAPSHOT_API_CHANNEL").c_str(),
+                snapshot_api_channel)),
             roi_configured
         });
     }

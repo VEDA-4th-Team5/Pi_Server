@@ -115,7 +115,7 @@ data/snapshots/ch1/
 
 ```bash
 export PARKING_OCCUPANCY_SOURCE=CAMERA_IVA
-export CAMERA_IVA_EXIT_CONFIRM_MS=20000
+export CAMERA_IVA_EXIT_CONFIRM_MS=10000
 ```
 
 ```text
@@ -127,7 +127,7 @@ name1 Action=Intrusion
 → 기존 session 유지, 중복 촬영/세션 생성 금지
 
 name1 Action=Exit
-→ 기본 20초 출차 확인 예약
+→ 기본 10초 출차 확인 예약
 → 확인 중 INTRUSION이 오면 취소
 → 확인 만료 후 동일 슬롯 session 종료
 
@@ -142,7 +142,7 @@ BestShot/Plate 이벤트
 → 현재 ACTIVE session에 이미지와 OCR 결과만 attach
 ```
 
-`CAMERA_IVA_EXIT_CONFIRM_MS`는 1000~60000ms 범위이며 기본값은 20000ms다.
+`CAMERA_IVA_EXIT_CONFIRM_MS`는 1000~60000ms 범위이며 기본값은 10000ms다.
 반복 EXIT는 최초 deadline을 뒤로 미루지 않는다. 확인이 끝난 출차는 Hall VACANT와
 동일한 정리 정책을 사용한다. `violation_at IS NULL`이면 예약/OCR/이미지/IMAGE_LOG를
 정리하고, `violation_at IS NOT NULL`이면 위반 증거를 보존한다.
@@ -154,7 +154,7 @@ BestShot/Plate 이벤트
 ```bash
 export PARKING_OCCUPANCY_SOURCE=HYBRID_OR
 export PARKING_OCCUPANCY_CONFIRM_MS=5000
-export CAMERA_IVA_EXIT_CONFIRM_MS=20000
+export CAMERA_IVA_EXIT_CONFIRM_MS=10000
 ```
 
 입차는 IVA INTRUSION 또는 5초 유지된 Hall OCCUPIED 중 먼저 확정된 입력으로

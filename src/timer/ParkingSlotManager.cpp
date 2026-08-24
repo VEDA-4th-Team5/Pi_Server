@@ -55,7 +55,7 @@ std::chrono::milliseconds remainingDelay(
  *
  * @param[in,out] database 차량 조회와 세션 로그를 저장할 SQLite 접근 객체.
  * @param[in,out] events 관제 이벤트를 발행할 이벤트 관리자.
- * @param[in] parking_timeout EV/PHEV 장기점유 판정까지의 대기시간.
+ * @param[in] parking_timeout EV 장기점유 판정까지의 대기시간.
  * @throws std::invalid_argument 제한시간이 0 이하인 경우.
  * @note 타이머 callback과 출차 처리는 같은 `transition_mutex_`를 사용하므로 DB 상태와
  *       이벤트 발행 순서가 서로 뒤집히지 않는다.
@@ -234,8 +234,7 @@ std::size_t ParkingSlotManager::updateParkingTimeout(
             continue;
         }
         const auto category = database_.classifyVehicle(record.car_number);
-        if (category != VehicleCategory::Ev &&
-            category != VehicleCategory::Phev) {
+        if (category != VehicleCategory::Ev) {
             continue;
         }
         timers_.reschedule(record.id, record.slot_id, record.car_number,

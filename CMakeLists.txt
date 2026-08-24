@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4)
 pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
@@ -28,7 +29,8 @@ target_compile_definitions(pi-server PRIVATE
     VEDA_RUNTIME_SQL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/db")
 target_link_libraries(pi-server PRIVATE
     PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
-    PkgConfig::HTTPLIB PkgConfig::SODIUM mosquitto sqlite3 Threads::Threads)
+    PkgConfig::HTTPLIB PkgConfig::SODIUM OpenSSL::Crypto
+    mosquitto sqlite3 Threads::Threads)
 target_link_options(pi-server PRIVATE -Wl,--gc-sections)
 if(NOT CMAKE_NM)
     message(FATAL_ERROR "nm is required for the production occupancy gate")
@@ -65,6 +67,84 @@ add_executable(app-config-test
 target_include_directories(app-config-test PRIVATE include)
 target_compile_options(app-config-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME app-config-test COMMAND app-config-test)
+
+add_executable(entrance-bestshot-coordinator-test
+    tests/unit/EntranceBestShotCoordinatorTest.cpp
+    src/entrance/EntranceBestShotCoordinator.cpp)
+target_include_directories(entrance-bestshot-coordinator-test PRIVATE include)
+target_compile_options(entrance-bestshot-coordinator-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-bestshot-coordinator-test PRIVATE Threads::Threads)
+add_test(NAME entrance-bestshot-coordinator-test
+    COMMAND entrance-bestshot-coordinator-test)
+
+add_executable(entrance-image-deduplicator-test
+    tests/unit/EntranceImageDeduplicatorTest.cpp
+    src/entrance/EntranceImageDeduplicator.cpp)
+target_include_directories(entrance-image-deduplicator-test PRIVATE include)
+target_compile_options(entrance-image-deduplicator-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-image-deduplicator-test PRIVATE
+    PkgConfig::OPENCV Threads::Threads)
+add_test(NAME entrance-image-deduplicator-test
+    COMMAND entrance-image-deduplicator-test)
+
+add_executable(plate-matcher-test
+    tests/unit/PlateMatcherTest.cpp
+    src/ocr/PlateMatcher.cpp)
+target_include_directories(plate-matcher-test PRIVATE include)
+target_compile_options(plate-matcher-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME plate-matcher-test COMMAND plate-matcher-test)
+
+add_executable(entrance-vehicle-service-test
+    tests/integration/EntranceVehicleServiceTest.cpp
+    src/entrance/EntranceBestShotCoordinator.cpp
+    src/entrance/EntranceImageDeduplicator.cpp
+    src/entrance/EntranceVehicleService.cpp
+    src/util/Logger.cpp)
+target_include_directories(entrance-vehicle-service-test PRIVATE include)
+target_compile_options(entrance-vehicle-service-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-vehicle-service-test PRIVATE
+    PkgConfig::OPENCV Threads::Threads)
+add_test(NAME entrance-vehicle-service-test
+    COMMAND entrance-vehicle-service-test)
+
+add_executable(entrance-database-test
+    tests/integration/EntranceDatabaseTest.cpp)
+target_include_directories(entrance-database-test PRIVATE include)
+target_compile_options(entrance-database-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_compile_definitions(entrance-database-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+target_link_libraries(entrance-database-test PRIVATE
+    parking-timer-core sqlite3 Threads::Threads)
+add_test(NAME entrance-database-test COMMAND entrance-database-test)
+
+add_executable(entrance-ocr-worker-test
+    tests/integration/EntranceOcrWorkerTest.cpp
+    src/ocr/OcrWorker.cpp
+    src/ocr/GeminiOcrClient.cpp
+    src/ocr/PlateImageEnhancer.cpp
+    src/ocr/PlateNormalizer.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(entrance-ocr-worker-test PRIVATE include)
+target_compile_options(entrance-ocr-worker-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-ocr-worker-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV PkgConfig::CURL Threads::Threads)
+add_test(NAME entrance-ocr-worker-test COMMAND entrance-ocr-worker-test)
+
+add_executable(entrance-ev-worker-test
+    tests/integration/EntranceEvWorkerTest.cpp
+    src/entrance/EntranceEvWorker.cpp
+    src/util/Logger.cpp)
+target_include_directories(entrance-ev-worker-test PRIVATE include)
+target_compile_options(entrance-ev-worker-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-ev-worker-test PRIVATE Threads::Threads)
+add_test(NAME entrance-ev-worker-test COMMAND entrance-ev-worker-test)
 
 add_executable(db-manager-test
     tests/integration/DbManagerTest.c
@@ -159,6 +239,22 @@ target_include_directories(camera-iva-event-test PRIVATE include)
 target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME camera-iva-event-test COMMAND camera-iva-event-test)
 
+# ONVIF PullPoint XML 분리와 CH1/CH3 슬롯 매핑을 카메라 없이 검증한다.
+add_executable(onvif-iva-event-source-test
+    tests/unit/OnvifIvaEventSourceTest.cpp
+    src/camera/OnvifIvaEventSource.cpp
+    src/event/OnvifIvaEventAdapter.cpp
+    src/event/IvaEventResolver.cpp
+    src/util/TimeUtil.cpp
+    src/util/Logger.cpp)
+target_include_directories(onvif-iva-event-source-test PRIVATE include)
+target_compile_options(onvif-iva-event-source-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(onvif-iva-event-source-test PRIVATE
+    PkgConfig::CURL OpenSSL::Crypto Threads::Threads)
+add_test(NAME onvif-iva-event-source-test
+    COMMAND onvif-iva-event-source-test)
+
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
     src/event/FireAlarmService.cpp
@@ -234,6 +330,10 @@ target_link_libraries(uart-fire-listener PRIVATE Threads::Threads util)
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+add_test(NAME parking-production-config-test
+    COMMAND parking-domain-test
+            ${CMAKE_SOURCE_DIR}/config/parking_slots.json
+            --validate-production)
 add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
@@ -343,6 +443,18 @@ target_include_directories(lora-console PRIVATE include)
 target_compile_options(lora-console PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(lora-console PRIVATE Threads::Threads)
 
+# 카메라 ONVIF PullPoint에서 WiseAI IvaArea의 ObjectId/Action을 직접 확인한다.
+# MQTT Publication/Event Rule과 무관한 카메라 원본 이벤트 진단 전용 도구다.
+add_executable(watch-onvif-iva-events
+    tools/watch_onvif_iva_events.cpp
+    src/camera/OnvifIvaEventSource.cpp
+    src/util/Logger.cpp)
+target_include_directories(watch-onvif-iva-events PRIVATE include)
+target_compile_options(watch-onvif-iva-events PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(watch-onvif-iva-events PRIVATE
+    PkgConfig::CURL OpenSSL::Crypto Threads::Threads)
+
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
 target_include_directories(parking-alert-ctl PRIVATE include/uapi)
@@ -351,6 +463,14 @@ target_compile_options(parking-alert-ctl PRIVATE -Wall -Wextra -Wpedantic)
 add_library(parking-alert-adapter STATIC src/device/LinuxDriverAdapter.cpp)
 target_include_directories(parking-alert-adapter PUBLIC include include/uapi)
 target_compile_options(parking-alert-adapter PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(parking-alert-controller-test
+    tests/unit/ParkingAlertControllerTest.cpp
+    src/device/ParkingAlertController.cpp)
+target_include_directories(parking-alert-controller-test PRIVATE include)
+target_compile_options(parking-alert-controller-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME parking-alert-controller-test COMMAND parking-alert-controller-test)
 
 add_custom_target(parking-alert-module
     COMMAND ${CMAKE_MAKE_PROGRAM} -C ${CMAKE_SOURCE_DIR}/driver/parking_alert
@@ -362,11 +482,13 @@ add_library(parking-timer-core STATIC
     src/database/EventDatabase.cpp
     src/database/EventDatabaseAuth.cpp
     src/database/EventDatabaseCorrelation.cpp
+    src/database/EventDatabaseEntrance.cpp
     src/database/EventDatabaseFire.cpp
     src/database/EventDatabaseOccupancy.cpp
     src/database/EventDatabaseTimer.cpp
     src/database/SessionTransitionStore.cpp
     src/database/db_manager.c
+    src/ocr/PlateMatcher.cpp
     src/event/FirePersistence.cpp
     src/parking/SlotTransitionActor.cpp
     src/parking/SlotTransitionTypes.cpp
@@ -569,7 +691,8 @@ target_compile_definitions(mqtt-bridge-lifecycle-test PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 target_link_libraries(mqtt-bridge-lifecycle-test PRIVATE
     parking-timer-core PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
-    PkgConfig::HTTPLIB PkgConfig::SODIUM mosquitto sqlite3 Threads::Threads)
+    PkgConfig::HTTPLIB PkgConfig::SODIUM OpenSSL::Crypto
+    mosquitto sqlite3 Threads::Threads)
 add_test(NAME mqtt-bridge-lifecycle-test COMMAND mqtt-bridge-lifecycle-test)
 
 add_executable(parking-correlation-integration-test

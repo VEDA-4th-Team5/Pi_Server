@@ -461,6 +461,7 @@ void testCameraIvaUsesSourceTimeAndAreaIdentity() {
     auto config = fireConfig();
     config.fire_alarm_enabled = false;
     config.parking_occupancy_source = "HYBRID_OR";
+    config.camera_iva_event_source = "MQTT";
     config.hall_mqtt_input_enabled = true;
     config.hall_mqtt_topic = "parking/sensor/hall";
     config.iva_areas.push_back(
@@ -527,6 +528,137 @@ void testCameraIvaUsesSourceTimeAndAreaIdentity() {
                 hall_received.front() == "SENSOR:HALL01:OCCUPIED:1",
             "HYBRID_OR bridge did not dispatch Hall MQTT input");
     require(bridge.stop(), "CAMERA_IVA bridge stop failed");
+}
+
+void testOnvifModeSuppressesOnlyMqttIvaTransitions() {
+    auto config = fireConfig();
+    config.fire_alarm_enabled = false;
+    config.parking_occupancy_source = "HYBRID_OR";
+    config.camera_iva_event_source = "ONVIF";
+    config.hall_mqtt_input_enabled = true;
+    config.hall_mqtt_topic = "parking/sensor/hall";
+    config.iva_areas.push_back(
+        {"EV01", "name1", "ch01", 0.0, 0.0, 1.0, 1.0});
+    std::vector<parking::ParkingSlotConfig> slots{
+        {"EV01", true, "EV", "hall-ev01",
+         {{"cam01", "vs-0", "name1", true, 0}}}};
+    std::vector<std::shared_ptr<camera::CameraChannel>> channels;
+    database::EventDatabase database;
+    std::atomic<bool> running{true};
+    snapshot::SnapshotStorage storage("unused-onvif-mode-test", 1, running);
+    ocr::OcrWorker ocrWorker(
+        ocr::GeminiOcrClient("", "test-model", 1, 1), database, false);
+    std::vector<event::IvaOccupancySignal> iva_received;
+    std::vector<std::string> hall_received;
+    auto transport = std::make_unique<FakeMqttTransport>();
+    auto* fake = transport.get();
+
+    mqtt::MqttEventBridge bridge(
+        config, channels, database, storage, ocrWorker, std::move(slots),
+        [&](const std::string& line) { hall_received.push_back(line); }, {},
+        [&](const event::IvaOccupancySignal& signal) {
+            iva_received.push_back(signal);
+            return true;
+        },
+        std::move(transport));
+    require(bridge.start(), "ONVIF mode MQTT bridge failed to start");
+
+    fake->emitRaw(
+        "E4:30:22:F2:D1:A0/onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name1",
+        R"({"UtcTime":"2026-08-24T03:10:00.000Z","Source":{"VideoSourceToken":"vs-0","RuleName":"name1"},"Data":{"State":"true","ObjectId":"100","Action":"Intrusion"}})");
+    fake->emitRaw(
+        "cam01/onvif-ej/iva/vs-0/EV01/intrusion",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-0","rule_name":"name1","slot_id":"EV01","event_type":"IVA_AREA","action":"INTRUSION","active":true})");
+    require(iva_received.empty(),
+            "ONVIF mode accepted a duplicate MQTT IVA transition");
+
+    fake->emitRaw(config.hall_mqtt_topic, "SENSOR:HALL01:OCCUPIED:1");
+    require(hall_received.size() == 1,
+            "ONVIF mode disabled non-IVA Hall MQTT input");
+    require(bridge.stop(), "ONVIF mode MQTT bridge stop failed");
+}
+
+void testCh3PublicationSharesNativeWiseAiAreaIdentity() {
+    auto config = fireConfig();
+    config.fire_alarm_enabled = false;
+    config.parking_occupancy_source = "HYBRID_OR";
+    config.iva_areas.push_back(
+        {"EV05", "name5", "ch03", 0.0, 0.0, 1.0, 1.0, 2, true});
+    std::vector<parking::ParkingSlotConfig> slots{
+        {"EV05", true, "EV", "hall-ev05",
+         {{"cam01", "vs-2", "name5", true, 0}}}};
+    std::vector<std::shared_ptr<camera::CameraChannel>> channels;
+    database::EventDatabase database;
+    std::atomic<bool> running{true};
+    snapshot::SnapshotStorage storage("unused-ch3-publication-test", 1,
+                                      running);
+    ocr::OcrWorker ocrWorker(
+        ocr::GeminiOcrClient("", "test-model", 1, 1), database, false);
+    std::vector<event::IvaOccupancySignal> received;
+    std::vector<event::IvaCoordinationCode> coordination;
+    event::IvaOccupancyCoordinator coordinator(slots, 20s);
+    auto transport = std::make_unique<FakeMqttTransport>();
+    auto* fake = transport.get();
+
+    mqtt::MqttEventBridge bridge(
+        config, channels, database, storage, ocrWorker,
+        slots, {}, {},
+        [&](const event::IvaOccupancySignal& signal) {
+            received.push_back(signal);
+            coordination.push_back(coordinator.handle(signal).code);
+            return true;
+        },
+        std::move(transport));
+    require(bridge.start(), "CH3 publication bridge failed to start");
+
+    fake->emitRaw(
+        "cam01/onvif-ej/iva/vs-2/EV05/intrusion",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"EV05","event_type":"IVA_AREA","action":"INTRUSION","active":true})");
+    require(received.size() == 1 &&
+                received[0].slotId == "EV05" &&
+                received[0].channelId == "ch03" &&
+                received[0].videoSourceToken == "vs-2" &&
+                received[0].ruleName == "name5" &&
+                received[0].action ==
+                    event::IvaOccupancyAction::Intrusion &&
+                !received[0].authoritativeExit &&
+                !received[0].occurredAtFromSource &&
+                coordination[0] == event::IvaCoordinationCode::Occupied,
+            "vs-2 custom intrusion was not normalized to EV05 native area");
+
+    // 고정 Publication EXIT는 카메라 실제 Action의 증거가 아니므로 무시한다.
+    fake->emitRaw(
+        "cam01/onvif-ej/iva/vs-2/EV05/exit",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"EV05","event_type":"IVA_AREA","action":"EXIT","active":false})");
+    require(received.size() == 1,
+            "custom EXIT must not alter CH3 occupancy");
+
+    // 원본 WiseAI Intrusion은 같은 vs-2/name5 영역이므로 중복 전이가 아니다.
+    const std::string nativeTopic =
+        "E4:30:22:F2:D1:A0/onvif-ej/OpenApp/WiseAI/IvaArea/&vs-2/name5";
+    fake->emitRaw(
+        nativeTopic,
+        R"({"UtcTime":"2026-08-24T03:10:00.000Z","Source":{"VideoSourceToken":"vs-2","RuleName":"name5"},"Data":{"State":"true","ObjectId":"9001","Action":"Intrusion"}})");
+    require(received.size() == 2 &&
+                coordination[1] == event::IvaCoordinationCode::Duplicate,
+            "custom and native CH3 intrusion created separate area states");
+
+    // 출차 권한은 source time이 있는 원본 WiseAI Exit에만 있다.
+    fake->emitRaw(
+        nativeTopic,
+        R"({"UtcTime":"2026-08-24T03:10:10.000Z","Source":{"VideoSourceToken":"vs-2","RuleName":"name5"},"Data":{"State":"true","ObjectId":"9001","Action":"Exit"}})");
+    require(received.size() == 3 &&
+                received.back().slotId == "EV05" &&
+                received.back().channelId == "ch03" &&
+                received.back().videoSourceToken == "vs-2" &&
+                received.back().action == event::IvaOccupancyAction::Exit &&
+                received.back().authoritativeExit &&
+                received.back().occurredAtFromSource &&
+                coordination.back() ==
+                    event::IvaCoordinationCode::ExitPending,
+            "native vs-2/name5 Exit did not clear the CH3 EV05 area");
+
+    require(bridge.stop(), "CH3 publication bridge stop failed");
 }
 
 void testProductionBridgeAndActorOrderBothSidesOfDeadline() {
@@ -666,6 +798,8 @@ int main() {
         testHeldProductionFireAckOutlivesShutdownLease();
         testRegularPermitCannotCrossReconnectEpoch();
         testCameraIvaUsesSourceTimeAndAreaIdentity();
+        testOnvifModeSuppressesOnlyMqttIvaTransitions();
+        testCh3PublicationSharesNativeWiseAiAreaIdentity();
         testProductionBridgeAndActorOrderBothSidesOfDeadline();
         std::cout << "MQTT bridge lifecycle integration tests passed\n";
         return EXIT_SUCCESS;

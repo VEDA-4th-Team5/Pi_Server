@@ -1,0 +1,15 @@
+{
+  "request_id": "session-123-image-01",
+  "model_version": "low_quality_presence_v1_dev",
+  "input_quality": 0.18,
+  "quality_below_threshold": true,
+  "plate_candidate_found": true,
+  "icon_presence_predicted": false,
+  "presence_decision": "REVIEW",
+  "reason": "review_runtime_icon_observability_low_confidence",
+  "rectification_success": true,
+  "rectification_method": "perspective",
+  "ocr_route": "baseline",
+  "processing_ms": 42.3,
+  "error": ""
+}

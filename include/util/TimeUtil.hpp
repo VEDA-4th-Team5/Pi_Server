@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <optional>
 #include <string>
 
 namespace util {
@@ -9,6 +10,9 @@ std::string isoString(std::chrono::system_clock::time_point value);
 std::string nowIsoString();
 /** @brief 파일명에 안전한 현재 시각 문자열을 반환한다. */
 std::string nowStringForFilename();
+/** @brief 카메라 UtcTime 등 timezone이 포함된 ISO-8601 시각을 파싱한다. */
+std::optional<std::chrono::system_clock::time_point> parseIso8601Utc(
+    const std::string& value);
 
 // 센서가 알려준 발생 시각처럼 "지금"이 아닌 시각을 같은 형식으로 찍을 때 쓴다.
 std::string isoString(std::chrono::system_clock::time_point time_point);

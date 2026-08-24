@@ -1,6 +1,6 @@
 # Pi Server 트러블슈팅 기록
 
-- 기준일: 2026-08-12
+- 기준일: 2026-08-24
 - 대상: Raspberry Pi C++ 서버, Mosquitto, Hanwha Vision Camera, STM32 UART, SQLite, Qt 연동
 - 원칙: 새 장애가 발생하면 이 문서에 증상, 확인 명령, 원인, 해결, 재발 방지를 추가한다.
 
@@ -367,6 +367,50 @@ Failed to change working directory to .../cmake-build
 `std::vector<uint8_t>` 확장 과정에서 `-Wfree-nonheap-object`가 출력된 사례가 있었다.
 경고만으로 성공 빌드를 실패로 판단하지 않는다. 다만 sanitizer 또는 단위 테스트에서 실제
 메모리 오류가 나오면 별도 결함으로 처리한다.
+
+### TS-021 `/dev/parking_alert` 미생성 및 `class_create` 빌드 실패
+
+- 발생일: 2026-08-24
+- 상태: 해결
+- 증상:
+  - 서버 시작 시 `open /dev/parking_alert: No such file or directory`가 출력된다.
+  - 커널 모듈 설치 중 `macro 'class_create' requires 2 arguments` 컴파일 오류가 발생한다.
+- 영향 범위: 서버 핵심 기능은 계속 실행되지만 주차 위반 상태를 문자 디바이스에 투영하지
+  못한다.
+- 확인 결과:
+  - 실행 커널은 `6.1.21-v8+`이고 해당 커널 헤더는 설치돼 있었다.
+  - `parking_alert` 모듈과 `/dev/parking_alert` 장치 노드는 존재하지 않았다.
+  - 커널은 GCC 10으로 빌드됐고 모듈은 GCC 16으로 빌드됐다는 경고도 있었지만 직접적인
+    실패 원인은 아니었다.
+- 원인: Linux 6.4에서 `class_create()`의 모듈 소유자 인자가 제거됐는데, 드라이버가 최신
+  커널 형식인 `class_create(name)`만 사용해 Linux 6.1 헤더와 호환되지 않았다.
+- 해결: `LINUX_VERSION_CODE`를 기준으로 Linux 6.4 미만에서는
+  `class_create(THIS_MODULE, name)`, 6.4 이상에서는 `class_create(name)`을 호출한다.
+
+확인 및 설치:
+
+```bash
+uname -r
+test -d /lib/modules/$(uname -r)/build
+./tools/install_parking_alert_driver.sh
+lsmod | grep '^parking_alert'
+ls -l /dev/parking_alert
+./cmake-build/parking-alert-ctl status
+```
+
+- 검증 결과:
+  - `parking_alert.ko` 빌드와 `modprobe`가 성공했다.
+  - `/dev/parking_alert`가 `root:dialout` 문자 디바이스로 생성됐다.
+  - `parking-alert-ctl`의 슬롯 bit 설정·해제 후 `active_mask=0x00000000`을 확인했다.
+- 재발 방지:
+  - 커널 모듈은 실행 중인 커널의 헤더로 별도 빌드한다.
+  - 커널 API 변경 지점에는 버전 호환 분기를 유지한다.
+  - 모듈 설치 후 이미 실행 중인 서버는 재시작해야 드라이버 연결을 다시 시도한다.
+- 관련 파일/이슈:
+  - `driver/parking_alert/parking_alert.c`
+  - `tools/install_parking_alert_driver.sh`
+  - `docs/PARKING_ALERT_DRIVER.md`
+  - EVDA-239
 
 ## 9. Git 작업 오류
 

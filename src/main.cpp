@@ -4,13 +4,20 @@
 #include "bestshot/BestShotReceiver.hpp"
 #include "camera/CameraChannel.hpp"
 #include "camera/CameraSnapshotApiClient.hpp"
+#include "camera/OnvifIvaEventSource.hpp"
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
+#include "device/LinuxDriverAdapter.hpp"
+#include "device/ParkingAlertController.hpp"
 #include "device/SensorLinkManager.hpp"
 #include "event/FireAlarmEvent.hpp"
 #include "event/FireAlarmService.hpp"
 #include "event/FireDeliveryCoordinator.hpp"
+#include "event/OnvifIvaEventAdapter.hpp"
 #include "event/SystemEventReporter.hpp"
+#include "entrance/EntranceBestShotCoordinator.hpp"
+#include "entrance/EntranceEvWorker.hpp"
+#include "entrance/EntranceVehicleService.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
 #include "notification/TelegramApiClient.hpp"
@@ -53,6 +60,7 @@ extern "C" {
 #include <iomanip>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -405,6 +413,56 @@ int main() {
         database.close();
         return 1;
     }
+
+    std::unique_ptr<device::LinuxDriverAdapter> parking_alert_adapter;
+    std::unique_ptr<device::ParkingAlertController> parking_alert_controller;
+    if (config.parking_alert_driver_enabled) {
+        try {
+            parking_alert_adapter =
+                std::make_unique<device::LinuxDriverAdapter>(
+                    config.parking_alert_device_path);
+            parking_alert_adapter->openDevice();
+            auto* const adapter = parking_alert_adapter.get();
+            parking_alert_controller =
+                std::make_unique<device::ParkingAlertController>(
+                    config.parking_alert_slot_map,
+                    device::ParkingAlertController::Backend{
+                        [adapter](const std::uint32_t slot,
+                                  const std::uint64_t event_id) {
+                            adapter->setSlot(slot, event_id);
+                        },
+                        [adapter](const std::uint32_t slot,
+                                  const std::uint64_t event_id) {
+                            adapter->clearSlot(slot, event_id);
+                        },
+                        [adapter] { adapter->clearAll(); }});
+
+            std::vector<std::pair<std::string, std::int64_t>> active_alerts;
+            for (const auto& record : database.listLogs()) {
+                if (record.status == "VIOLATION" &&
+                    !record.departed_at.has_value()) {
+                    active_alerts.emplace_back(record.slot_id, record.id);
+                }
+            }
+            if (!parking_alert_controller->initialize(active_alerts)) {
+                throw std::runtime_error(
+                    "parking alert state restore ioctl failed");
+            }
+            util::logInfo(
+                "parking alert driver ready: device=" +
+                config.parking_alert_device_path + " mapped_slots=" +
+                std::to_string(parking_alert_controller->mappedSlotCount()) +
+                " restored_alerts=" + std::to_string(active_alerts.size()));
+        } catch (const std::exception& error) {
+            util::logError(
+                "parking alert driver unavailable; core server continues: " +
+                std::string(error.what()));
+            parking_alert_controller.reset();
+            parking_alert_adapter.reset();
+        }
+    } else {
+        util::logInfo("parking alert driver disabled by configuration");
+    }
     std::unique_ptr<auth::AuthService> auth_service;
     try {
         auth::AuthConfig auth_config;
@@ -608,7 +666,10 @@ int main() {
                 parking_timer_callback_target->handleRecognizedSession(
                     result.session_id, result.slot_id, result.plate_number);
             }
-        });
+        },
+        static_cast<std::int64_t>(
+            config.entrance_plate_match_window_minutes) * 60LL * 1000LL,
+        config.entrance_plate_match_min_confidence);
 
     parking::HallCapturePorts hall_capture_ports;
     hall_capture_ports.writeImageLog =
@@ -906,9 +967,149 @@ int main() {
                           std::to_string(evidence_count));
         });
 
+    std::unique_ptr<entrance::EntranceBestShotCoordinator>
+        entrance_coordinator;
+    std::unique_ptr<entrance::EntranceEvWorker> entrance_ev_worker;
+    std::unique_ptr<entrance::EntranceVehicleService> entrance_service;
+    bestshot::BestShotReceiver::MetadataCallback entrance_router;
+    if (config.entrance_enabled) {
+        if (!config.entrance_ev_analysis_enabled) {
+            util::logError(
+                "Entrance requires EV icon analysis; enable "
+                "ENTRANCE_EV_ANALYSIS_ENABLED");
+            return 1;
+        }
+        entrance::EntranceEvWorker::Config evConfig;
+        evConfig.pythonExecutable = config.entrance_ev_python;
+        evConfig.workerScript = config.entrance_ev_worker_script;
+        evConfig.modelBundleDirectory = config.entrance_ev_model_bundle;
+        evConfig.templateCachePath = config.entrance_ev_template_cache;
+        evConfig.thresholdsPath = config.entrance_ev_thresholds;
+        evConfig.timeoutMs = config.entrance_ev_timeout_ms;
+        evConfig.queueCapacity = static_cast<std::size_t>(
+            config.entrance_ev_queue_capacity);
+        evConfig.opencvThreads = config.entrance_ev_opencv_threads;
+        entrance_ev_worker =
+            std::make_unique<entrance::EntranceEvWorker>(std::move(evConfig));
+        if (!entrance_ev_worker->start()) {
+            util::logError("Entrance EV icon analysis worker failed to start");
+            return 1;
+        }
+        util::logInfo("Entrance EV icon analysis worker ready: authoritative");
+        entrance_coordinator =
+            std::make_unique<entrance::EntranceBestShotCoordinator>(
+                std::chrono::seconds(config.entrance_object_ttl_seconds),
+                static_cast<std::size_t>(config.entrance_pending_capacity));
+        entrance::EntranceVehiclePorts ports;
+        ports.downloadImage =
+            [](const std::string& rtsp_url, const std::string& image_ref,
+               const std::string& destination) {
+                return bestshot::BestShotReceiver::downloadImageReference(
+                    rtsp_url, image_ref, destination);
+            };
+        ports.enqueueOcr =
+            [&ocr_worker](const std::string& task_id,
+                          const std::string& image_path,
+                          ocr::GenericOcrCallback callback) {
+                return ocr_worker.enqueueGeneric(
+                    task_id, image_path, std::move(callback));
+            };
+        if (entrance_ev_worker) {
+            auto* const evWorker = entrance_ev_worker.get();
+            ports.enqueueEvAnalysis =
+                [evWorker](entrance::EntranceEvTask task,
+                           entrance::EntranceEvCallback callback) {
+                    return evWorker->enqueue(std::move(task),
+                                             std::move(callback));
+                };
+        }
+        ports.createEvent =
+            [&database](const entrance::ObjectKey& key,
+                        const std::int64_t first_seen_epoch_ms) {
+                return database.createEntranceRecognition(
+                    key.cameraId, key.channelId, key.objectId,
+                    first_seen_epoch_ms);
+            };
+        ports.saveImagePath =
+            [&database](const std::int64_t event_id,
+                        const entrance::BestShotKind kind,
+                        const std::string& path) {
+                return database.updateEntranceImage(
+                    event_id, kind == entrance::BestShotKind::Plate, path);
+            };
+        ports.finishEvent =
+            [&database](const std::int64_t event_id,
+                        const std::string& plate,
+                        const double confidence,
+                        const int attempts,
+                        const std::string& error) {
+                const std::string classification =
+                    database.finishEntranceRecognition(
+                        event_id, plate, confidence, attempts, error);
+                return entrance::EntrancePersistenceResult{
+                    classification != "DB_ERROR", classification};
+            };
+        ports.saveEvAnalysis =
+            [&database](const std::int64_t event_id,
+                const entrance::EntranceEvResult& result) {
+                database::EntranceVisionAnalysis analysis;
+                analysis.is_ev = result.isEv;
+                analysis.decision = result.decision;
+                analysis.reason = result.reason;
+                analysis.model_version = result.modelVersion;
+                analysis.processing_ms = result.processingMs;
+                analysis.result_path = result.resultPath;
+                analysis.error = result.error;
+                return database.updateEntranceVisionAnalysis(event_id, analysis);
+            };
+        ports.incrementDuplicateCount =
+            [&database](const std::int64_t event_id) {
+                return database.incrementEntranceDuplicateCount(event_id);
+            };
+        ports.markArtifactsDeleted =
+            [&database](const std::int64_t event_id) {
+                return database.markEntranceArtifactsDeleted(event_id);
+            };
+        ports.listArtifactsForCleanup =
+            [&database](const std::int64_t failed_before_epoch_ms) {
+                return database.listEntranceArtifactsForCleanup(
+                    failed_before_epoch_ms);
+            };
+        entrance_service = std::make_unique<entrance::EntranceVehicleService>(
+            *entrance_coordinator, std::move(ports),
+            config.entrance_output_root,
+            std::chrono::seconds(
+                config.entrance_image_dedup_window_seconds),
+            config.entrance_image_dedup_phash_threshold,
+            static_cast<std::size_t>(config.entrance_pending_capacity),
+            config.entrance_delete_artifacts_on_success,
+            std::chrono::hours(config.entrance_failure_retention_hours));
+        auto* const service = entrance_service.get();
+        entrance_router = [&config, service](
+                              const bestshot::BestShotMetadataEvent& metadata) {
+            if (metadata.cameraId != config.entrance_camera_id ||
+                metadata.channelId != config.entrance_source_channel_id) {
+                // 입구 전용 모드에서는 다른 채널의 BestShot을 기존 주차 세션
+                // 경로로 흘리지 않는다. 기존 기능을 명시적으로 함께 켠 경우만 통과시킨다.
+                return !config.bestshot_enabled;
+            }
+            entrance::BestShotEvent event;
+            event.key = {metadata.cameraId, config.entrance_channel_id,
+                         metadata.objectId};
+            event.kind = metadata.kind == bestshot::BestShotKind::Plate
+                             ? entrance::BestShotKind::Plate
+                             : entrance::BestShotKind::Vehicle;
+            event.imageRef = metadata.imageRef;
+            event.rtspUrl = metadata.rtspUrl;
+            event.receivedAtEpochMs = metadata.receivedAtEpochMs;
+            return service->handle(event);
+        };
+    }
+
     bestshot::BestShotReceiver bestshot_receiver(
         channels, trigger_coordinator, ocr_worker,
-        bestshot_running);
+        bestshot_running, "data/bestshots", {}, {}, 64,
+        std::move(entrance_router));
 
     const auto sensor_link_mode =
         device::SensorLinkManager::parseMode(config.sensor_link_mode);
@@ -1028,6 +1229,7 @@ int main() {
 
     const sensor::SensorProtocolParser fire_line_parser;
     std::unique_ptr<device::SensorLinkManager> sensor_link;
+    std::unique_ptr<camera::OnvifIvaEventSource> onvif_iva_source;
     bool fire_alarm_service_started{};
     bool fire_delivery_coordinator_started{};
 
@@ -1048,6 +1250,7 @@ int main() {
         },
         [&] {
             sensor_link_for_led.store(nullptr, std::memory_order_release);
+            if (onvif_iva_source) onvif_iva_source->stop();
             if (sensor_link) sensor_link->stop();
         },
         [&] {
@@ -1066,7 +1269,10 @@ int main() {
         },
         [&] {
             bestshot_running.store(false, std::memory_order_release);
-            if (config.bestshot_enabled) bestshot_receiver.stop();
+            if (config.bestshot_enabled || config.entrance_enabled)
+                bestshot_receiver.stop();
+            if (entrance_service) entrance_service->stop();
+            if (entrance_ev_worker) entrance_ev_worker->stop();
         },
         [&] { evidence_worker->stop(); },
         [&] { ocr_worker.stop(); },
@@ -1317,9 +1523,14 @@ int main() {
                   std::to_string(failed_evidence_restore));
 
     ocr_worker.start();
-    if (config.bestshot_enabled) {
+    if (entrance_service) entrance_service->start();
+    if (config.bestshot_enabled || config.entrance_enabled) {
         bestshot_receiver.start();
-        util::logInfo("BestShot receiver enabled");
+        util::logInfo(
+            config.entrance_enabled
+                ? "BestShot receiver enabled for entrance channel=" +
+                      config.entrance_channel_id
+                : "BestShot receiver enabled");
     } else {
         util::logInfo("BestShot receiver disabled (BESTSHOT_ENABLED=false)");
     }
@@ -1335,11 +1546,20 @@ int main() {
     if (timer_events) {
         timer_events->setPublisher(
             [&mqtt_bridge, &config, &database, &overstay_settings,
-             &roi_settings](
+             &roi_settings, &parking_alert_controller](
                 const std::string_view event_type, const std::int64_t session_id,
                 const std::string_view slot_id, const std::string_view plate,
                 const std::string_view timestamp, const std::string_view detail) {
                 if (slot_id.empty() || session_id < 0) return true;
+                if (parking_alert_controller &&
+                    !parking_alert_controller->handleEvent(
+                        event_type, session_id, slot_id)) {
+                    // 커널 상태 투영 실패는 MQTT/DB 효과의 재시도 사유가 아니다.
+                    util::logError(
+                        "parking alert driver event projection failed: type=" +
+                        std::string(event_type) + " slot=" +
+                        std::string(slot_id));
+                }
                 const auto applied_roi = roi_settings.resolveForUse(
                     std::string(slot_id));
                 if (!applied_roi) {
@@ -1396,6 +1616,94 @@ int main() {
         if (!http_server->start()) return shutdown_and_return(1);
     }
 
+    if (config.camera_iva_event_source == "ONVIF") {
+        if (!hall_service) {
+            util::logError(
+                "ONVIF IVA source requires the parking occupancy service");
+            return shutdown_and_return(1);
+        }
+
+        std::string event_endpoint = config.camera_onvif_event_url;
+        if (event_endpoint.empty()) {
+            if (config.camera_open_api_base.empty()) {
+                util::logError(
+                    "ONVIF IVA source requires CAMERA_ONVIF_EVENT_URL or "
+                    "CAMERA_OPEN_API_BASE");
+                return shutdown_and_return(1);
+            }
+            try {
+                event_endpoint =
+                    camera::OnvifIvaEventSource::deriveEventEndpoint(
+                        config.camera_open_api_base);
+            } catch (const std::exception& error) {
+                util::logError("ONVIF IVA endpoint configuration failed: " +
+                               std::string(error.what()));
+                return shutdown_and_return(1);
+            }
+        }
+
+        camera::OnvifIvaEventSource::Config source_config;
+        source_config.endpoint = std::move(event_endpoint);
+        source_config.username = config.camera_api_username;
+        source_config.password = config.camera_api_password;
+        for (const auto& slot : parking_slot_configs) {
+            if (!slot.enabled) continue;
+            for (const auto& binding : slot.cameraBindings) {
+                if (binding.enabled &&
+                    binding.cameraId == config.camera_id &&
+                    !binding.videoSourceToken.empty()) {
+                    source_config.acceptedVideoSourceTokens.insert(
+                        binding.videoSourceToken);
+                }
+            }
+        }
+        if (source_config.acceptedVideoSourceTokens.empty()) {
+            util::logError(
+                "ONVIF IVA source has no enabled camera token mapping");
+            return shutdown_and_return(1);
+        }
+
+        std::weak_ptr<sensor::HallParkingService> weak_hall = hall_service;
+        onvif_iva_source =
+            std::make_unique<camera::OnvifIvaEventSource>(
+                std::move(source_config),
+                [weak_hall, &config, &parking_slot_configs](
+                    const camera::OnvifIvaEvent& source_event) {
+                    std::string error;
+                    const auto signal = event::OnvifIvaEventAdapter::adapt(
+                        source_event, config, parking_slot_configs, &error);
+                    if (!signal) {
+                        util::logWarn(
+                            "ONVIF IVA event rejected: " + error +
+                            " token=" + source_event.videoSourceToken +
+                            " rule=" + source_event.ruleName +
+                            " action=" + source_event.action);
+                        return false;
+                    }
+                    util::logLine(
+                        "ONVIF_IVA",
+                        "slot=" + signal->slotId +
+                            " channel=" + signal->channelId +
+                            " token=" + signal->videoSourceToken +
+                            " rule=" + signal->ruleName +
+                            " action=" + source_event.action +
+                            " object_id=" +
+                            (source_event.objectId.empty()
+                                 ? "-" : source_event.objectId));
+                    const auto target = weak_hall.lock();
+                    return target &&
+                        target->handleCameraIvaSignal(*signal);
+                });
+        if (!onvif_iva_source->start()) {
+            util::logError("ONVIF IVA source could not be started");
+            return shutdown_and_return(1);
+        }
+        util::logInfo(
+            "camera IVA input=ONVIF PullPoint; MQTT IVA transitions disabled");
+    } else {
+        util::logInfo("camera IVA input=MQTT");
+    }
+
     // 화재와 홀센서는 같은 STM32 UART 링크를 공유하므로 하나만 열고,
     // 수신 라인을 접두사(FIRE:/SENSOR:)로 분리한다.
     if ((hall_service || fire_alarm_service) &&
@@ -1449,7 +1757,7 @@ int main() {
         sensor_link_for_led.store(sensor_link.get(), std::memory_order_release);
     }
 
-    util::logInfo("waiting for camera MQTT events...");
+    util::logInfo("waiting for camera and sensor events...");
     util::logInfo("press Ctrl+C to stop");
 
     // 실제 작업은 각 모듈의 작업 스레드가 수행하고 main은 종료 신호를 기다린다.

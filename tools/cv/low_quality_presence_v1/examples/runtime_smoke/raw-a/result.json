@@ -1,0 +1,19 @@
+{
+  "schema": "low_quality_presence_runtime_result_v1",
+  "request_id": "smoke-raw-a",
+  "model_version": "low_quality_presence_v1_dev",
+  "source_mode": "rgb",
+  "input_path": "C:\\Users\\5-13\\Downloads\\opencv\\vehicle_color_prescreen_v1\\tmp_input\\a.jpg",
+  "status": "error",
+  "final_ev_classification": "NOT_AVAILABLE",
+  "ev_prescreen_decision": "REVIEW",
+  "presence_decision": "REVIEW",
+  "icon_presence_predicted": 0,
+  "plate_candidate_found": false,
+  "ocr_route": "baseline_rectified",
+  "ocr_status": "not_run_by_runtime",
+  "ocr_input_path": "",
+  "processing_ms": 50.73919999995269,
+  "error": "no_candidate",
+  "reason": "no_candidate"
+}

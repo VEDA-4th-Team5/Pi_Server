@@ -1,0 +1,33 @@
+{
+  "schema": "low_quality_presence_runtime_result_v1",
+  "request_id": "smoke-ir-001",
+  "model_version": "low_quality_presence_v1_dev",
+  "source_mode": "ir",
+  "input_path": "C:\\Users\\5-13\\Downloads\\opencv\\vehicle_color_prescreen_v1\\output\\manual_rectified_icon_diagnostics_001\\review_images\\ev-quad-001.png",
+  "status": "ok",
+  "final_ev_classification": "NOT_AVAILABLE",
+  "ev_prescreen_decision": "REVIEW",
+  "presence_decision": "REVIEW",
+  "icon_presence_predicted": 0,
+  "plate_candidate_found": true,
+  "ocr_route": "baseline_rectified",
+  "ocr_status": "not_run_by_runtime",
+  "ocr_input_path": "C:\\Users\\5-13\\Downloads\\opencv\\server_handoff\\low_quality_presence_v1\\examples\\runtime_smoke\\ir\\baseline_rectified.jpg",
+  "processing_ms": 466.9862999999168,
+  "error": "",
+  "input_quality": 0.5796231642498517,
+  "quality_below_threshold": false,
+  "reason": "frozen_spatial_policy",
+  "rectification_success": false,
+  "rectification_method": "crop_normalized",
+  "selected_candidate_rank": 1,
+  "selected_candidate_bbox": [
+    115,
+    4,
+    481,
+    92
+  ],
+  "selected_rectified_path": "C:\\Users\\5-13\\Downloads\\opencv\\server_handoff\\low_quality_presence_v1\\examples\\runtime_smoke\\ir\\selected_rectified.jpg",
+  "baseline_rectified_path": "C:\\Users\\5-13\\Downloads\\opencv\\server_handoff\\low_quality_presence_v1\\examples\\runtime_smoke\\ir\\baseline_rectified.jpg",
+  "candidate_count": 3
+}

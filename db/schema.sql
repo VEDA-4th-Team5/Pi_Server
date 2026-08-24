@@ -3,14 +3,12 @@ PRAGMA foreign_keys = ON;
 BEGIN TRANSACTION;
 
 -- 프로젝트 전체에서 사용하는 단일 차량 마스터.
--- 일반 내연기관의 세부 종류는 구분하지 않고 EV/PHEV 여부만 보존한다.
+-- 운영 정책은 전기차 여부만 필요하므로 1=EV, 0=NON_EV로 단순화한다.
 CREATE TABLE IF NOT EXISTS VEHICLE (
     vehicle_id INTEGER PRIMARY KEY AUTOINCREMENT,
     plate_number TEXT UNIQUE NOT NULL,
     is_ev INTEGER NOT NULL DEFAULT 0 CHECK (is_ev IN (0, 1)),
-    is_phev INTEGER NOT NULL DEFAULT 0 CHECK (is_phev IN (0, 1)),
-    registered_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    CHECK (NOT (is_ev = 1 AND is_phev = 1))
+    registered_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS PARKING_SLOT (
@@ -26,6 +24,15 @@ CREATE TABLE IF NOT EXISTS PARKING_SESSION (
     vehicle_id INTEGER,
     slot_id TEXT NOT NULL,
     plate_number TEXT,
+    parking_ocr_plate TEXT,
+    parking_ocr_confidence REAL,
+    entrance_event_id INTEGER,
+    plate_match_score REAL,
+    plate_resolution_source TEXT NOT NULL DEFAULT 'UNRESOLVED' CHECK (
+        plate_resolution_source IN (
+            'UNRESOLVED','ENTRANCE_EXACT','ENTRANCE_FUZZY','VEHICLE_EXACT'
+        )
+    ),
     entry_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     violation_at TEXT,
     exit_time TEXT,
@@ -41,7 +48,9 @@ CREATE TABLE IF NOT EXISTS PARKING_SESSION (
     hall_occupied INTEGER NOT NULL DEFAULT 0 CHECK (hall_occupied IN (0, 1)),
     iva_occupied INTEGER NOT NULL DEFAULT 0 CHECK (iva_occupied IN (0, 1)),
     FOREIGN KEY (vehicle_id) REFERENCES VEHICLE(vehicle_id),
-    FOREIGN KEY (slot_id) REFERENCES PARKING_SLOT(slot_id)
+    FOREIGN KEY (slot_id) REFERENCES PARKING_SLOT(slot_id),
+    FOREIGN KEY (entrance_event_id)
+        REFERENCES ENTRANCE_RECOGNITION(entrance_event_id)
 );
 
 CREATE TABLE IF NOT EXISTS IMAGE_LOG (
@@ -88,6 +97,61 @@ CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- CH2 입구 BestShot은 주차면 PARKING_SESSION과 수명이 다르므로 별도 보관한다.
+CREATE TABLE IF NOT EXISTS ENTRANCE_RECOGNITION (
+    entrance_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'COLLECTING','OCR_QUEUED','OCR_PROCESSING','COMPLETED','FAILED'
+    )),
+    vehicle_image_path TEXT,
+    plate_image_path TEXT,
+    vehicle_id INTEGER,
+    plate_number TEXT,
+    classification TEXT,
+    registered_is_ev INTEGER CHECK (registered_is_ev IN (0, 1)),
+    vision_is_ev INTEGER CHECK (vision_is_ev IN (0, 1)),
+    resolved_is_ev INTEGER CHECK (resolved_is_ev IN (0, 1)),
+    decision_source TEXT NOT NULL DEFAULT 'PENDING' CHECK (decision_source IN (
+        'PENDING','VEHICLE_DB','VISION','CONSENSUS','SHADOW','CONFLICT'
+    )),
+    vision_decision TEXT NOT NULL DEFAULT 'NOT_RUN' CHECK (vision_decision IN (
+        'NOT_RUN','EV_CANDIDATE','NON_EV_CANDIDATE','REVIEW'
+    )),
+    vision_reason TEXT NOT NULL DEFAULT '',
+    vision_model_version TEXT NOT NULL DEFAULT '',
+    vision_processing_ms REAL,
+    vision_result_path TEXT,
+    vision_error TEXT NOT NULL DEFAULT '',
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    artifact_state TEXT NOT NULL DEFAULT 'WORKING' CHECK (
+        artifact_state IN (
+            'WORKING','DELETE_PENDING','RETAINED_FAILURE','DELETED'
+        )
+    ),
+    artifacts_deleted_at_epoch_ms INTEGER,
+    confidence REAL,
+    ocr_attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    first_seen_epoch_ms INTEGER NOT NULL,
+    updated_at_epoch_ms INTEGER NOT NULL,
+    completed_at_epoch_ms INTEGER,
+    FOREIGN KEY (vehicle_id) REFERENCES VEHICLE(vehicle_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entrance_recognition_object
+    ON ENTRANCE_RECOGNITION(camera_id, channel_id, object_id,
+                            first_seen_epoch_ms);
+CREATE INDEX IF NOT EXISTS idx_entrance_recognition_vehicle
+    ON ENTRANCE_RECOGNITION(vehicle_id);
+CREATE INDEX IF NOT EXISTS idx_entrance_recognition_cleanup
+    ON ENTRANCE_RECOGNITION(artifact_state, completed_at_epoch_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_parking_session_entrance_event
+    ON PARKING_SESSION(entrance_event_id)
+    WHERE entrance_event_id IS NOT NULL;
 
 -- Qt 앱 로그인 계정. password_hash에는 libsodium Argon2id PHC 문자열만 저장한다.
 CREATE TABLE IF NOT EXISTS app_users (

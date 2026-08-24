@@ -6,14 +6,14 @@
 
 ## DB 매핑
 
-- 차량 분류: `VEHICLE.is_ev`, `VEHICLE.is_phev`
+- 차량 분류: `VEHICLE.is_ev` (`1=EV`, `0=NON_EV`)
 - 주차면: `PARKING_SLOT.slot_id`
 - 입차·위반·출차: `PARKING_SESSION`
 - 최초/위반 이미지: `IMAGE_LOG`
 - 타이머 입차 이미지 종류: `TIMER_ENTRY`
 - 타이머 위반 이미지 종류: `TIMER_VIOLATION`
 
-일반 차량은 `is_ev=0`, `is_phev=0`으로만 표현하며 연료 종류를 추가로 구분하지
+일반 차량은 `is_ev=0`으로 표현하며 연료 종류를 추가로 구분하지
 않는다. 타이머와 DB는 `EV01` 형식의 문자열 `slot_id`를 그대로 사용한다.
 
 세션 상태 매핑은 다음과 같다.

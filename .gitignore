@@ -12,6 +12,8 @@ data/db/backups/*.db
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+*.db-shm
+*.db-wal
 build/
 cmake-build/
 docs/generated/*.tmp
@@ -33,3 +35,10 @@ data/bestshots/
 data/fullframes/
 data/tls/
 *.log
+.venv-cv/
+__pycache__/
+*.py[cod]
+/low_quality_presence_v1.zip
+data/entrance/**
+!data/entrance/**/
+!data/entrance/**/.gitkeep

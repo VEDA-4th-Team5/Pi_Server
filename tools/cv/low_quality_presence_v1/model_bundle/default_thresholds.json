@@ -1,0 +1,35 @@
+{
+  "hsv": {
+    "green": {
+      "lower": [35, 80, 50],
+      "upper": [85, 255, 255]
+    },
+    "blue": {
+      "lower": [90, 40, 50],
+      "upper": [122, 255, 255]
+    }
+  },
+  "mask": {
+    "open_kernel": 5,
+    "close_kernel": 9
+  },
+  "region": {
+    "min_area_ratio": 0.001,
+    "max_area_ratio": 0.85,
+    "min_aspect_ratio": 1.4,
+    "max_aspect_ratio": 7.5,
+    "area_weight": 1.0,
+    "aspect_weight": 0.6,
+    "saturation_weight": 0.8,
+    "brightness_weight": 0.3
+  },
+  "decision": {
+    "candidate_threshold": 0.65,
+    "min_blue_ratio_ev": 0.07,
+    "unknown_threshold": 0.34,
+    "high_confidence_min": 0.70,
+    "global_ratio_non_ev": 0.02,
+    "global_ratio_unknown": 0.04,
+    "max_unknown_with_plate_candidates": 3
+  }
+}
