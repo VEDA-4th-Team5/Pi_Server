@@ -114,6 +114,12 @@ struct AppConfig {
     // DB/파일 작업이 센서 입력보다 느릴 때 메모리가 무제한 증가하지 않게 한다.
     int parking_hall_work_queue_capacity{100};
 
+    // /dev/parking_alert 커널 문자 디바이스 연동. 드라이버가 없더라도
+    // 주차/MQTT 처리는 계속하고 경고 상태 투영만 비활성화한다.
+    bool parking_alert_driver_enabled{false};
+    std::string parking_alert_device_path{"/dev/parking_alert"};
+    std::string parking_alert_slot_map{"EV01:0,EV02:1,EV03:2,EV04:3"};
+
     std::string snapshot_dir;
     std::string db_path;
     std::string gemini_api_key;

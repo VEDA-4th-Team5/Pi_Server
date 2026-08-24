@@ -62,7 +62,25 @@ make -C driver/parking_alert
 
 생성 파일은 `driver/parking_alert/parking_alert.ko`다.
 
-## 적재 및 권한
+## 설치·자동 적재 및 권한
+
+현재 커널에 맞춰 모듈을 빌드하고 설치한 뒤, 재부팅 시 자동 적재되도록 설정한다.
+
+```bash
+./tools/install_parking_alert_driver.sh
+```
+
+스크립트는 모듈을 `/lib/modules/$(uname -r)/extra`에 설치하고
+`/etc/modules-load.d/parking-alert.conf`와 udev 권한 규칙을 등록한다. 설치 후에는 다음으로
+확인한다.
+
+```bash
+lsmod | grep '^parking_alert'
+ls -l /dev/parking_alert
+./cmake-build/parking-alert-ctl status
+```
+
+수동으로 임시 적재하려면 다음 명령을 사용한다.
 
 ```bash
 sudo insmod driver/parking_alert/parking_alert.ko
@@ -114,16 +132,19 @@ sudo ./build/parking-alert-ctl set 1 2001
 sudo rmmod parking_alert
 ```
 
-## 다음 통합 작업
+## Pi 서버 연동 정책
 
-커널 모듈 자체와 C++ 어댑터는 구현됐지만, 서버의 타이머 위반 callback에서 자동으로
-`setSlot()`을 호출하는 정책 연결은 아직 하지 않았다. 먼저 32면의 고정 매핑
-(`channel + P1~P4 → 0~31`)과 다음 상태 해제 시점을 확정해야 한다.
+서버는 `PARKING_ALERT_DRIVER_ENABLED=true`일 때 `/dev/parking_alert`를 연다. 슬롯과
+커널 bit의 대응은 `PARKING_ALERT_SLOT_MAP`으로 설정한다.
 
-- 장기 점유 위반 발생: 해당 bit SET
-- Qt ACK 또는 현장 조치: bit 유지/해제 정책 결정
-- 출차: 해당 bit CLEAR
-- 서버 시작: DB 활성 위반 상태를 장치에 복구
+```text
+EV01:0,EV02:1,EV03:2,EV04:3
+```
 
-이 정책을 확정한 뒤 `EventManager` 또는 별도 alert service에서
-`LinuxDriverAdapter`를 호출하는 것이 안전하다.
+- `NON_EV_ALERT`, `VIOLATION_TRIGGERED`: 해당 슬롯 bit SET
+- `DEPARTURE`: 해당 슬롯 bit CLEAR
+- 서버 시작: 전체 bit를 초기화한 뒤 DB의 활성 `VIOLATION` 세션을 복원
+- 드라이버 미설치 또는 ioctl 실패: 오류만 기록하고 DB, MQTT, 촬영 및 주차 판정은 계속 수행
+
+따라서 문자 디바이스는 서버의 주차 상태를 결정하는 입력이 아니라, 이미 확정된 위반 상태를
+커널 장치로 전달하는 선택적 출력 계층이다.

@@ -352,6 +352,14 @@ add_library(parking-alert-adapter STATIC src/device/LinuxDriverAdapter.cpp)
 target_include_directories(parking-alert-adapter PUBLIC include include/uapi)
 target_compile_options(parking-alert-adapter PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(parking-alert-controller-test
+    tests/unit/ParkingAlertControllerTest.cpp
+    src/device/ParkingAlertController.cpp)
+target_include_directories(parking-alert-controller-test PRIVATE include)
+target_compile_options(parking-alert-controller-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME parking-alert-controller-test COMMAND parking-alert-controller-test)
+
 add_custom_target(parking-alert-module
     COMMAND ${CMAKE_MAKE_PROGRAM} -C ${CMAKE_SOURCE_DIR}/driver/parking_alert
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

@@ -6,6 +6,8 @@
 #include "camera/CameraSnapshotApiClient.hpp"
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
+#include "device/LinuxDriverAdapter.hpp"
+#include "device/ParkingAlertController.hpp"
 #include "device/SensorLinkManager.hpp"
 #include "event/FireAlarmEvent.hpp"
 #include "event/FireAlarmService.hpp"
@@ -404,6 +406,56 @@ int main() {
     if (!roi_settings.initialize()) {
         database.close();
         return 1;
+    }
+
+    std::unique_ptr<device::LinuxDriverAdapter> parking_alert_adapter;
+    std::unique_ptr<device::ParkingAlertController> parking_alert_controller;
+    if (config.parking_alert_driver_enabled) {
+        try {
+            parking_alert_adapter =
+                std::make_unique<device::LinuxDriverAdapter>(
+                    config.parking_alert_device_path);
+            parking_alert_adapter->openDevice();
+            auto* const adapter = parking_alert_adapter.get();
+            parking_alert_controller =
+                std::make_unique<device::ParkingAlertController>(
+                    config.parking_alert_slot_map,
+                    device::ParkingAlertController::Backend{
+                        [adapter](const std::uint32_t slot,
+                                  const std::uint64_t event_id) {
+                            adapter->setSlot(slot, event_id);
+                        },
+                        [adapter](const std::uint32_t slot,
+                                  const std::uint64_t event_id) {
+                            adapter->clearSlot(slot, event_id);
+                        },
+                        [adapter] { adapter->clearAll(); }});
+
+            std::vector<std::pair<std::string, std::int64_t>> active_alerts;
+            for (const auto& record : database.listLogs()) {
+                if (record.status == "VIOLATION" &&
+                    !record.departed_at.has_value()) {
+                    active_alerts.emplace_back(record.slot_id, record.id);
+                }
+            }
+            if (!parking_alert_controller->initialize(active_alerts)) {
+                throw std::runtime_error(
+                    "parking alert state restore ioctl failed");
+            }
+            util::logInfo(
+                "parking alert driver ready: device=" +
+                config.parking_alert_device_path + " mapped_slots=" +
+                std::to_string(parking_alert_controller->mappedSlotCount()) +
+                " restored_alerts=" + std::to_string(active_alerts.size()));
+        } catch (const std::exception& error) {
+            util::logError(
+                "parking alert driver unavailable; core server continues: " +
+                std::string(error.what()));
+            parking_alert_controller.reset();
+            parking_alert_adapter.reset();
+        }
+    } else {
+        util::logInfo("parking alert driver disabled by configuration");
     }
     std::unique_ptr<auth::AuthService> auth_service;
     try {
@@ -1335,11 +1387,20 @@ int main() {
     if (timer_events) {
         timer_events->setPublisher(
             [&mqtt_bridge, &config, &database, &overstay_settings,
-             &roi_settings](
+             &roi_settings, &parking_alert_controller](
                 const std::string_view event_type, const std::int64_t session_id,
                 const std::string_view slot_id, const std::string_view plate,
                 const std::string_view timestamp, const std::string_view detail) {
                 if (slot_id.empty() || session_id < 0) return true;
+                if (parking_alert_controller &&
+                    !parking_alert_controller->handleEvent(
+                        event_type, session_id, slot_id)) {
+                    // 커널 상태 투영 실패는 MQTT/DB 효과의 재시도 사유가 아니다.
+                    util::logError(
+                        "parking alert driver event projection failed: type=" +
+                        std::string(event_type) + " slot=" +
+                        std::string(slot_id));
+                }
                 const auto applied_roi = roi_settings.resolveForUse(
                     std::string(slot_id));
                 if (!applied_roi) {

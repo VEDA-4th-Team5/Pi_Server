@@ -244,6 +244,12 @@ AppConfig AppConfig::loadFromEnv() {
         config.parking_slot_config_path;
     config.parking_hall_work_queue_capacity = std::max(
         1, getEnvIntOrDefault("PARKING_HALL_WORK_QUEUE_CAPACITY", 100));
+    config.parking_alert_driver_enabled =
+        getEnvBoolOrDefault("PARKING_ALERT_DRIVER_ENABLED", false);
+    config.parking_alert_device_path = getEnvOrDefault(
+        "PARKING_ALERT_DEVICE_PATH", "/dev/parking_alert");
+    config.parking_alert_slot_map = getEnvOrDefault(
+        "PARKING_ALERT_SLOT_MAP", "EV01:0,EV02:1,EV03:2,EV04:3");
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.snapshot_dir = resolveProjectPath("SNAPSHOT_DIR", config.snapshot_dir);

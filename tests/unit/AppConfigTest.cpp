@@ -46,6 +46,9 @@ int main() {
     setValue("AUTH_LOGIN_MAX_FAILURES", "4");
     setValue("AUTH_LOGIN_COOLDOWN_SECONDS", "90");
     setValue("PARKING_OCCUPANCY_SOURCE", "hybrid_or");
+    setValue("PARKING_ALERT_DRIVER_ENABLED", "true");
+    setValue("PARKING_ALERT_DEVICE_PATH", "/dev/test-parking-alert");
+    setValue("PARKING_ALERT_SLOT_MAP", "EV01:7,EV02:8");
     clearValue("PARKING_OCCUPANCY_CONFIRM_MS");
 
     const app::AppConfig config = app::AppConfig::loadFromEnv();
@@ -88,6 +91,11 @@ int main() {
                   "HYBRID_OR occupancy policy must be accepted");
     ok &= require(config.parking_occupancy_confirm_ms == 5000,
                   "Hall occupancy confirmation must default to five seconds");
+    ok &= require(config.parking_alert_driver_enabled &&
+                      config.parking_alert_device_path ==
+                          "/dev/test-parking-alert" &&
+                      config.parking_alert_slot_map == "EV01:7,EV02:8",
+                  "parking alert driver settings must preserve explicit values");
 
     clearValue("PARKING_SLOT_CONFIG");
     const app::AppConfig legacy_config = app::AppConfig::loadFromEnv();
@@ -107,6 +115,9 @@ int main() {
     clearValue("AUTH_LOGIN_MAX_FAILURES");
     clearValue("AUTH_LOGIN_COOLDOWN_SECONDS");
     clearValue("PARKING_OCCUPANCY_SOURCE");
+    clearValue("PARKING_ALERT_DRIVER_ENABLED");
+    clearValue("PARKING_ALERT_DEVICE_PATH");
+    clearValue("PARKING_ALERT_SLOT_MAP");
     clearValue("PI_SERVER_ROOT");
     return ok ? 0 : 1;
 }
