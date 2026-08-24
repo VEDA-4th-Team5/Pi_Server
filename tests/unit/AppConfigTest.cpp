@@ -32,6 +32,11 @@ bool require(bool condition, const std::string& message) {
 }
 
 int main() {
+    clearValue("CAMERA_RTSP");
+    clearValue("CAMERA_RTSP_CH1");
+    setValue("CAMERA_RTSP_CH2", "rtsp://camera/1/profile2/media.smp");
+    clearValue("CAMERA_RTSP_CH3");
+    clearValue("CAMERA_RTSP_CH4");
     setValue("PI_SERVER_ROOT", "/tmp/pi-server-test-root");
     setValue("PARKING_SLOT_CONFIG", "config/custom_slots.json");
     setValue("PARKING_SLOTS_CONFIG", "config/legacy_slots.json");
@@ -49,6 +54,20 @@ int main() {
     setValue("PARKING_ALERT_DRIVER_ENABLED", "true");
     setValue("PARKING_ALERT_DEVICE_PATH", "/dev/test-parking-alert");
     setValue("PARKING_ALERT_SLOT_MAP", "EV01:7,EV02:8");
+    setValue("ENTRANCE_ENABLED", "true");
+    setValue("ENTRANCE_OUTPUT_ROOT", "data/test_entrance");
+    setValue("ENTRANCE_SOURCE_CHANNEL_ID", "ch02");
+    setValue("ENTRANCE_CHANNEL_ID", "ch02");
+    setValue("ENTRANCE_OBJECT_TTL_SECONDS", "90");
+    setValue("ENTRANCE_IMAGE_DEDUP_WINDOW_SECONDS", "25");
+    setValue("ENTRANCE_IMAGE_DEDUP_PHASH_THRESHOLD", "7");
+    setValue("ENTRANCE_DELETE_ARTIFACTS_ON_SUCCESS", "true");
+    setValue("ENTRANCE_FAILURE_RETENTION_HOURS", "12");
+    setValue("ENTRANCE_PLATE_MATCH_WINDOW_MINUTES", "45");
+    setValue("ENTRANCE_PLATE_MATCH_MIN_CONFIDENCE", "0.9");
+    setValue("ENTRANCE_EV_ANALYSIS_ENABLED", "true");
+    setValue("ENTRANCE_EV_WORKER_SCRIPT", "tools/test_ev_worker.py");
+    setValue("ENTRANCE_EV_TIMEOUT_MS", "7000");
     clearValue("PARKING_OCCUPANCY_CONFIRM_MS");
 
     const app::AppConfig config = app::AppConfig::loadFromEnv();
@@ -96,6 +115,30 @@ int main() {
                           "/dev/test-parking-alert" &&
                       config.parking_alert_slot_map == "EV01:7,EV02:8",
                   "parking alert driver settings must preserve explicit values");
+    ok &= require(config.entrance_enabled &&
+                      config.entrance_source_channel_id == "ch02" &&
+                      config.entrance_channel_id == "ch02" &&
+                      config.entrance_object_ttl_seconds == 90 &&
+                      config.entrance_image_dedup_window_seconds == 25 &&
+                      config.entrance_image_dedup_phash_threshold == 7 &&
+                      config.entrance_delete_artifacts_on_success &&
+                      config.entrance_failure_retention_hours == 12 &&
+                      config.entrance_plate_match_window_minutes == 45 &&
+                      config.entrance_plate_match_min_confidence == 0.9 &&
+                      config.entrance_ev_analysis_enabled &&
+                      config.entrance_ev_timeout_ms == 7000 &&
+                      config.entrance_ev_worker_script ==
+                          (std::filesystem::path(root) /
+                           "tools/test_ev_worker.py").lexically_normal().string() &&
+                      config.entrance_output_root ==
+                          (std::filesystem::path(root) / "data/test_entrance")
+                              .lexically_normal().string(),
+                  "entrance settings must preserve the physical CH2 mapping");
+    ok &= require(config.rtsp_channels.size() == 1 &&
+                      config.rtsp_channels.front().channel_id == "ch02" &&
+                      config.rtsp_channels.front().rtsp_url ==
+                          "rtsp://camera/1/profile2/media.smp",
+                  "CAMERA_RTSP_CH2 must create the physical CH2 RTSP input");
 
     clearValue("PARKING_SLOT_CONFIG");
     const app::AppConfig legacy_config = app::AppConfig::loadFromEnv();
@@ -118,6 +161,15 @@ int main() {
     clearValue("PARKING_ALERT_DRIVER_ENABLED");
     clearValue("PARKING_ALERT_DEVICE_PATH");
     clearValue("PARKING_ALERT_SLOT_MAP");
+    clearValue("ENTRANCE_ENABLED");
+    clearValue("ENTRANCE_OUTPUT_ROOT");
+    clearValue("ENTRANCE_SOURCE_CHANNEL_ID");
+    clearValue("ENTRANCE_CHANNEL_ID");
+    clearValue("ENTRANCE_OBJECT_TTL_SECONDS");
+    clearValue("ENTRANCE_EV_ANALYSIS_ENABLED");
+    clearValue("ENTRANCE_EV_WORKER_SCRIPT");
+    clearValue("ENTRANCE_EV_TIMEOUT_MS");
+    clearValue("CAMERA_RTSP_CH2");
     clearValue("PI_SERVER_ROOT");
     return ok ? 0 : 1;
 }

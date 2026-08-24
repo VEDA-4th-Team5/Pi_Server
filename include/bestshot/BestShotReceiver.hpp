@@ -34,6 +34,7 @@ public:
         int session_id,
         const std::string& slot_id,
         const std::string& image_path)>;
+    using MetadataCallback = std::function<bool(const BestShotMetadataEvent&)>;
 
     BestShotReceiver(
         std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
@@ -43,7 +44,8 @@ public:
         std::string output_root = "data/bestshots",
         DownloadCallback downloader = {},
         OcrCallback ocr_callback = {},
-        std::size_t pending_capacity = 64);
+        std::size_t pending_capacity = 64,
+        MetadataCallback metadata_callback = {});
     ~BestShotReceiver();
 
     void start();
@@ -61,6 +63,11 @@ public:
 
     /** Re-resolve bounded Pending metadata without camera/network input. */
     std::vector<BestShotProcessResult> reconcilePending();
+
+    /** ImageRef가 가리키는 JPEG를 카메라 HTTPS Digest 인증으로 내려받는다. */
+    static bool downloadImageReference(const std::string& rtsp_url,
+                                       const std::string& image_ref,
+                                       const std::string& destination);
 
 private:
     struct PendingMetadata {
@@ -82,10 +89,6 @@ private:
     BestShotProcessResult processOne(PendingMetadata metadata,
                                      bool may_requeue);
     bool enqueuePending(PendingMetadata metadata);
-    bool downloadImage(const std::string& rtsp_url,
-                       const std::string& image_ref,
-                       const std::string& destination);
-
     static std::string evidenceIdentity(const PendingMetadata& metadata);
     static std::string exactIdentityKey(const PendingMetadata& metadata);
     static std::string safePathComponent(const std::string& value);
@@ -97,6 +100,7 @@ private:
     std::string output_root_;
     DownloadCallback downloader_;
     OcrCallback ocr_callback_;
+    MetadataCallback metadata_callback_;
     std::size_t pending_capacity_;
 
     std::vector<std::thread> workers_;

@@ -66,6 +66,84 @@ target_include_directories(app-config-test PRIVATE include)
 target_compile_options(app-config-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME app-config-test COMMAND app-config-test)
 
+add_executable(entrance-bestshot-coordinator-test
+    tests/unit/EntranceBestShotCoordinatorTest.cpp
+    src/entrance/EntranceBestShotCoordinator.cpp)
+target_include_directories(entrance-bestshot-coordinator-test PRIVATE include)
+target_compile_options(entrance-bestshot-coordinator-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-bestshot-coordinator-test PRIVATE Threads::Threads)
+add_test(NAME entrance-bestshot-coordinator-test
+    COMMAND entrance-bestshot-coordinator-test)
+
+add_executable(entrance-image-deduplicator-test
+    tests/unit/EntranceImageDeduplicatorTest.cpp
+    src/entrance/EntranceImageDeduplicator.cpp)
+target_include_directories(entrance-image-deduplicator-test PRIVATE include)
+target_compile_options(entrance-image-deduplicator-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-image-deduplicator-test PRIVATE
+    PkgConfig::OPENCV Threads::Threads)
+add_test(NAME entrance-image-deduplicator-test
+    COMMAND entrance-image-deduplicator-test)
+
+add_executable(plate-matcher-test
+    tests/unit/PlateMatcherTest.cpp
+    src/ocr/PlateMatcher.cpp)
+target_include_directories(plate-matcher-test PRIVATE include)
+target_compile_options(plate-matcher-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME plate-matcher-test COMMAND plate-matcher-test)
+
+add_executable(entrance-vehicle-service-test
+    tests/integration/EntranceVehicleServiceTest.cpp
+    src/entrance/EntranceBestShotCoordinator.cpp
+    src/entrance/EntranceImageDeduplicator.cpp
+    src/entrance/EntranceVehicleService.cpp
+    src/util/Logger.cpp)
+target_include_directories(entrance-vehicle-service-test PRIVATE include)
+target_compile_options(entrance-vehicle-service-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-vehicle-service-test PRIVATE
+    PkgConfig::OPENCV Threads::Threads)
+add_test(NAME entrance-vehicle-service-test
+    COMMAND entrance-vehicle-service-test)
+
+add_executable(entrance-database-test
+    tests/integration/EntranceDatabaseTest.cpp)
+target_include_directories(entrance-database-test PRIVATE include)
+target_compile_options(entrance-database-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_compile_definitions(entrance-database-test PRIVATE
+    PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
+target_link_libraries(entrance-database-test PRIVATE
+    parking-timer-core sqlite3 Threads::Threads)
+add_test(NAME entrance-database-test COMMAND entrance-database-test)
+
+add_executable(entrance-ocr-worker-test
+    tests/integration/EntranceOcrWorkerTest.cpp
+    src/ocr/OcrWorker.cpp
+    src/ocr/GeminiOcrClient.cpp
+    src/ocr/PlateImageEnhancer.cpp
+    src/ocr/PlateNormalizer.cpp
+    src/util/TimeUtil.cpp)
+target_include_directories(entrance-ocr-worker-test PRIVATE include)
+target_compile_options(entrance-ocr-worker-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-ocr-worker-test PRIVATE
+    parking-timer-core PkgConfig::OPENCV PkgConfig::CURL Threads::Threads)
+add_test(NAME entrance-ocr-worker-test COMMAND entrance-ocr-worker-test)
+
+add_executable(entrance-ev-worker-test
+    tests/integration/EntranceEvWorkerTest.cpp
+    src/entrance/EntranceEvWorker.cpp
+    src/util/Logger.cpp)
+target_include_directories(entrance-ev-worker-test PRIVATE include)
+target_compile_options(entrance-ev-worker-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(entrance-ev-worker-test PRIVATE Threads::Threads)
+add_test(NAME entrance-ev-worker-test COMMAND entrance-ev-worker-test)
+
 add_executable(db-manager-test
     tests/integration/DbManagerTest.c
     src/database/db_manager.c)
@@ -370,11 +448,13 @@ add_library(parking-timer-core STATIC
     src/database/EventDatabase.cpp
     src/database/EventDatabaseAuth.cpp
     src/database/EventDatabaseCorrelation.cpp
+    src/database/EventDatabaseEntrance.cpp
     src/database/EventDatabaseFire.cpp
     src/database/EventDatabaseOccupancy.cpp
     src/database/EventDatabaseTimer.cpp
     src/database/SessionTransitionStore.cpp
     src/database/db_manager.c
+    src/ocr/PlateMatcher.cpp
     src/event/FirePersistence.cpp
     src/parking/SlotTransitionActor.cpp
     src/parking/SlotTransitionTypes.cpp

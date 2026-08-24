@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "mode": "shadow",
+  "model_bundle_dir": "config/cv/low_quality_presence_v1",
+  "template_cache": "config/cv/low_quality_presence_v1/runtime_template_cache.json",
+  "input": "raw_original_jpeg",
+  "quality_threshold": 0.25,
+  "allow_final_ev_decision": false,
+  "allow_occupancy_override": false,
+  "ocr_route": "baseline",
+  "ocr_input": "baseline_rectified.jpg",
+  "selected_candidate_output": "selected_rectified.jpg",
+  "queue_capacity": 32,
+  "max_processing_ms_warning": 500
+}

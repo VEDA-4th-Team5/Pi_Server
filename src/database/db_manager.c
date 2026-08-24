@@ -117,14 +117,13 @@ void db_close(void)
 }
 
 int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id,
-                            int *is_ev, int *is_phev)
+                            int *is_ev)
 {
     static const char *sql =
-        "SELECT vehicle_id, is_ev, is_phev FROM VEHICLE WHERE plate_number = ?;";
+        "SELECT vehicle_id, is_ev FROM VEHICLE WHERE plate_number = ?;";
     sqlite3_stmt *stmt = NULL;
     int rc;
-    if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL ||
-        is_phev == NULL) return -1;
+    if (plate_number == NULL || vehicle_id == NULL || is_ev == NULL) return -1;
     if (prepare(&stmt, sql, "차량 조회") < 0) return -2;
     if (sqlite3_bind_text(stmt, 1, plate_number, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
         fprintf(stderr, "[DB] 차량 조회 bind 실패: %s\n", sqlite3_errmsg(g_db));
@@ -144,7 +143,6 @@ int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id,
     }
     *vehicle_id = sqlite3_column_int(stmt, 0);
     *is_ev = sqlite3_column_int(stmt, 1);
-    *is_phev = sqlite3_column_int(stmt, 2);
     sqlite3_finalize(stmt);
     return 0;
 }

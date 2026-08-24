@@ -13,6 +13,9 @@
 #include "event/FireAlarmService.hpp"
 #include "event/FireDeliveryCoordinator.hpp"
 #include "event/SystemEventReporter.hpp"
+#include "entrance/EntranceBestShotCoordinator.hpp"
+#include "entrance/EntranceEvWorker.hpp"
+#include "entrance/EntranceVehicleService.hpp"
 #include "http/ParkingHttpServer.hpp"
 #include "mqtt/MqttEventBridge.hpp"
 #include "notification/TelegramApiClient.hpp"
@@ -660,7 +663,10 @@ int main() {
                 parking_timer_callback_target->handleRecognizedSession(
                     result.session_id, result.slot_id, result.plate_number);
             }
-        });
+        },
+        static_cast<std::int64_t>(
+            config.entrance_plate_match_window_minutes) * 60LL * 1000LL,
+        config.entrance_plate_match_min_confidence);
 
     parking::HallCapturePorts hall_capture_ports;
     hall_capture_ports.writeImageLog =
@@ -958,9 +964,149 @@ int main() {
                           std::to_string(evidence_count));
         });
 
+    std::unique_ptr<entrance::EntranceBestShotCoordinator>
+        entrance_coordinator;
+    std::unique_ptr<entrance::EntranceEvWorker> entrance_ev_worker;
+    std::unique_ptr<entrance::EntranceVehicleService> entrance_service;
+    bestshot::BestShotReceiver::MetadataCallback entrance_router;
+    if (config.entrance_enabled) {
+        if (!config.entrance_ev_analysis_enabled) {
+            util::logError(
+                "Entrance requires EV icon analysis; enable "
+                "ENTRANCE_EV_ANALYSIS_ENABLED");
+            return 1;
+        }
+        entrance::EntranceEvWorker::Config evConfig;
+        evConfig.pythonExecutable = config.entrance_ev_python;
+        evConfig.workerScript = config.entrance_ev_worker_script;
+        evConfig.modelBundleDirectory = config.entrance_ev_model_bundle;
+        evConfig.templateCachePath = config.entrance_ev_template_cache;
+        evConfig.thresholdsPath = config.entrance_ev_thresholds;
+        evConfig.timeoutMs = config.entrance_ev_timeout_ms;
+        evConfig.queueCapacity = static_cast<std::size_t>(
+            config.entrance_ev_queue_capacity);
+        evConfig.opencvThreads = config.entrance_ev_opencv_threads;
+        entrance_ev_worker =
+            std::make_unique<entrance::EntranceEvWorker>(std::move(evConfig));
+        if (!entrance_ev_worker->start()) {
+            util::logError("Entrance EV icon analysis worker failed to start");
+            return 1;
+        }
+        util::logInfo("Entrance EV icon analysis worker ready: authoritative");
+        entrance_coordinator =
+            std::make_unique<entrance::EntranceBestShotCoordinator>(
+                std::chrono::seconds(config.entrance_object_ttl_seconds),
+                static_cast<std::size_t>(config.entrance_pending_capacity));
+        entrance::EntranceVehiclePorts ports;
+        ports.downloadImage =
+            [](const std::string& rtsp_url, const std::string& image_ref,
+               const std::string& destination) {
+                return bestshot::BestShotReceiver::downloadImageReference(
+                    rtsp_url, image_ref, destination);
+            };
+        ports.enqueueOcr =
+            [&ocr_worker](const std::string& task_id,
+                          const std::string& image_path,
+                          ocr::GenericOcrCallback callback) {
+                return ocr_worker.enqueueGeneric(
+                    task_id, image_path, std::move(callback));
+            };
+        if (entrance_ev_worker) {
+            auto* const evWorker = entrance_ev_worker.get();
+            ports.enqueueEvAnalysis =
+                [evWorker](entrance::EntranceEvTask task,
+                           entrance::EntranceEvCallback callback) {
+                    return evWorker->enqueue(std::move(task),
+                                             std::move(callback));
+                };
+        }
+        ports.createEvent =
+            [&database](const entrance::ObjectKey& key,
+                        const std::int64_t first_seen_epoch_ms) {
+                return database.createEntranceRecognition(
+                    key.cameraId, key.channelId, key.objectId,
+                    first_seen_epoch_ms);
+            };
+        ports.saveImagePath =
+            [&database](const std::int64_t event_id,
+                        const entrance::BestShotKind kind,
+                        const std::string& path) {
+                return database.updateEntranceImage(
+                    event_id, kind == entrance::BestShotKind::Plate, path);
+            };
+        ports.finishEvent =
+            [&database](const std::int64_t event_id,
+                        const std::string& plate,
+                        const double confidence,
+                        const int attempts,
+                        const std::string& error) {
+                const std::string classification =
+                    database.finishEntranceRecognition(
+                        event_id, plate, confidence, attempts, error);
+                return entrance::EntrancePersistenceResult{
+                    classification != "DB_ERROR", classification};
+            };
+        ports.saveEvAnalysis =
+            [&database](const std::int64_t event_id,
+                const entrance::EntranceEvResult& result) {
+                database::EntranceVisionAnalysis analysis;
+                analysis.is_ev = result.isEv;
+                analysis.decision = result.decision;
+                analysis.reason = result.reason;
+                analysis.model_version = result.modelVersion;
+                analysis.processing_ms = result.processingMs;
+                analysis.result_path = result.resultPath;
+                analysis.error = result.error;
+                return database.updateEntranceVisionAnalysis(event_id, analysis);
+            };
+        ports.incrementDuplicateCount =
+            [&database](const std::int64_t event_id) {
+                return database.incrementEntranceDuplicateCount(event_id);
+            };
+        ports.markArtifactsDeleted =
+            [&database](const std::int64_t event_id) {
+                return database.markEntranceArtifactsDeleted(event_id);
+            };
+        ports.listArtifactsForCleanup =
+            [&database](const std::int64_t failed_before_epoch_ms) {
+                return database.listEntranceArtifactsForCleanup(
+                    failed_before_epoch_ms);
+            };
+        entrance_service = std::make_unique<entrance::EntranceVehicleService>(
+            *entrance_coordinator, std::move(ports),
+            config.entrance_output_root,
+            std::chrono::seconds(
+                config.entrance_image_dedup_window_seconds),
+            config.entrance_image_dedup_phash_threshold,
+            static_cast<std::size_t>(config.entrance_pending_capacity),
+            config.entrance_delete_artifacts_on_success,
+            std::chrono::hours(config.entrance_failure_retention_hours));
+        auto* const service = entrance_service.get();
+        entrance_router = [&config, service](
+                              const bestshot::BestShotMetadataEvent& metadata) {
+            if (metadata.cameraId != config.entrance_camera_id ||
+                metadata.channelId != config.entrance_source_channel_id) {
+                // 입구 전용 모드에서는 다른 채널의 BestShot을 기존 주차 세션
+                // 경로로 흘리지 않는다. 기존 기능을 명시적으로 함께 켠 경우만 통과시킨다.
+                return !config.bestshot_enabled;
+            }
+            entrance::BestShotEvent event;
+            event.key = {metadata.cameraId, config.entrance_channel_id,
+                         metadata.objectId};
+            event.kind = metadata.kind == bestshot::BestShotKind::Plate
+                             ? entrance::BestShotKind::Plate
+                             : entrance::BestShotKind::Vehicle;
+            event.imageRef = metadata.imageRef;
+            event.rtspUrl = metadata.rtspUrl;
+            event.receivedAtEpochMs = metadata.receivedAtEpochMs;
+            return service->handle(event);
+        };
+    }
+
     bestshot::BestShotReceiver bestshot_receiver(
         channels, trigger_coordinator, ocr_worker,
-        bestshot_running);
+        bestshot_running, "data/bestshots", {}, {}, 64,
+        std::move(entrance_router));
 
     const auto sensor_link_mode =
         device::SensorLinkManager::parseMode(config.sensor_link_mode);
@@ -1118,7 +1264,10 @@ int main() {
         },
         [&] {
             bestshot_running.store(false, std::memory_order_release);
-            if (config.bestshot_enabled) bestshot_receiver.stop();
+            if (config.bestshot_enabled || config.entrance_enabled)
+                bestshot_receiver.stop();
+            if (entrance_service) entrance_service->stop();
+            if (entrance_ev_worker) entrance_ev_worker->stop();
         },
         [&] { evidence_worker->stop(); },
         [&] { ocr_worker.stop(); },
@@ -1369,9 +1518,14 @@ int main() {
                   std::to_string(failed_evidence_restore));
 
     ocr_worker.start();
-    if (config.bestshot_enabled) {
+    if (entrance_service) entrance_service->start();
+    if (config.bestshot_enabled || config.entrance_enabled) {
         bestshot_receiver.start();
-        util::logInfo("BestShot receiver enabled");
+        util::logInfo(
+            config.entrance_enabled
+                ? "BestShot receiver enabled for entrance channel=" +
+                      config.entrance_channel_id
+                : "BestShot receiver enabled");
     } else {
         util::logInfo("BestShot receiver disabled (BESTSHOT_ENABLED=false)");
     }

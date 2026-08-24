@@ -1,6 +1,6 @@
 # Test Scenarios
 
-기준일: 2026-08-20
+기준일: 2026-08-24
 
 ## 자동 테스트
 
@@ -10,8 +10,8 @@ cmake --build cmake-build -j2
 ctest --test-dir cmake-build --output-on-failure
 ```
 
-현재 CTest에는 소프트웨어 자동 테스트 30개와 기본 실행 시 Skip되는 실기기 HIL 테스트
-1개가 등록되어 있다. 대표 항목은 다음과 같다.
+현재 CTest에는 소프트웨어 자동 테스트 39개와 기본 실행 시 Skip되는 실기기 HIL 테스트
+1개, 총 40개가 등록되어 있다. 대표 항목은 다음과 같다.
 
 1. `gemini-ocr-client-test`: Gemini HTTP/JSON/MIME/재시도 계약
 2. `hall-ocr-policy-test`: 30초 우선 OCR, 60초 fallback, UNKNOWN 정책
@@ -29,7 +29,7 @@ ctest --test-dir cmake-build --output-on-failure
 13. `hardware-test-report-test`: HIL 반복 통계, 평균·P95, CSV escaping, Markdown 생성
 14. `sensor-link-hardware-test`: 실제 Hall/Flame UART·LoRa 반자동 HIL, 기본 CTest Skip
 15. `system-event-reporter-test`: 비동기 queue, 중복 억제, 저장 재시도와 예외 격리
-16. `parking-timer-tests`: EV/PHEV 분류, 만료, 출차, 복구 및 오류 처리
+16. `parking-timer-tests`: EV/NON_EV 분류, 만료, 출차, 복구 및 오류 처리
 17. `hall-timer-integration-test`: OCCUPIED → JPEG/DB/OCR → 타이머 → 정리/보존
 18. `camera-iva-occupancy-integration-test`: IVA 입차/출차, 확인 대기, 세션 연결
 19. `evidence-capture-worker-test`: 시작·장기점유 증거, 중복 방지, VACANT 취소,
@@ -37,6 +37,25 @@ ctest --test-dir cmake-build --output-on-failure
 20. `hall-capture-pipeline-test`: Snapshot/RTSP 촬영 port → ROI JPEG → IMAGE_LOG/OCR
 21. `camera-snapshot-api-client-test`: `/startserver`, discovery, generate, JPEG 검증/재시도
 22. `http-api-test`: 슬롯·세션·이미지·설정 API와 data root 경로 보안
+
+입구 CH2 기능은 다음 테스트로 분리해 검증한다.
+
+- `entrance-bestshot-coordinator-test`: Plate 단독 시작, 객체 키 중복 억제, TTL, capacity
+- `entrance-image-deduplicator-test`: 다른 ObjectId의 동일 Plate pHash 억제, TTL, 채널 분리
+- `plate-matcher-test`: 번호판 완전 일치, 한 글자 근접 일치, 위험한 숫자 오독 차단
+- `entrance-vehicle-service-test`: Vehicle 무시, EV 완료 후 OCR 순차 등록, pHash 중복 차단,
+  성공 임시 파일 삭제, REVIEW 실패 처리
+- `entrance-database-test`: Plate/OCR 결과의 VEHICLE UPSERT, binary `is_ev`, 성공 파일 경로
+  정리, 입구 우선 유사 매칭, 입구 이벤트 단일 소비, 기존 DB migration
+- `entrance-ocr-worker-test`: 주차 세션과 독립된 Gemini OCR callback 및 제한 재시도
+- `entrance-ev-worker-test`: JSON Lines handshake, EV/NON_EV/REVIEW, timeout,
+  malformed 응답 후 자식 프로세스 재기동
+
+실제 Python 모델 번들은 기본 CTest에 강제하지 않고 다음 선택형 smoke로 검증한다.
+
+```bash
+./cmake-build/entrance-ev-worker-test --real-worker "$PWD"
+```
 
 `hall-timer-integration-test`는 카메라 대신 메모리의 OpenCV frame을 사용하지만 실제
 `SnapshotStorage`와 SQLite를 사용한다. OCCUPIED 중복 방지, VACANT 시 OCR 취소,

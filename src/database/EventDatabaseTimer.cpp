@@ -239,16 +239,47 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
         std::lock_guard lock(db_mutex_);
         if (!opened_ || db_ == nullptr)
             throw std::runtime_error("cannot initialize a closed database");
+        // SQLite 3.34는 DROP COLUMN을 지원하지 않는다. 기존 PHEV를 EV로
+        // 흡수하면서 vehicle_id와 PARKING_SESSION 외래키를 보존해 재작성한다.
+        if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
+            tableHasColumn(db_, "VEHICLE", "is_phev")) {
+            executeSqlUnlocked("PRAGMA foreign_keys = OFF;");
+            try {
+                executeSqlUnlocked("BEGIN IMMEDIATE;");
+                executeSqlUnlocked("DROP TABLE IF EXISTS VEHICLE_BINARY_MIGRATION;");
+                executeSqlUnlocked(
+                    "CREATE TABLE VEHICLE_BINARY_MIGRATION ("
+                    "vehicle_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "plate_number TEXT UNIQUE NOT NULL,"
+                    "is_ev INTEGER NOT NULL DEFAULT 0 CHECK(is_ev IN (0,1)),"
+                    "registered_at TEXT DEFAULT CURRENT_TIMESTAMP);");
+                executeSqlUnlocked(
+                    "INSERT INTO VEHICLE_BINARY_MIGRATION("
+                    "vehicle_id,plate_number,is_ev,registered_at) "
+                    "SELECT vehicle_id,plate_number,"
+                    "CASE WHEN is_ev=1 OR is_phev=1 THEN 1 ELSE 0 END,"
+                    "registered_at FROM VEHICLE;");
+                executeSqlUnlocked("DROP TABLE VEHICLE;");
+                executeSqlUnlocked(
+                    "ALTER TABLE VEHICLE_BINARY_MIGRATION RENAME TO VEHICLE;");
+                executeSqlUnlocked("COMMIT;");
+            } catch (...) {
+                sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+                sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr,
+                             nullptr);
+                throw;
+            }
+            executeSqlUnlocked("PRAGMA foreign_keys = ON;");
+            Statement foreignKeyCheck(db_, "PRAGMA foreign_key_check;");
+            if (sqlite3_step(foreignKeyCheck.get()) == SQLITE_ROW) {
+                throw std::runtime_error(
+                    "VEHICLE binary migration violated a foreign key");
+            }
+        }
         // Add columns referenced by current schema indexes/triggers before
         // executing CREATE ... IF NOT EXISTS against a representative older
         // database. Fresh databases skip these guards and are created by the
         // same schema below.
-        if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
-            !tableHasColumn(db_, "VEHICLE", "is_phev")) {
-            executeSqlUnlocked(
-                "ALTER TABLE VEHICLE ADD COLUMN is_phev INTEGER NOT NULL "
-                "DEFAULT 0 CHECK (is_phev IN (0, 1));");
-        }
         if (tableHasColumn(db_, "PARKING_SESSION", "session_id")) {
             if (!tableHasColumn(db_, "PARKING_SESSION", "violation_at"))
                 executeSqlUnlocked(
@@ -292,6 +323,29 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                 executeSqlUnlocked(
                     "ALTER TABLE PARKING_SESSION ADD COLUMN iva_occupied "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (iva_occupied IN (0,1));");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "parking_ocr_plate"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN parking_ocr_plate TEXT;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "parking_ocr_confidence"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "parking_ocr_confidence REAL;");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "entrance_event_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN entrance_event_id "
+                    "INTEGER REFERENCES ENTRANCE_RECOGNITION(entrance_event_id);");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "plate_match_score"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN plate_match_score REAL;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "plate_resolution_source"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "plate_resolution_source TEXT NOT NULL DEFAULT 'UNRESOLVED' "
+                    "CHECK(plate_resolution_source IN ('UNRESOLVED',"
+                    "'ENTRANCE_EXACT','ENTRANCE_FUZZY','VEHICLE_EXACT'));"
+                );
         }
         if (tableHasColumn(db_, "IMAGE_LOG", "image_id")) {
             if (!tableHasColumn(db_, "IMAGE_LOG", "evidence_reason"))
@@ -347,6 +401,19 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                     "ALTER TABLE OCCUPANCY_COMMAND_INBOX ADD COLUMN "
                     "effect_last_error TEXT NOT NULL DEFAULT '';");
         }
+        // schema.sql은 기존 입구 테이블에도 인덱스를 생성한다. 인덱스가 참조하는
+        // 신규 컬럼은 CREATE INDEX보다 먼저 추가해야 구버전 DB migration이 멈추지 않는다.
+        if (tableHasColumn(db_, "ENTRANCE_RECOGNITION", "entrance_event_id")) {
+            if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vehicle_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN vehicle_id "
+                    "INTEGER REFERENCES VEHICLE(vehicle_id);");
+            if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "artifact_state"))
+                executeSqlUnlocked(
+                    "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN artifact_state "
+                    "TEXT NOT NULL DEFAULT 'WORKING' CHECK(artifact_state IN ("
+                    "'WORKING','DELETE_PENDING','RETAINED_FAILURE','DELETED'));");
+        }
         executeSqlUnlocked(schema);
         executeSqlUnlocked("BEGIN IMMEDIATE;");
         try {
@@ -391,6 +458,142 @@ void EventDatabase::migrateRuntimeSchema() {
         executeSqlUnlocked(
             "CREATE INDEX IF NOT EXISTS idx_app_sessions_user_active "
             "ON app_sessions(user_id,expires_at_utc,revoked_at_utc);");
+        executeSqlUnlocked(
+            "CREATE TABLE IF NOT EXISTS ENTRANCE_RECOGNITION ("
+            "entrance_event_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "camera_id TEXT NOT NULL,channel_id TEXT NOT NULL,"
+            "object_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ("
+            "'COLLECTING','OCR_QUEUED','OCR_PROCESSING','COMPLETED','FAILED')),"
+            "vehicle_image_path TEXT,plate_image_path TEXT,vehicle_id INTEGER,"
+            "plate_number TEXT,"
+            "classification TEXT,"
+            "registered_is_ev INTEGER CHECK(registered_is_ev IN (0,1)),"
+            "vision_is_ev INTEGER CHECK(vision_is_ev IN (0,1)),"
+            "resolved_is_ev INTEGER CHECK(resolved_is_ev IN (0,1)),"
+            "decision_source TEXT NOT NULL DEFAULT 'PENDING' CHECK("
+            "decision_source IN ('PENDING','VEHICLE_DB','VISION','CONSENSUS',"
+            "'SHADOW','CONFLICT')),"
+            "vision_decision TEXT NOT NULL DEFAULT 'NOT_RUN' CHECK("
+            "vision_decision IN ('NOT_RUN','EV_CANDIDATE',"
+            "'NON_EV_CANDIDATE','REVIEW')),"
+            "vision_reason TEXT NOT NULL DEFAULT '',"
+            "vision_model_version TEXT NOT NULL DEFAULT '',"
+            "vision_processing_ms REAL,vision_result_path TEXT,"
+            "vision_error TEXT NOT NULL DEFAULT '',"
+            "duplicate_count INTEGER NOT NULL DEFAULT 0,"
+            "artifact_state TEXT NOT NULL DEFAULT 'WORKING' CHECK("
+            "artifact_state IN ('WORKING','DELETE_PENDING',"
+            "'RETAINED_FAILURE','DELETED')),"
+            "artifacts_deleted_at_epoch_ms INTEGER,confidence REAL,"
+            "ocr_attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',"
+            "first_seen_epoch_ms INTEGER NOT NULL,updated_at_epoch_ms INTEGER NOT NULL,"
+            "completed_at_epoch_ms INTEGER,"
+            "FOREIGN KEY(vehicle_id) REFERENCES VEHICLE(vehicle_id));");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vehicle_id"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN vehicle_id "
+                "INTEGER REFERENCES VEHICLE(vehicle_id);");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "registered_is_ev"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "registered_is_ev INTEGER CHECK(registered_is_ev IN (0,1));");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_is_ev"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "vision_is_ev INTEGER CHECK(vision_is_ev IN (0,1));");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "resolved_is_ev"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "resolved_is_ev INTEGER CHECK(resolved_is_ev IN (0,1));");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "decision_source"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN decision_source "
+                "TEXT NOT NULL DEFAULT 'PENDING' CHECK(decision_source IN ("
+                "'PENDING','VEHICLE_DB','VISION','CONSENSUS','SHADOW','CONFLICT'));");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_decision"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN vision_decision "
+                "TEXT NOT NULL DEFAULT 'NOT_RUN' CHECK(vision_decision IN ("
+                "'NOT_RUN','EV_CANDIDATE','NON_EV_CANDIDATE','REVIEW'));");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_reason"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "vision_reason TEXT NOT NULL DEFAULT '';");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_model_version"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "vision_model_version TEXT NOT NULL DEFAULT '';");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_processing_ms"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "vision_processing_ms REAL;");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_result_path"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "vision_result_path TEXT;");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "vision_error"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "vision_error TEXT NOT NULL DEFAULT '';");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "duplicate_count"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "duplicate_count INTEGER NOT NULL DEFAULT 0;");
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION", "artifact_state"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN artifact_state "
+                "TEXT NOT NULL DEFAULT 'WORKING' CHECK(artifact_state IN ("
+                "'WORKING','DELETE_PENDING','RETAINED_FAILURE','DELETED'));"
+            );
+        if (!tableHasColumn(db_, "ENTRANCE_RECOGNITION",
+                            "artifacts_deleted_at_epoch_ms"))
+            executeSqlUnlocked(
+                "ALTER TABLE ENTRANCE_RECOGNITION ADD COLUMN "
+                "artifacts_deleted_at_epoch_ms INTEGER;");
+        executeSqlUnlocked(
+            "UPDATE ENTRANCE_RECOGNITION SET artifact_state='DELETE_PENDING' "
+            "WHERE state='COMPLETED' AND artifact_state='WORKING';");
+        executeSqlUnlocked(
+            "UPDATE ENTRANCE_RECOGNITION SET artifact_state='RETAINED_FAILURE' "
+            "WHERE state='FAILED' AND artifact_state='WORKING';");
+        if (tableHasColumn(db_, "PARKING_SESSION", "session_id")) {
+            if (!tableHasColumn(db_, "PARKING_SESSION", "parking_ocr_plate"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN parking_ocr_plate TEXT;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "parking_ocr_confidence"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "parking_ocr_confidence REAL;");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "entrance_event_id"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN entrance_event_id "
+                    "INTEGER REFERENCES ENTRANCE_RECOGNITION(entrance_event_id);");
+            if (!tableHasColumn(db_, "PARKING_SESSION", "plate_match_score"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN plate_match_score REAL;");
+            if (!tableHasColumn(db_, "PARKING_SESSION",
+                                "plate_resolution_source"))
+                executeSqlUnlocked(
+                    "ALTER TABLE PARKING_SESSION ADD COLUMN "
+                    "plate_resolution_source TEXT NOT NULL DEFAULT 'UNRESOLVED' "
+                    "CHECK(plate_resolution_source IN ('UNRESOLVED',"
+                    "'ENTRANCE_EXACT','ENTRANCE_FUZZY','VEHICLE_EXACT'));"
+                );
+        }
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_entrance_recognition_object ON "
+            "ENTRANCE_RECOGNITION(camera_id,channel_id,object_id,first_seen_epoch_ms);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_entrance_recognition_vehicle ON "
+            "ENTRANCE_RECOGNITION(vehicle_id);");
+        executeSqlUnlocked(
+            "CREATE INDEX IF NOT EXISTS idx_entrance_recognition_cleanup ON "
+            "ENTRANCE_RECOGNITION(artifact_state,completed_at_epoch_ms);");
+        executeSqlUnlocked(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_parking_session_entrance_event "
+            "ON PARKING_SESSION(entrance_event_id) "
+            "WHERE entrance_event_id IS NOT NULL;");
         executeSqlUnlocked(
         "CREATE TABLE IF NOT EXISTS FIRE_ALARM_STATE ("
         "channel_id TEXT PRIMARY KEY,"
@@ -1112,14 +1315,12 @@ bool EventDatabase::markPlateOcrUnresolved(
  * @brief 차량번호를 마스터 테이블에서 조회해 EV 분류를 반환한다.
  *
  * @param[in] car_number 조회할 차량번호.
- * @return `EV`, `PHEV`, 일반차 또는 미등록(`Unknown`) 분류.
+ * @return `EV`, 일반차 또는 미등록(`Unknown`) 분류.
  * @throws std::runtime_error SQLite 조회가 실패한 경우.
  */
 VehicleCategory EventDatabase::classifyVehicle(const std::string_view car_number) const {
     std::lock_guard lock(db_mutex_);
-    Statement statement(db_,
-                        "SELECT is_ev, is_phev FROM VEHICLE "
-                        "WHERE plate_number = ?;");
+    Statement statement(db_, "SELECT is_ev FROM VEHICLE WHERE plate_number = ?;");
     statement.bindText(1, car_number);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) {
@@ -1133,14 +1334,11 @@ VehicleCategory EventDatabase::classifyVehicle(const std::string_view car_number
     if (sqlite3_column_int(statement.get(), 0) == 1) {
         return VehicleCategory::Ev;
     }
-    if (sqlite3_column_int(statement.get(), 1) == 1) {
-        return VehicleCategory::Phev;
-    }
     return VehicleCategory::NonEv;
 }
 
 /**
- * @brief EV/PHEV 입차 세션을 `PARKED` 상태로 INSERT한다.
+ * @brief EV 입차 세션을 `PARKED` 상태로 INSERT한다.
  *
  * @param[in] car_number 차량번호.
  * @param[in] slot_id 주차면 ID.
@@ -1400,7 +1598,7 @@ std::vector<std::pair<std::string, std::string>> EventDatabase::listVehicles() c
     std::lock_guard lock(db_mutex_);
     Statement statement(
         db_, "SELECT plate_number, CASE WHEN is_ev=1 THEN 'EV' "
-             "WHEN is_phev=1 THEN 'PHEV' ELSE 'NON_EV' END "
+             "ELSE 'NON_EV' END "
              "FROM VEHICLE ORDER BY plate_number;");
     std::vector<std::pair<std::string, std::string>> vehicles;
     while (true) {

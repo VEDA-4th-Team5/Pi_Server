@@ -85,6 +85,37 @@ struct AppSessionPrincipal {
     std::int64_t expires_at_utc{};
 };
 
+/** @brief 한 입구 이미지에서 얻은 EV 사전 판별 결과다. */
+struct EntranceVisionAnalysis {
+    std::optional<bool> is_ev;
+    std::string decision;
+    std::string reason;
+    std::string model_version;
+    double processing_ms{};
+    std::string result_path;
+    std::string error;
+};
+
+/** 주차면 OCR 관측값을 입구 차량 기준 데이터에 연결한 결과다. */
+struct ParkingPlateResolution {
+    bool persisted{};
+    std::string observed_plate;
+    std::string canonical_plate;
+    std::string classification{"OCR_FAILED"};
+    std::string source{"UNRESOLVED"};
+    double match_score{};
+    std::int64_t entrance_event_id{-1};
+    std::int64_t vehicle_id{-1};
+};
+
+/** 판정이 끝나 파일 정리가 가능한 입구 이벤트의 경로 정보다. */
+struct EntranceArtifactRecord {
+    std::int64_t event_id{-1};
+    std::string terminal_state;
+    std::string plate_image_path;
+    std::string vision_result_path;
+};
+
 enum class EvidenceInsertResult {
     Inserted,
     Duplicate,
@@ -142,6 +173,12 @@ public:
                               const std::string& image_path,
                               const std::string& plate_number,
                               double confidence);
+    /** 주차면 OCR 원문을 보존하고 최근 입구 OCR과 보수적으로 연결한다. */
+    ParkingPlateResolution applyPlateOcrWithEntrance(
+        int session_id, const std::string& slot_id,
+        const std::string& image_path, const std::string& plate_number,
+        double confidence, std::int64_t entrance_match_window_ms,
+        double entrance_min_confidence);
     /** @brief 전체 주차면과 활성 세션을 조회한다. */
     bool listParkingSlots(std::vector<ParkingSlotView>& rows);
     /** @brief slot_id 한 건의 상태를 조회한다. */
@@ -184,6 +221,31 @@ public:
     /** @brief 현재 토큰 하나만 폐기한다. */
     bool revokeAppSession(const std::vector<unsigned char>& token_hash,
                           std::int64_t now_utc);
+
+    /** 주차 세션과 독립된 CH2 입구 인식 객체를 생성한다. */
+    std::int64_t createEntranceRecognition(const std::string& camera_id,
+                                           const std::string& channel_id,
+                                           const std::string& object_id,
+                                           std::int64_t first_seen_epoch_ms);
+    /** 입구 객체의 vehicle 또는 plate 이미지 경로를 연결한다. */
+    bool updateEntranceImage(std::int64_t event_id, bool plate,
+                             const std::string& image_path);
+    /** Python worker의 EV 아이콘 판별과 감사 경로를 입구 이벤트에 저장한다. */
+    bool updateEntranceVisionAnalysis(std::int64_t event_id,
+                                      const EntranceVisionAnalysis& analysis);
+    /** OCR 번호판과 아이콘 판정을 VEHICLE에 원자적으로 확정한다. */
+    std::string finishEntranceRecognition(std::int64_t event_id,
+                                          const std::string& plate_number,
+                                          double confidence,
+                                          int attempts,
+                                          const std::string& error);
+    /** 다른 ObjectId로 반복된 같은 입구 이미지 수를 원본 이벤트에 누적한다. */
+    bool incrementEntranceDuplicateCount(std::int64_t event_id);
+    /** 삭제 완료된 입구 이벤트의 파일 경로를 비우고 결과 DB만 남긴다. */
+    bool markEntranceArtifactsDeleted(std::int64_t event_id);
+    /** 성공 건과 보존기간이 지난 실패 건의 삭제 대상 경로를 조회한다. */
+    std::vector<EntranceArtifactRecord> listEntranceArtifactsForCleanup(
+        std::int64_t failed_before_epoch_ms) const;
 
     /** @brief 런타임 설정 문자열을 조회한다. 키가 없으면 nullopt를 반환한다. */
     std::optional<std::string> getSystemSetting(const std::string& key) const;
@@ -293,9 +355,9 @@ public:
     /** @brief schema와 seed SQL을 적용하며 구형 컬럼을 먼저 호환 마이그레이션한다. */
     void initialize(const std::filesystem::path& schema_file,
                     const std::filesystem::path& seed_file);
-    /** @brief VEHICLE의 is_ev/is_phev로 차량 종류를 분류한다. */
+    /** @brief VEHICLE의 is_ev로 차량 종류를 분류한다. */
     parking_timer::VehicleCategory classifyVehicle(std::string_view car_number) const;
-    /** @brief EV/PHEV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다. */
+    /** @brief EV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다. */
     std::int64_t insertParked(const std::string& car_number,
                               const std::string& slot_id,
                               const std::string& parked_at,
@@ -315,7 +377,7 @@ public:
     std::optional<parking_timer::LogRecord> findLogById(std::int64_t log_id) const;
     /** @brief 타이머 CLI 표시용 전체 세션을 생성 순서로 반환한다. */
     std::vector<parking_timer::LogRecord> listLogs() const;
-    /** @brief 차량번호와 EV/PHEV/NON_EV 문자열 목록을 반환한다. */
+    /** @brief 차량번호와 EV/NON_EV 문자열 목록을 반환한다. */
     std::vector<std::pair<std::string, std::string>> listVehicles() const;
     /** @brief TIMER_ENTRY로 식별되는 데모 타이머 세션만 정리한다. */
     void clearTimerLogs();

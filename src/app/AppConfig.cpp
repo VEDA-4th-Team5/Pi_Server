@@ -72,6 +72,18 @@ std::string getEnvOrLocalSetting(const char* key,
     return default_value;
 }
 
+std::string resolveProjectLocalPath(const char* key,
+                                    const std::string& default_value,
+                                    const std::string& settings_path) {
+    const std::string configured = getEnvOrLocalSetting(
+        key, default_value, settings_path);
+    if (configured.empty() || std::filesystem::path(configured).is_absolute())
+        return configured;
+    const std::string root = getEnvOrDefault("PI_SERVER_ROOT", "");
+    if (root.empty()) return configured;
+    return (std::filesystem::path(root) / configured).lexically_normal().string();
+}
+
 int getEnvIntOrDefault(const char* key, int default_value) {
     const char* value = std::getenv(key);
 
@@ -223,6 +235,84 @@ AppConfig AppConfig::loadFromEnv() {
         1, getEnvIntOrDefault("CAMERA_SNAPSHOT_RETRY_DELAY_MS", 250));
     config.bestshot_enabled =
         getEnvBoolOrDefault("BESTSHOT_ENABLED", false);
+    config.entrance_enabled = getEnvOrLocalBoolOrDefault(
+        "ENTRANCE_ENABLED", false, localSettingPath(".env.public"));
+    config.entrance_camera_id = getEnvOrLocalSetting(
+        "ENTRANCE_CAMERA_ID", config.camera_id, localSettingPath(".env.public"));
+    config.entrance_source_channel_id = getEnvOrLocalSetting(
+        "ENTRANCE_SOURCE_CHANNEL_ID", "ch02", localSettingPath(".env.public"));
+    config.entrance_channel_id = getEnvOrLocalSetting(
+        "ENTRANCE_CHANNEL_ID", "ch02", localSettingPath(".env.public"));
+    config.entrance_output_root = resolveProjectPath(
+        "ENTRANCE_OUTPUT_ROOT", "data/entrance");
+    config.entrance_object_ttl_seconds = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_OBJECT_TTL_SECONDS", 60,
+                                 localSettingPath(".env.public")),
+        5, 3600);
+    config.entrance_pending_capacity = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_PENDING_CAPACITY", 64,
+                                 localSettingPath(".env.public")),
+        1, 4096);
+    config.entrance_image_dedup_window_seconds = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_IMAGE_DEDUP_WINDOW_SECONDS", 20,
+                                 localSettingPath(".env.public")),
+        1, 300);
+    config.entrance_image_dedup_phash_threshold = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_IMAGE_DEDUP_PHASH_THRESHOLD", 10,
+                                 localSettingPath(".env.public")),
+        0, 64);
+    config.entrance_delete_artifacts_on_success =
+        getEnvOrLocalBoolOrDefault(
+            "ENTRANCE_DELETE_ARTIFACTS_ON_SUCCESS", true,
+            localSettingPath(".env.public"));
+    config.entrance_failure_retention_hours = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_FAILURE_RETENTION_HOURS", 24,
+                                 localSettingPath(".env.public")),
+        1, 168);
+    config.entrance_plate_match_window_minutes = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_PLATE_MATCH_WINDOW_MINUTES", 30,
+                                 localSettingPath(".env.public")),
+        1, 180);
+    config.entrance_plate_match_min_confidence = std::clamp(
+        parseDoubleOrDefault(
+            getEnvOrLocalSetting("ENTRANCE_PLATE_MATCH_MIN_CONFIDENCE", "0.85",
+                                 localSettingPath(".env.public")),
+            0.85),
+        0.5, 1.0);
+    config.entrance_ev_analysis_enabled = getEnvOrLocalBoolOrDefault(
+        "ENTRANCE_EV_ANALYSIS_ENABLED", false,
+        localSettingPath(".env.public"));
+    config.entrance_ev_python = getEnvOrLocalSetting(
+        "ENTRANCE_EV_PYTHON", "/usr/bin/python3",
+        localSettingPath(".env.public"));
+    config.entrance_ev_worker_script = resolveProjectLocalPath(
+        "ENTRANCE_EV_WORKER_SCRIPT",
+        "tools/cv/low_quality_presence_v1/runtime/pi_worker.py",
+        localSettingPath(".env.public"));
+    config.entrance_ev_model_bundle = resolveProjectLocalPath(
+        "ENTRANCE_EV_MODEL_BUNDLE",
+        "tools/cv/low_quality_presence_v1/model_bundle",
+        localSettingPath(".env.public"));
+    config.entrance_ev_template_cache = resolveProjectLocalPath(
+        "ENTRANCE_EV_TEMPLATE_CACHE",
+        "tools/cv/low_quality_presence_v1/model_bundle/runtime_template_cache.json",
+        localSettingPath(".env.public"));
+    config.entrance_ev_thresholds = resolveProjectLocalPath(
+        "ENTRANCE_EV_THRESHOLDS",
+        "tools/cv/low_quality_presence_v1/model_bundle/default_thresholds.json",
+        localSettingPath(".env.public"));
+    config.entrance_ev_timeout_ms = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_EV_TIMEOUT_MS", 5000,
+                                 localSettingPath(".env.public")),
+        500, 30000);
+    config.entrance_ev_queue_capacity = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_EV_QUEUE_CAPACITY", 16,
+                                 localSettingPath(".env.public")),
+        1, 256);
+    config.entrance_ev_opencv_threads = std::clamp(
+        getEnvOrLocalIntOrDefault("ENTRANCE_EV_OPENCV_THREADS", 1,
+                                 localSettingPath(".env.public")),
+        1, 4);
 
     config.fire_alarm_enabled = getEnvBoolOrDefault("FIRE_ALARM_ENABLED", false);
     config.fire_uart_device = getEnvOrDefault("FIRE_UART_DEVICE", "/dev/ttyAMA0");

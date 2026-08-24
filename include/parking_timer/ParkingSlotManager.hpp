@@ -22,7 +22,7 @@ public:
     /** @brief Starts the owned timer worker after runtime teardown is armed. */
     [[nodiscard]] bool start() noexcept;
 
-    /** @brief EV/PHEV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다. */
+    /** @brief EV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다. */
     EntryResult handleEntry(const std::string& slot_id,
                             const std::string& car_number,
                             const std::string& image_path_1 = {});
@@ -32,10 +32,10 @@ public:
                                         const std::string& slot_id,
                                         const std::string& car_number);
 
-    /** @brief 서버 재시작 시 DB의 EV/PHEV 활성 세션을 타이머 큐에 복구한다. */
+    /** @brief 서버 재시작 시 DB의 EV 활성 세션을 타이머 큐에 복구한다. */
     std::size_t restoreActiveSessions();
 
-    /** @brief 활성 EV/PHEV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다. */
+    /** @brief 활성 EV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다. */
     std::size_t updateParkingTimeout(std::chrono::milliseconds parking_timeout);
     [[nodiscard]] std::chrono::milliseconds parkingTimeout() const;
 

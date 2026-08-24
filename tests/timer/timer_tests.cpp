@@ -109,8 +109,8 @@ void testEntryViolationAndExit() {
                     parking_timer::VehicleCategory::Ev,
                 "EV seed classification failed");
         require(database.classifyVehicle("234나5678") ==
-                    parking_timer::VehicleCategory::Phev,
-                "PHEV seed classification failed");
+                    parking_timer::VehicleCategory::Ev,
+                "legacy PHEV seed was not folded into EV");
         require(database.classifyVehicle("345다6789") ==
                     parking_timer::VehicleCategory::NonEv,
                 "non-EV seed classification failed");
@@ -159,9 +159,9 @@ void testEntryViolationAndExit() {
         require(departed->violation_at.has_value(),
                 "exit erased the earlier violation timestamp");
 
-        // PHEV를 즉시 출차시켜 큐에 남은 노드가 만료 시 조용히 폐기되는지 검증한다.
+        // 기존 PHEV 등록 차량도 EV로 흡수된 뒤 같은 타이머 정책을 사용한다.
         const auto early_entry = slots.handleEntry("EV02", "234나5678");
-        require(early_entry.accepted, "PHEV entry was not accepted");
+        require(early_entry.accepted, "folded EV entry was not accepted");
         const auto early_departure = slots.handleExit("EV02");
         require(early_departure.has_value(), "early exit failed");
         std::this_thread::sleep_for(180ms);
@@ -200,19 +200,21 @@ void testExistingCameraSessionScheduling() {
             session_id, "EV01", "123가4567");
         require(!duplicate.accepted && slots.pendingTimerCount() == 1,
                 "duplicate OCR result scheduled a second timer");
-        int phev_session_id = -1;
+        int folded_ev_session_id = -1;
         require(database.createEntryWithBestShot(
-                    "EV02", "camera_phev.jpg", "object-2", &phev_session_id),
-                "PHEV camera session setup failed");
-        const auto phev_classification = database.applyPlateOcr(
-            phev_session_id, "EV02", "camera_phev.jpg", "234나5678", 0.93);
-        require(phev_classification == "PHEV",
-                "OCR DB result did not preserve PHEV classification");
+                    "EV02", "camera_folded_ev.jpg", "object-2",
+                    &folded_ev_session_id),
+                "folded EV camera session setup failed");
+        const auto folded_ev_classification = database.applyPlateOcr(
+            folded_ev_session_id, "EV02", "camera_folded_ev.jpg",
+            "234나5678", 0.93);
+        require(folded_ev_classification == "EV",
+                "OCR DB result did not fold the legacy PHEV into EV");
         require(slots.handleRecognizedSession(
-                    phev_session_id, "EV02", "234나5678").accepted,
-                "existing PHEV camera session was not scheduled");
+                    folded_ev_session_id, "EV02", "234나5678").accepted,
+                "existing folded EV camera session was not scheduled");
         require(slots.pendingTimerCount() == 2,
-                "EV and PHEV timers were not both retained");
+                "both EV timers were not retained");
         require(database.listLogs().size() == 2,
                 "timer integration inserted a duplicate parking session");
     }

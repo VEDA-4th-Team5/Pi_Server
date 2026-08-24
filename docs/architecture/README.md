@@ -125,8 +125,8 @@ sequenceDiagram
         C->>DB: HALL_60S IMAGE_LOG
         C->>O: 60초 이미지 OCR 재시도
     end
-    O->>DB: VEHICLE EV/PHEV/NON_EV/UNKNOWN 조회
-    alt EV or PHEV
+    O->>DB: VEHICLE EV/NON_EV/UNKNOWN 조회
+    alt EV
         O->>T: 같은 session_id로 타이머 등록
     else NON_EV or UNKNOWN
         O->>T: 경고 이벤트, EV 장기점유 타이머 미등록
@@ -264,7 +264,7 @@ WiseAI IVA MQTT → Snapshot API → ROI crop → Gemini OCR이다.
 
 | 테이블 | 책임 |
 |---|---|
-| `VEHICLE` | 번호판, EV/PHEV 등록 정보 |
+| `VEHICLE` | 번호판, 이진 EV 등록 정보 |
 | `PARKING_SLOT` | 슬롯 종류, 점유 상태, 센서 종류 |
 | `PARKING_SESSION` | 입차, 출차, 위반, 번호판, 차량 연결 |
 | `IMAGE_LOG` | 원본/개선 파일 경로, OCR, 촬영 사유 |

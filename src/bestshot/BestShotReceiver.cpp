@@ -131,19 +131,21 @@ BestShotReceiver::BestShotReceiver(
     std::string output_root,
     DownloadCallback downloader,
     OcrCallback ocr_callback,
-    const std::size_t pending_capacity)
+    const std::size_t pending_capacity,
+    MetadataCallback metadata_callback)
     : channels_(channels),
       trigger_coordinator_(trigger_coordinator),
       running_(running),
       output_root_(std::move(output_root)),
       downloader_(std::move(downloader)),
       ocr_callback_(std::move(ocr_callback)),
+      metadata_callback_(std::move(metadata_callback)),
       pending_capacity_(std::max<std::size_t>(1, pending_capacity)) {
     if (!downloader_) {
         downloader_ = [this](const std::string& rtsp_url,
                              const std::string& image_ref,
                              const std::string& destination) {
-            return downloadImage(rtsp_url, image_ref, destination);
+            return downloadImageReference(rtsp_url, image_ref, destination);
         };
     }
     if (!ocr_callback_) {
@@ -164,7 +166,7 @@ void BestShotReceiver::start() {
     pending_worker_stop_.store(false);
     pending_worker_ = std::thread(&BestShotReceiver::pendingLoop, this);
     for (const auto& channel : channels_) {
-        if (channel)
+        if (channel && !channel->rtsp_url.empty())
             workers_.emplace_back(
                 &BestShotReceiver::receiveLoop, this, channel);
     }
@@ -188,12 +190,7 @@ void BestShotReceiver::stop() {
 
 void BestShotReceiver::receiveLoop(
     const std::shared_ptr<camera::CameraChannel>& channel) {
-    std::string metadata_url = channel->rtsp_url;
-    const std::size_t profile = metadata_url.find("profile2/media.smp");
-    if (profile != std::string::npos) {
-        metadata_url.replace(profile, std::string("profile2").size(),
-                             "profile1");
-    }
+    const std::string& metadata_url = channel->rtsp_url;
 
     AVFormatContext* format = avformat_alloc_context();
     if (format == nullptr) return;
@@ -313,6 +310,31 @@ BestShotReceiver::processMetadataDocument(
                 " kind=" + (is_plate ? "plate" : "vehicle") +
                 " object=" + metadata.objectId +
                 " evidence=" + metadata.evidenceIdentity);
+        if (metadata_callback_) {
+            BestShotMetadataEvent routed;
+            routed.cameraId = metadata.cameraId;
+            routed.channelId = metadata.channelId;
+            routed.objectId = metadata.objectId;
+            routed.imageRef = metadata.imageRef;
+            routed.plateText = metadata.plateText;
+            routed.rtspUrl = metadata.rtspUrl;
+            routed.kind = is_plate ? BestShotKind::Plate
+                                   : BestShotKind::Vehicle;
+            routed.receivedAtEpochMs = metadata.createdAtEpochMs;
+            if (metadata_callback_(routed)) {
+                BestShotProcessResult external;
+                external.code = BestShotProcessCode::RoutedExternally;
+                external.kind = metadata.kind;
+                external.evidenceIdentity = metadata.evidenceIdentity;
+                external.cameraId = metadata.cameraId;
+                external.channelId = metadata.channelId;
+                external.objectId = metadata.objectId;
+                external.imageRef = metadata.imageRef;
+                external.message = "handled by entrance BestShot pipeline";
+                results.push_back(std::move(external));
+                continue;
+            }
+        }
         results.push_back(processOne(std::move(metadata), true));
     }
     return results;
@@ -702,9 +724,9 @@ std::string BestShotReceiver::stableDigest(const std::string& value) {
     return output.str();
 }
 
-bool BestShotReceiver::downloadImage(const std::string& rtsp_url,
-                                     const std::string& image_ref,
-                                     const std::string& destination) {
+bool BestShotReceiver::downloadImageReference(const std::string& rtsp_url,
+                                              const std::string& image_ref,
+                                              const std::string& destination) {
     const CameraAddress camera = parseRtspAddress(rtsp_url);
     if (camera.user.empty() || camera.host.empty() || image_ref.empty())
         return false;

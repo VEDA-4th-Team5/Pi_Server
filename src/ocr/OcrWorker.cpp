@@ -25,9 +25,13 @@ bool usableImageFile(const std::string& path) {
 OcrWorker::OcrWorker(GeminiOcrClient client,
                      database::EventDatabase& database,
                      bool preprocess_enabled,
-                     ResultCallback result_callback)
+                     ResultCallback result_callback,
+                     const std::int64_t entrance_match_window_ms,
+                     const double entrance_match_min_confidence)
     : client_(std::move(client)), database_(database),
       preprocess_enabled_(preprocess_enabled),
+      entrance_match_window_ms_(entrance_match_window_ms),
+      entrance_match_min_confidence_(entrance_match_min_confidence),
       result_callback_(std::move(result_callback)) {
 }
 
@@ -80,7 +84,7 @@ void OcrWorker::enqueue(int session_id, const std::string& slot_id,
         return;
     }
     queue_.push({session_id, slot_id, image_path, false,
-                 enhanced_image_path, false, 0});
+                 enhanced_image_path, false, 0, false, {}, {}});
     condition_.notify_one();
 }
 
@@ -98,7 +102,8 @@ void OcrWorker::enqueueScene(const std::string& slot_id,
         enhanced_image_path.empty()) return;
     if (queue_.size() >= 32 || !accepted_images_.insert(image_path).second) return;
     // IVA ROI 후보를 별도로 자르지 않고 원본과 이미 생성된 개선본을 함께 보낸다.
-    queue_.push({-1, slot_id, image_path, false, enhanced_image_path, false, 0});
+    queue_.push({-1, slot_id, image_path, false, enhanced_image_path, false, 0,
+                 false, {}, {}});
     condition_.notify_one();
 }
 
@@ -119,7 +124,7 @@ void OcrWorker::enqueueHallCapture(const HallCaptureTask& request) {
             accepted_images_.insert(request.image_path).second) {
             queue_.push({static_cast<int>(request.session_id), request.slot_id,
                          request.image_path, false, request.enhanced_path, true,
-                         request.stage});
+                         request.stage, false, {}, {}});
             condition_.notify_one();
             return;
         }
@@ -134,6 +139,20 @@ void OcrWorker::enqueueHallCapture(const HallCaptureTask& request) {
         result.processed_at = util::nowIsoString();
         rejected(result);
     }
+}
+
+bool OcrWorker::enqueueGeneric(const std::string& task_id,
+                               const std::string& image_path,
+                               GenericOcrCallback callback) {
+    if (task_id.empty() || image_path.empty() || !callback) return false;
+    std::lock_guard lock(mutex_);
+    if (!started_ || stopping_ || queue_.size() >= 32 ||
+        !accepted_images_.insert(image_path).second) return false;
+    Task task{-1, {}, image_path, false, {}, false, 0, true, task_id,
+              std::move(callback)};
+    queue_.push(std::move(task));
+    condition_.notify_one();
+    return true;
 }
 
 void OcrWorker::run() {
@@ -155,7 +174,29 @@ void OcrWorker::run() {
         hall_result.session_id = task.session_id;
         hall_result.stage = task.hall_stage;
         hall_result.processed_at = util::nowIsoString();
-        process(task, hall_result);
+        GenericOcrResult generic_result;
+        GenericOcrResult* generic_output = nullptr;
+        if (task.generic) {
+            generic_result.task_id = task.generic_task_id;
+            generic_output = &generic_result;
+        }
+        process(task, hall_result, generic_output);
+
+        if (task.generic) {
+            {
+                std::lock_guard lock(mutex_);
+                accepted_images_.erase(task.image_path);
+            }
+            try {
+                task.generic_callback(generic_result);
+            } catch (const std::exception& error) {
+                util::logError("Generic OCR callback failed: " +
+                               std::string(error.what()));
+            } catch (...) {
+                util::logError("Generic OCR callback failed: unknown error");
+            }
+            continue;
+        }
 
         if (task.hall) {
             HallCaptureCallback callback;
@@ -178,7 +219,8 @@ void OcrWorker::run() {
     }
 }
 
-void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
+void OcrWorker::process(const Task& task, HallCaptureResult& hall_result,
+                        GenericOcrResult* generic_result) {
         PlatePreprocessResult processed;
         bool owns_processed_enhanced = false;
         if (!task.provided_enhanced_path.empty())
@@ -197,8 +239,9 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
                 return;
             }
             if (!processed.enhanced_path.empty()) {
-                database_.attachEnhancedPlateImage(task.image_path,
-                                                    processed.enhanced_path);
+                if (!task.generic)
+                    database_.attachEnhancedPlateImage(task.image_path,
+                                                        processed.enhanced_path);
                 util::logLine("PLATE_PREPROCESS", "original=" + task.image_path +
                               " enhanced=" + processed.enhanced_path);
             }
@@ -249,6 +292,7 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
 
         OcrResult result;
         for (int attempt = 1; attempt <= 3; ++attempt) {
+            if (generic_result != nullptr) generic_result->attempts = attempt;
             if (session_canceled()) {
                 remove_owned_enhanced();
                 return;
@@ -272,6 +316,12 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         if (!result.success) {
             hall_result.error_message = result.error;
             hall_result.raw_text = result.raw_text;
+            if (generic_result != nullptr) {
+                generic_result->error_message = result.error;
+                generic_result->raw_text = result.raw_text;
+                generic_result->error_kind = result.error_kind;
+                generic_result->http_status = result.http_status;
+            }
             util::logError("Gemini OCR failed: path=" + ocr_input +
                            " kind=" + toString(result.error_kind) +
                            " status=" + std::to_string(result.http_status) +
@@ -280,6 +330,12 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
         }
         hall_result.ocr_succeeded = true;
         hall_result.raw_text = result.raw_text;
+        if (generic_result != nullptr) {
+            generic_result->ocr_succeeded = true;
+            generic_result->raw_text = result.raw_text;
+            generic_result->error_kind = result.error_kind;
+            generic_result->http_status = result.http_status;
+        }
         if (session_canceled()) {
             remove_owned_enhanced();
             return;
@@ -289,24 +345,40 @@ void OcrWorker::process(const Task& task, HallCaptureResult& hall_result) {
             // 응답은 받았으나 번호판을 읽지 못한 경우다. 조명 보정으로 다시
             // 시도해볼 값어치가 있어 요청 실패와 구분해 표시한다.
             hall_result.plate_unreadable = true;
+            if (generic_result != nullptr)
+                generic_result->plate_unreadable = true;
             util::logWarn("Gemini OCR unreadable: path=" + ocr_input);
+            if (task.generic) return;
             database_.applyPlateOcr(task.session_id, task.slot_id,
                                     task.image_path, "", result.confidence);
             return;
         }
-        std::string classification = database_.applyPlateOcr(
-            task.session_id, task.slot_id, task.image_path, plate,
-            result.confidence);
+        if (generic_result != nullptr) {
+            generic_result->recognized = true;
+            generic_result->plate_number = plate;
+            generic_result->confidence = result.confidence;
+            return;
+        }
+        const database::ParkingPlateResolution resolution =
+            database_.applyPlateOcrWithEntrance(
+                task.session_id, task.slot_id, task.image_path, plate,
+                result.confidence, entrance_match_window_ms_,
+                entrance_match_min_confidence_);
+        const std::string canonicalPlate = resolution.canonical_plate.empty()
+            ? plate : resolution.canonical_plate;
+        const std::string classification = resolution.classification;
         util::logLine("PLATE_OCR", "slot=" + task.slot_id +
-                      " plate=" + plate + " class=" + classification +
+                      " observed=" + plate + " canonical=" + canonicalPlate +
+                      " class=" + classification + " source=" +
+                      resolution.source +
                       " confidence=" + std::to_string(result.confidence));
         hall_result.recognized = true;
-        hall_result.plate_number = plate;
+        hall_result.plate_number = canonicalPlate;
         hall_result.confidence = result.confidence;
         hall_result.classification = classification;
         if (!task.hall && result_callback_ && task.session_id >= 0) {
             try {
-                result_callback_({task.session_id, task.slot_id, plate,
+                result_callback_({task.session_id, task.slot_id, canonicalPlate,
                                   classification, result.confidence});
             } catch (const std::exception& error) {
                 util::logError("OCR result callback failed: " +

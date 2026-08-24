@@ -32,7 +32,7 @@ parking/sensor/hall MQTT
 → SQLite PARKING_SESSION 생성
 → CaptureScheduler의 T0+30초/60초 작업
 → Camera Snapshot API original/enhanced 다운로드 + ROI crop
-→ IMAGE_LOG / Gemini OCR / EV·PHEV Timer
+→ IMAGE_LOG / Gemini OCR / EV Timer
 → EventManager
 → parking/v1/events|state/{slot_id}
 ```

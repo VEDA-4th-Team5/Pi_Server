@@ -18,8 +18,6 @@ const char* toString(const VehicleCategory category) noexcept {
     switch (category) {
     case VehicleCategory::Ev:
         return "EV";
-    case VehicleCategory::Phev:
-        return "PHEV";
     case VehicleCategory::NonEv:
         return "NON_EV";
     case VehicleCategory::Unknown:

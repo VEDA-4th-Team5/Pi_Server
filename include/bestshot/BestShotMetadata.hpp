@@ -8,7 +8,21 @@
 
 namespace bestshot {
 
+enum class BestShotKind { Vehicle, Plate };
+
+struct BestShotMetadataEvent {
+    std::string cameraId;
+    std::string channelId;
+    std::string objectId;
+    std::string imageRef;
+    std::string plateText;
+    std::string rtspUrl;
+    BestShotKind kind{BestShotKind::Vehicle};
+    std::int64_t receivedAtEpochMs{};
+};
+
 enum class BestShotProcessCode {
+    RoutedExternally,
     Attached,
     AlreadyAttached,
     DuplicateInFlight,

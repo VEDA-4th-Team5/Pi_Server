@@ -9,7 +9,6 @@ namespace parking_timer {
 
 enum class VehicleCategory {
     Ev,
-    Phev,
     NonEv,
     Unknown,
 };

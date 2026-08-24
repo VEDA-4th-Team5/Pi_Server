@@ -29,7 +29,7 @@ SessionStarted / T0+30초 / T0+60초 / Overstay
 → HallCaptureCoordinator / IMAGE_LOG
 → OcrWorker::enqueueHallCapture(original, enhanced)
 → Gemini HTTPS OCR
-→ VEHICLE EV/PHEV 조회 및 동일 PARKING_SESSION.session_id 갱신
+→ VEHICLE EV/NON_EV 조회 및 동일 PARKING_SESSION.session_id 갱신
 ```
 
 ## 설정

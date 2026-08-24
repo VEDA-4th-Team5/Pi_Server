@@ -303,7 +303,7 @@ void runInteractive(ParkingSlotManager& slots, EventDatabase& database) {
 }
 
 /**
- * @brief EV 만료와 PHEV 조기 출차를 함께 보여주는 자동 시나리오를 실행한다.
+ * @brief EV 만료와 다른 EV의 조기 출차를 함께 보여주는 자동 시나리오를 실행한다.
  *
  * @param[in,out] slots 입차·출차와 타이머를 처리할 주차구역 관리자.
  * @param[in] database 마지막 상태를 출력할 DB.
@@ -314,17 +314,17 @@ void runInteractive(ParkingSlotManager& slots, EventDatabase& database) {
 void runDemo(ParkingSlotManager& slots,
              EventDatabase& database,
              const std::chrono::milliseconds timeout) {
-    std::cout << "[demo] EV enters EV01; PHEV enters EV02.\n";
+    std::cout << "[demo] EVs enter EV01 and EV02.\n";
     slots.handleEntry("EV01", "123가4567", "snapshots/demo_ev_parked.jpg");
-    slots.handleEntry("EV02", "234나5678", "snapshots/demo_phev_parked.jpg");
+    slots.handleEntry("EV02", "234나5678", "snapshots/demo_ev_early_exit.jpg");
 
     std::cout << "[demo] A non-EV vehicle is rejected from the timer.\n";
     slots.handleEntry("EV03", "345다6789");
 
-    // PHEV는 전체 제한시간의 1/4 지점에 출차시켜 lazy cancellation을 눈으로 확인한다.
+    // 두 번째 EV는 제한시간의 1/4 지점에 출차시켜 lazy cancellation을 확인한다.
     const auto early_exit_delay = std::max(std::chrono::milliseconds{50}, timeout / 4);
     std::this_thread::sleep_for(early_exit_delay);
-    std::cout << "[demo] PHEV exits EV02 before its deadline.\n";
+    std::cout << "[demo] EV exits EV02 before its deadline.\n";
     slots.handleExit("EV02");
 
     std::cout << "[demo] Waiting for the EV01 deadline...\n";

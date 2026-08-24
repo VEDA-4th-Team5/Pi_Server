@@ -96,6 +96,35 @@ struct AppConfig {
     // IVA + Snapshot API 운영에서는 중복 세션/촬영을 막기 위해 기본 비활성화한다.
     bool bestshot_enabled{false};
 
+    // 입구 BestShot은 PNM-C16083RVQ의 실제 CH2 RTSP Metadata를 사용한다.
+    // 카메라에서도 CH2의 입구 BestShot 규칙만 활성화한다.
+    bool entrance_enabled{false};
+    std::string entrance_camera_id{"cam01"};
+    std::string entrance_source_channel_id{"ch02"};
+    std::string entrance_channel_id{"ch02"};
+    std::string entrance_output_root{"data/entrance"};
+    int entrance_object_ttl_seconds{60};
+    int entrance_pending_capacity{64};
+    int entrance_image_dedup_window_seconds{20};
+    int entrance_image_dedup_phash_threshold{10};
+    bool entrance_delete_artifacts_on_success{true};
+    int entrance_failure_retention_hours{24};
+    int entrance_plate_match_window_minutes{30};
+    double entrance_plate_match_min_confidence{0.85};
+    bool entrance_ev_analysis_enabled{false};
+    std::string entrance_ev_python{"/usr/bin/python3"};
+    std::string entrance_ev_worker_script{
+        "tools/cv/low_quality_presence_v1/runtime/pi_worker.py"};
+    std::string entrance_ev_model_bundle{
+        "tools/cv/low_quality_presence_v1/model_bundle"};
+    std::string entrance_ev_template_cache{
+        "tools/cv/low_quality_presence_v1/model_bundle/runtime_template_cache.json"};
+    std::string entrance_ev_thresholds{
+        "tools/cv/low_quality_presence_v1/model_bundle/default_thresholds.json"};
+    int entrance_ev_timeout_ms{5000};
+    int entrance_ev_queue_capacity{16};
+    int entrance_ev_opencv_threads{1};
+
     // 화재 알림 (STM32 UART -> Pi -> Qt). 토픽/프레임 규격은 아직 미확정이므로
     // 임시로 정한 값이며 여기 한 곳에서만 바꾼다.
     bool fire_alarm_enabled;
