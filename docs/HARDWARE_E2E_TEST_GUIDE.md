@@ -54,7 +54,7 @@ WiseAI Intrusion
 | 점유 입력 | `PARKING_OCCUPANCY_SOURCE=HYBRID_OR` |
 | 입차 권한 | WiseAI `INTRUSION` 또는 Hall `OCCUPIED` 5초 유지 |
 | 출차 권한 | 세션을 실제 확인한 센서의 `Exit`/`VACANT` |
-| 출차 확인 | 기본 20초, `CAMERA_IVA_EXIT_CONFIRM_MS` |
+| 출차 확인 | 기본 10초, `CAMERA_IVA_EXIT_CONFIRM_MS` |
 | 촬영 | Camera Snapshot API 우선 |
 | RTSP fallback | 운영 설정에 따라 결정; 현재 API 전용 모드에서는 보통 `false` |
 | 이미지 | 슬롯/촬영 사유별 `original/`, `enhanced/` |
@@ -347,7 +347,7 @@ mosquitto_sub -h localhost -p 1883 -v -t 'parking/v1/events/+' -t 'parking/v1/st
 
 ```text
 [IVA_OCCUPANCY] slot=EV02 state=VACANT_CANDIDATE ...
-[IVA_EXIT] pending slot=EV02 ... confirm_ms=20000
+[IVA_EXIT] pending slot=EV02 ... confirm_ms=10000
 [IVA_EXIT] confirmed slot=EV02
 ```
 

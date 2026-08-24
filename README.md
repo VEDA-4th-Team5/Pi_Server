@@ -68,13 +68,13 @@ SENSOR:HALL01:OCCUPIED:1
 ```bash
 export PARKING_OCCUPANCY_SOURCE=HYBRID_OR
 export PARKING_OCCUPANCY_CONFIRM_MS=5000
-export CAMERA_IVA_EXIT_CONFIRM_MS=20000
+export CAMERA_IVA_EXIT_CONFIRM_MS=10000
 ```
 
 `HYBRID_OR`에서는 IVA INTRUSION 또는 5초 유지된 Hall OCCUPIED 중 먼저 확정된
 입력이 세션 하나를 만들고, 나중 입력은 같은 `session_id`의 센서 확인 상태만
 보강합니다. 출차는 해당 세션을 실제 확인한 센서만 판단에 참여하며, 두 센서가
-모두 확인한 세션은 둘 다 VACANT일 때 종료합니다. IVA EXIT는 20초 동안 후속
+모두 확인한 세션은 둘 다 VACANT일 때 종료합니다. IVA EXIT는 10초 동안 후속
 INTRUSION을 기다립니다. 조기 출차는 이미지와 `IMAGE_LOG`를 삭제하고,
 `violation_at`이 있는 위반 세션은 증거를 보존합니다. `HALL`과 `CAMERA_IVA`
 단독 모드도 호환을 위해 유지합니다. 자세한 Publication 계약은

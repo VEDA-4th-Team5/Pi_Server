@@ -1,6 +1,6 @@
  {
     "version": 1,
-    "_comment": "EV01~EV04 홀센서와 카메라 IVA/BestShot 매핑. sensor_id는 STM32 UART 메시지의 센서 ID와 일치해야 하며, rule_name은 카메라 IVA Area 이름과 일치해야 한다.",
+    "_comment": "EV01~EV08 홀센서와 카메라 IVA 매핑. EV01~EV04는 CH1, EV05~EV08은 CH3을 사용하며 rule_name은 카메라 IVA Area 이름과 일치해야 한다.",
     "slots": [
       {
         "slot_id": "EV01",
@@ -57,6 +57,66 @@
             "camera_id": "cam01",
             "video_source_token": "vs-0",
             "rule_name": "name4",
+            "enabled": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "slot_id": "EV05",
+        "enabled": true,
+        "zone_type": "ev_charging",
+        "sensor_id": "HALL05",
+        "camera_bindings": [
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-2",
+            "rule_name": "name5",
+            "enabled": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "slot_id": "EV06",
+        "enabled": true,
+        "zone_type": "ev_charging",
+        "sensor_id": "HALL06",
+        "camera_bindings": [
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-2",
+            "rule_name": "name6",
+            "enabled": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "slot_id": "EV07",
+        "enabled": true,
+        "zone_type": "ev_charging",
+        "sensor_id": "HALL07",
+        "camera_bindings": [
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-2",
+            "rule_name": "name7",
+            "enabled": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "slot_id": "EV08",
+        "enabled": true,
+        "zone_type": "ev_charging",
+        "sensor_id": "HALL08",
+        "camera_bindings": [
+          {
+            "camera_id": "cam01",
+            "video_source_token": "vs-2",
+            "rule_name": "name8",
             "enabled": true,
             "priority": 100
           }

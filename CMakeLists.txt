@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4)
 pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
@@ -28,7 +29,8 @@ target_compile_definitions(pi-server PRIVATE
     VEDA_RUNTIME_SQL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/db")
 target_link_libraries(pi-server PRIVATE
     PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
-    PkgConfig::HTTPLIB PkgConfig::SODIUM mosquitto sqlite3 Threads::Threads)
+    PkgConfig::HTTPLIB PkgConfig::SODIUM OpenSSL::Crypto
+    mosquitto sqlite3 Threads::Threads)
 target_link_options(pi-server PRIVATE -Wl,--gc-sections)
 if(NOT CMAKE_NM)
     message(FATAL_ERROR "nm is required for the production occupancy gate")
@@ -237,6 +239,22 @@ target_include_directories(camera-iva-event-test PRIVATE include)
 target_compile_options(camera-iva-event-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME camera-iva-event-test COMMAND camera-iva-event-test)
 
+# ONVIF PullPoint XML 분리와 CH1/CH3 슬롯 매핑을 카메라 없이 검증한다.
+add_executable(onvif-iva-event-source-test
+    tests/unit/OnvifIvaEventSourceTest.cpp
+    src/camera/OnvifIvaEventSource.cpp
+    src/event/OnvifIvaEventAdapter.cpp
+    src/event/IvaEventResolver.cpp
+    src/util/TimeUtil.cpp
+    src/util/Logger.cpp)
+target_include_directories(onvif-iva-event-source-test PRIVATE include)
+target_compile_options(onvif-iva-event-source-test PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(onvif-iva-event-source-test PRIVATE
+    PkgConfig::CURL OpenSSL::Crypto Threads::Threads)
+add_test(NAME onvif-iva-event-source-test
+    COMMAND onvif-iva-event-source-test)
+
 add_executable(fire-alarm-test
     tests/unit/FireAlarmTest.cpp
     src/event/FireAlarmService.cpp
@@ -312,6 +330,10 @@ target_link_libraries(uart-fire-listener PRIVATE Threads::Threads util)
 add_test(NAME parking-domain-test
     COMMAND parking-domain-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
+add_test(NAME parking-production-config-test
+    COMMAND parking-domain-test
+            ${CMAKE_SOURCE_DIR}/config/parking_slots.json
+            --validate-production)
 add_test(NAME sensor-parking-pipeline-test
     COMMAND sensor-parking-pipeline-test
             ${CMAKE_SOURCE_DIR}/tests/fixtures/parking_slots.json)
@@ -420,6 +442,18 @@ add_executable(lora-console
 target_include_directories(lora-console PRIVATE include)
 target_compile_options(lora-console PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(lora-console PRIVATE Threads::Threads)
+
+# 카메라 ONVIF PullPoint에서 WiseAI IvaArea의 ObjectId/Action을 직접 확인한다.
+# MQTT Publication/Event Rule과 무관한 카메라 원본 이벤트 진단 전용 도구다.
+add_executable(watch-onvif-iva-events
+    tools/watch_onvif_iva_events.cpp
+    src/camera/OnvifIvaEventSource.cpp
+    src/util/Logger.cpp)
+target_include_directories(watch-onvif-iva-events PRIVATE include)
+target_compile_options(watch-onvif-iva-events PRIVATE
+    -Wall -Wextra -Wpedantic)
+target_link_libraries(watch-onvif-iva-events PRIVATE
+    PkgConfig::CURL OpenSSL::Crypto Threads::Threads)
 
 # /dev/parking_alert 문자 디바이스 제어 도구. 커널 모듈은 명시적 타깃으로만 빌드한다.
 add_executable(parking-alert-ctl tools/parking_alert_ctl.c)
@@ -657,7 +691,8 @@ target_compile_definitions(mqtt-bridge-lifecycle-test PRIVATE
     PARKING_TIMER_TEST_SQL_DIR="${CMAKE_CURRENT_BINARY_DIR}/db")
 target_link_libraries(mqtt-bridge-lifecycle-test PRIVATE
     parking-timer-core PkgConfig::OPENCV PkgConfig::AV PkgConfig::CURL
-    PkgConfig::HTTPLIB PkgConfig::SODIUM mosquitto sqlite3 Threads::Threads)
+    PkgConfig::HTTPLIB PkgConfig::SODIUM OpenSSL::Crypto
+    mosquitto sqlite3 Threads::Threads)
 add_test(NAME mqtt-bridge-lifecycle-test COMMAND mqtt-bridge-lifecycle-test)
 
 add_executable(parking-correlation-integration-test

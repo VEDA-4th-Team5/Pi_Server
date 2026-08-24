@@ -51,6 +51,7 @@ int main() {
     setValue("AUTH_LOGIN_MAX_FAILURES", "4");
     setValue("AUTH_LOGIN_COOLDOWN_SECONDS", "90");
     setValue("PARKING_OCCUPANCY_SOURCE", "hybrid_or");
+    setValue("CAMERA_IVA_EVENT_SOURCE", "onvif");
     setValue("PARKING_ALERT_DRIVER_ENABLED", "true");
     setValue("PARKING_ALERT_DEVICE_PATH", "/dev/test-parking-alert");
     setValue("PARKING_ALERT_SLOT_MAP", "EV01:7,EV02:8");
@@ -108,6 +109,8 @@ int main() {
                   "authentication settings must preserve explicit values");
     ok &= require(config.parking_occupancy_source == "HYBRID_OR",
                   "HYBRID_OR occupancy policy must be accepted");
+    ok &= require(config.camera_iva_event_source == "ONVIF",
+                  "ONVIF IVA event source must be accepted");
     ok &= require(config.parking_occupancy_confirm_ms == 5000,
                   "Hall occupancy confirmation must default to five seconds");
     ok &= require(config.parking_alert_driver_enabled &&
@@ -139,6 +142,28 @@ int main() {
                       config.rtsp_channels.front().rtsp_url ==
                           "rtsp://camera/1/profile2/media.smp",
                   "CAMERA_RTSP_CH2 must create the physical CH2 RTSP input");
+    ok &= require(config.iva_areas.size() == 8,
+                  "EV01 through EV08 IVA mappings must be configured");
+    if (config.iva_areas.size() == 8) {
+        const auto& ev01 = config.iva_areas[0];
+        const auto& ev05 = config.iva_areas[4];
+        const auto& ev08 = config.iva_areas[7];
+        ok &= require(ev01.slot_id == "EV01" &&
+                          ev01.area_name == "name1" &&
+                          ev01.channel_id == "ch01" &&
+                          ev01.snapshot_api_channel == 0,
+                      "EV01 must use CH1/name1/Snapshot channel 0");
+        ok &= require(ev05.slot_id == "EV05" &&
+                          ev05.area_name == "name5" &&
+                          ev05.channel_id == "ch03" &&
+                          ev05.snapshot_api_channel == 2,
+                      "EV05 must use CH3/name5/Snapshot channel 2");
+        ok &= require(ev08.slot_id == "EV08" &&
+                          ev08.area_name == "name8" &&
+                          ev08.channel_id == "ch03" &&
+                          ev08.snapshot_api_channel == 2,
+                      "EV08 must use CH3/name8/Snapshot channel 2");
+    }
 
     clearValue("PARKING_SLOT_CONFIG");
     const app::AppConfig legacy_config = app::AppConfig::loadFromEnv();
@@ -158,6 +183,7 @@ int main() {
     clearValue("AUTH_LOGIN_MAX_FAILURES");
     clearValue("AUTH_LOGIN_COOLDOWN_SECONDS");
     clearValue("PARKING_OCCUPANCY_SOURCE");
+    clearValue("CAMERA_IVA_EVENT_SOURCE");
     clearValue("PARKING_ALERT_DRIVER_ENABLED");
     clearValue("PARKING_ALERT_DEVICE_PATH");
     clearValue("PARKING_ALERT_SLOT_MAP");

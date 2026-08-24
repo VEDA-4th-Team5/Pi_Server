@@ -55,6 +55,11 @@ struct AppConfig {
     // HALL, CAMERA_IVA 또는 두 입력 중 하나로 입차를 확정하는 HYBRID_OR를
     // 사용한다. HYBRID_OR에서도 슬롯당 활성 세션은 하나만 유지한다.
     std::string parking_occupancy_source;
+    // IVA 이벤트 입력 경로. MQTT는 기존 카메라 Publication, ONVIF는
+    // 카메라 PullPoint 원본 WiseAI Action을 사용한다.
+    std::string camera_iva_event_source{"MQTT"};
+    // 비어 있으면 CAMERA_OPEN_API_BASE의 origin에서 event_service를 유도한다.
+    std::string camera_onvif_event_url;
     // CAMERA_IVA 모드에서 EXIT를 즉시 확정하지 않고 후속 INTRUSION을 기다리는 시간.
     int camera_iva_exit_confirm_ms;
 

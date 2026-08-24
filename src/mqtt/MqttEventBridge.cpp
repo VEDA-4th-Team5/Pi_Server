@@ -7,6 +7,7 @@
 #include "notification/TelegramChannelNotifier.hpp"
 #include "ocr/PlateImageEnhancer.hpp"
 #include "util/Logger.hpp"
+#include "util/TimeUtil.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -48,72 +49,6 @@ event::IvaOccupancyAction toOccupancyAction(const std::string& action) {
     if (action == "INTRUSION") return event::IvaOccupancyAction::Intrusion;
     if (action == "EXIT") return event::IvaOccupancyAction::Exit;
     return event::IvaOccupancyAction::Unsupported;
-}
-
-std::optional<std::chrono::system_clock::time_point> parseCameraUtc(
-    const std::string& value) {
-    if (value.size() < 20) return std::nullopt;
-    std::tm utc{};
-    std::istringstream input(value.substr(0, 19));
-    input >> std::get_time(&utc, "%Y-%m-%dT%H:%M:%S");
-    if (input.fail()) return std::nullopt;
-
-    std::size_t cursor = 19;
-    std::chrono::milliseconds fraction{};
-    if (cursor < value.size() && value[cursor] == '.') {
-        ++cursor;
-        int milliseconds{};
-        int digits{};
-        while (cursor < value.size() && value[cursor] >= '0' &&
-               value[cursor] <= '9') {
-            if (digits < 3)
-                milliseconds = milliseconds * 10 + (value[cursor] - '0');
-            ++digits;
-            ++cursor;
-        }
-        if (digits == 0) return std::nullopt;
-        while (digits < 3) {
-            milliseconds *= 10;
-            ++digits;
-        }
-        fraction = std::chrono::milliseconds(milliseconds);
-    }
-
-    int offset_seconds{};
-    if (cursor < value.size() &&
-        (value[cursor] == 'Z' || value[cursor] == 'z')) {
-        ++cursor;
-    } else if (cursor + 6 == value.size() &&
-               (value[cursor] == '+' || value[cursor] == '-') &&
-               value[cursor + 3] == ':') {
-        const auto digit = [&value](const std::size_t index) -> int {
-            return value[index] >= '0' && value[index] <= '9'
-                ? value[index] - '0' : -1;
-        };
-        const int h1 = digit(cursor + 1);
-        const int h2 = digit(cursor + 2);
-        const int m1 = digit(cursor + 4);
-        const int m2 = digit(cursor + 5);
-        if (h1 < 0 || h2 < 0 || m1 < 0 || m2 < 0) return std::nullopt;
-        const int hours = h1 * 10 + h2;
-        const int minutes = m1 * 10 + m2;
-        if (hours > 23 || minutes > 59) return std::nullopt;
-        offset_seconds = (hours * 60 + minutes) * 60;
-        if (value[cursor] == '-') offset_seconds = -offset_seconds;
-        cursor += 6;
-    } else {
-        return std::nullopt;
-    }
-    if (cursor != value.size()) return std::nullopt;
-
-#if defined(_WIN32)
-    const std::time_t seconds = _mkgmtime(&utc);
-#else
-    const std::time_t seconds = timegm(&utc);
-#endif
-    if (seconds == static_cast<std::time_t>(-1)) return std::nullopt;
-    return std::chrono::system_clock::from_time_t(seconds) + fraction -
-        std::chrono::seconds(offset_seconds);
 }
 
 }
@@ -442,15 +377,23 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
 
     // IVA Area 이벤트는 모든 채널이 아니라 해당 주차면의 채널/ROI만 증거로 저장한다.
     if (camera_event.is_iva_area_event) {
+        // ONVIF PullPoint가 실제 WiseAI Action의 단일 authoritative 입력이다.
+        // MQTT는 Hall/화재/Qt 등에 계속 사용하되 고정 IVA Publication과
+        // 카메라 native IVA MQTT를 모두 무시해 중복 상태 전이를 막는다.
+        if (config_.camera_iva_event_source == "ONVIF") return;
         if (!camera_event.protocol_valid) {
             util::logWarn("IVA protocol rejected: " +
                           camera_event.protocol_error + " topic=" + raw_topic);
             return;
         }
         std::string mapping_error;
-        const auto target = event::IvaEventResolver::resolve(
-            config_.camera_id, camera_event, parking_slot_configs_,
-            config_.iva_areas, &mapping_error);
+        const auto target = camera_event.is_smart_parking_iva
+            ? event::IvaEventResolver::resolveSmartParkingPublication(
+                  config_.camera_id, camera_event, parking_slot_configs_,
+                  config_.iva_areas, &mapping_error)
+            : event::IvaEventResolver::resolve(
+                  config_.camera_id, camera_event, parking_slot_configs_,
+                  config_.iva_areas, &mapping_error);
         if (!target) {
             util::logWarn(
                 "IVA area event rejected: " + mapping_error +
@@ -475,9 +418,53 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                 return;
             }
 
-            // Event Rule을 작동시키기 위한 고정 Publication이다. 같은 감지에서
-            // 이어지는 원본 WiseAI 메시지가 UtcTime/ObjectId를 제공하므로,
-            // 고정 메시지는 경고 없이 버리고 점유 상태를 변경하지 않는다.
+            // 고정 Publication은 실제 Action을 증명하지 못하므로 INTRUSION만
+            // 입차 보조 신호로 허용하고 EXIT/ENTER는 상태 변경에 사용하지 않는다.
+            // Publication도 설정의 원본 WiseAI binding으로 정규화해 이후
+            // 원본 Exit와 동일한 영역 식별자를 사용한다.
+            if (camera_event.action != "INTRUSION" ||
+                !camera_event.is_active) {
+                util::logInfo(
+                    "IVA custom publication ignored: non-intrusion action=" +
+                    camera_event.action + " topic=" + raw_topic);
+                return;
+            }
+            if (config_.parking_occupancy_source != "CAMERA_IVA" &&
+                config_.parking_occupancy_source != "HYBRID_OR") {
+                util::logInfo(
+                    "IVA custom intrusion ignored because occupancy source is " +
+                    config_.parking_occupancy_source);
+                return;
+            }
+            if (!iva_occupancy_handler_) {
+                util::logError("IVA occupancy handler is not configured");
+                return;
+            }
+
+            const auto received_at = std::chrono::system_clock::now();
+            event::IvaOccupancySignal signal;
+            signal.slotId = target->slotId;
+            signal.cameraId = config_.camera_id;
+            signal.channelId = target->channelId;
+            signal.videoSourceToken = target->observationVideoSourceToken;
+            signal.ruleName = target->ruleName;
+            signal.objectId = camera_event.object_id;
+            signal.action = event::IvaOccupancyAction::Intrusion;
+            signal.authoritativeExit = false;
+            signal.occupancyAuthority = true;
+            signal.sourceIdentity = stableEventIdentity(
+                raw_topic, camera_event.raw_payload,
+                target->slotId + "|" +
+                    target->observationVideoSourceToken + "|" +
+                    target->ruleName + "|INTRUSION|" +
+                    camera_event.timestamp);
+            signal.occurredAt = received_at;
+            signal.occurredAtFromSource = false;
+            if (!iva_occupancy_handler_(signal)) {
+                util::logWarn(
+                    "IVA custom intrusion was not accepted: slot=" +
+                    target->slotId + " topic=" + raw_topic);
+            }
             return;
         }
 
@@ -497,7 +484,8 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                     "topic=" + raw_topic);
                 return;
             }
-            const auto source_time = parseCameraUtc(camera_event.timestamp);
+            const auto source_time =
+                util::parseIso8601Utc(camera_event.timestamp);
             if (!source_time) {
                 util::logWarn(
                     "IVA occupancy rejected: invalid camera UtcTime topic=" +
@@ -508,7 +496,7 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
             signal.slotId = target->slotId;
             signal.cameraId = config_.camera_id;
             signal.channelId = target->channelId;
-            signal.videoSourceToken = camera_event.video_source_token;
+            signal.videoSourceToken = target->observationVideoSourceToken;
             signal.ruleName = target->ruleName;
             signal.objectId = camera_event.object_id;
             signal.action = iva_action;
@@ -516,7 +504,8 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
             signal.occupancyAuthority = true;
             signal.sourceIdentity = stableEventIdentity(
                 raw_topic, {},
-                target->slotId + "|" + camera_event.video_source_token +
+                target->slotId + "|" +
+                    target->observationVideoSourceToken +
                     "|" + target->ruleName + "|" + camera_event.action +
                     "|" + camera_event.timestamp);
             signal.occurredAt = *source_time;
@@ -543,7 +532,7 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
                 "durable handler is missing topic=" + raw_topic);
             return;
         }
-        const auto source_time = parseCameraUtc(camera_event.timestamp);
+        const auto source_time = util::parseIso8601Utc(camera_event.timestamp);
         if (!source_time) {
             util::logWarn(
                 "IVA correlation rejected: invalid camera UtcTime topic=" +
@@ -554,7 +543,8 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
         correlation_signal.slotId = target->slotId;
         correlation_signal.cameraId = config_.camera_id;
         correlation_signal.channelId = target->channelId;
-        correlation_signal.videoSourceToken = camera_event.video_source_token;
+        correlation_signal.videoSourceToken =
+            target->observationVideoSourceToken;
         correlation_signal.ruleName = target->ruleName;
         correlation_signal.objectId = camera_event.object_id;
         correlation_signal.action = iva_action;
@@ -562,7 +552,8 @@ void MqttEventBridge::processCameraEvent(event::CameraEvent camera_event) {
         correlation_signal.occupancyAuthority = false;
         correlation_signal.sourceIdentity = stableEventIdentity(
             raw_topic, camera_event.raw_payload,
-            target->slotId + "|" + camera_event.video_source_token + "|" +
+            target->slotId + "|" +
+                target->observationVideoSourceToken + "|" +
                 target->ruleName + "|" + camera_event.object_id + "|" +
                 camera_event.action + "|" + camera_event.timestamp);
         correlation_signal.occurredAt = *source_time;

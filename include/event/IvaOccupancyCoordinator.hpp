@@ -39,6 +39,8 @@ struct IvaOccupancySignal {
     // CAMERA_IVA owns occupancy.  HALL observations are correlation-only and
     // may bind only to the already committed Hall occupancy attempt.
     bool occupancyAuthority{true};
+    // camera-mqtt 또는 camera-onvif. DB/오류 로그에서 입력 경로를 구분한다.
+    std::string sourceTransport{"camera-mqtt"};
 };
 
 enum class IvaCoordinationCode {

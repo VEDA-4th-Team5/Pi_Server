@@ -182,8 +182,21 @@ AppConfig AppConfig::loadFromEnv() {
         config.parking_occupancy_source != "HYBRID_OR") {
         config.parking_occupancy_source = "HALL";
     }
+    config.camera_iva_event_source = getEnvOrLocalSetting(
+        "CAMERA_IVA_EVENT_SOURCE", "MQTT",
+        localSettingPath(".env.public"));
+    std::transform(config.camera_iva_event_source.begin(),
+                   config.camera_iva_event_source.end(),
+                   config.camera_iva_event_source.begin(),
+                   [](const unsigned char value) {
+                       return static_cast<char>(std::toupper(value));
+                   });
+    if (config.camera_iva_event_source != "MQTT" &&
+        config.camera_iva_event_source != "ONVIF") {
+        config.camera_iva_event_source = "MQTT";
+    }
     config.camera_iva_exit_confirm_ms = std::clamp(
-        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 20000),
+        getEnvIntOrDefault("CAMERA_IVA_EXIT_CONFIRM_MS", 10000),
         1000, 60000);
     config.capture_sched_enabled =
         getEnvBoolOrDefault("CAPTURE_SCHED_ENABLED", false);
@@ -215,6 +228,8 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvBoolOrDefault("CAMERA_SNAPSHOT_API_RTSP_FALLBACK", false);
     config.camera_open_api_base = getEnvOrLocalSetting(
         "CAMERA_OPEN_API_BASE", "", localSettingPath(".env.private"));
+    config.camera_onvif_event_url = getEnvOrLocalSetting(
+        "CAMERA_ONVIF_EVENT_URL", "", localSettingPath(".env.private"));
     config.camera_image_base = getEnvOrLocalSetting(
         "CAMERA_IMAGE_BASE", "", localSettingPath(".env.private"));
     config.camera_api_username = getEnvOrLocalSetting(
@@ -339,7 +354,8 @@ AppConfig AppConfig::loadFromEnv() {
     config.parking_alert_device_path = getEnvOrDefault(
         "PARKING_ALERT_DEVICE_PATH", "/dev/parking_alert");
     config.parking_alert_slot_map = getEnvOrDefault(
-        "PARKING_ALERT_SLOT_MAP", "EV01:0,EV02:1,EV03:2,EV04:3");
+        "PARKING_ALERT_SLOT_MAP",
+        "EV01:0,EV02:1,EV03:2,EV04:3,EV05:4,EV06:5,EV07:6,EV08:7");
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.snapshot_dir = resolveProjectPath("SNAPSHOT_DIR", config.snapshot_dir);
@@ -445,15 +461,16 @@ AppConfig AppConfig::loadFromEnv() {
         });
     }
 
-    // EV01~EV04는 카메라 웹 설정의 IVA Area 이름과 동일하게 두는 것이 기본이다.
+    // EV01~EV04는 CH1, EV05~EV08은 CH3의 IVA Area를 사용한다.
     // ROI 네 값이 전혀 없으면 좌표는 "미설정"으로 유지한다. SQLite에 Qt가
     // 저장한 값이 있으면 ParkingRoiSettingsService가 그것을 우선 복원한다.
-    for (int i = 1; i <= 4; ++i) {
+    for (int i = 1; i <= 8; ++i) {
         std::ostringstream slot;
         slot << "EV" << std::setw(2) << std::setfill('0') << i;
-        // 현재 설치에서는 ch01 한 영상의 네 ROI가 EV01~EV04를 담당한다.
-        // 향후 채널 확장 시 IVA_EVxx_CHANNEL_ID로 슬롯별 override한다.
-        const std::string channel = "ch01";
+        const std::string channel = i <= 4 ? "ch01" : "ch03";
+        const int snapshot_api_channel = i <= 4 ? 0 : 2;
+        const std::string default_area_name =
+            "name" + std::to_string(i);
         const std::string prefix = "IVA_" + slot.str() + "_";
         const std::string public_env_path = localSettingPath(".env.public");
         const std::string roi_x = getEnvOrLocalSetting(
@@ -470,8 +487,8 @@ AppConfig AppConfig::loadFromEnv() {
 
         config.iva_areas.push_back({
             slot.str(),
-            getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(), slot.str(),
-                                 public_env_path),
+            getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(),
+                                 default_area_name, public_env_path),
             getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel,
                                  public_env_path),
             parseDoubleOrDefault(roi_x, 0.0),
@@ -479,7 +496,8 @@ AppConfig AppConfig::loadFromEnv() {
             parseDoubleOrDefault(roi_width, 1.0),
             parseDoubleOrDefault(roi_height, 1.0),
             std::max(0, getEnvIntOrDefault(
-                (prefix + "SNAPSHOT_API_CHANNEL").c_str(), 0)),
+                (prefix + "SNAPSHOT_API_CHANNEL").c_str(),
+                snapshot_api_channel)),
             roi_configured
         });
     }

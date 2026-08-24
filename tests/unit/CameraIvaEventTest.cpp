@@ -41,9 +41,11 @@ int main() {
     bool success = true;
     const std::vector<parking::ParkingSlotConfig> slots{
         slot("EV01", "vs-0", "name1"),
-        slot("EV02", "VideoSourceToken-1", "name1")};
+        slot("EV02", "VideoSourceToken-1", "name1"),
+        slot("EV05", "vs-2", "name5")};
     const std::vector<app::IvaAreaConfig> areas{
-        area("EV01", "ch01"), area("EV02", "ch02")};
+        area("EV01", "ch01"), area("EV02", "ch02"),
+        area("EV05", "ch03")};
 
     auto first = event::CameraEventParser::parse(
         "mac/onvif-ej/IvaArea/name1/&VideoSourceToken-0", "{\"active\":true}",
@@ -121,6 +123,34 @@ int main() {
             customIntrusion.is_active &&
             customIntrusion.action == "INTRUSION",
         "custom INTRUSION publication must be parsed");
+
+    auto ch3CustomIntrusion = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-2/EV05/intrusion",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"EV05","event_type":"IVA_AREA","action":"INTRUSION","active":true})",
+        "ch01");
+    error.clear();
+    const auto ch3PublicationTarget =
+        event::IvaEventResolver::resolveSmartParkingPublication(
+            "cam01", ch3CustomIntrusion, slots, areas, &error);
+    success &= expect(
+        ch3PublicationTarget &&
+            ch3PublicationTarget->slotId == "EV05" &&
+            ch3PublicationTarget->channelId == "ch03" &&
+            ch3PublicationTarget->ruleName == "name5" &&
+            ch3PublicationTarget->observationVideoSourceToken == "vs-2",
+        "vs-2/name5 publication must resolve to CH3 EV05 and the native "
+        "vs-2 observation identity: " + error);
+
+    auto wrongCh3PublicationToken = event::CameraEventParser::parse(
+        "cam01/onvif-ej/iva/vs-1/EV05/intrusion",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-1","rule_name":"name5","slot_id":"EV05","event_type":"IVA_AREA","action":"INTRUSION","active":true})",
+        "ch01");
+    error.clear();
+    success &= expect(
+        !event::IvaEventResolver::resolveSmartParkingPublication(
+            "cam01", wrongCh3PublicationToken, slots, areas, &error) &&
+            error.find("token/channel") != std::string::npos,
+        "EV05 publication on a non-CH3 token must be rejected");
 
     auto customExit = event::CameraEventParser::parse(
         "cam01/onvif-ej/iva/vs-0/EV01/exit",

@@ -4,6 +4,7 @@
 #include "bestshot/BestShotReceiver.hpp"
 #include "camera/CameraChannel.hpp"
 #include "camera/CameraSnapshotApiClient.hpp"
+#include "camera/OnvifIvaEventSource.hpp"
 #include "camera/RtspStreamReceiver.hpp"
 #include "database/EventDatabase.hpp"
 #include "device/LinuxDriverAdapter.hpp"
@@ -12,6 +13,7 @@
 #include "event/FireAlarmEvent.hpp"
 #include "event/FireAlarmService.hpp"
 #include "event/FireDeliveryCoordinator.hpp"
+#include "event/OnvifIvaEventAdapter.hpp"
 #include "event/SystemEventReporter.hpp"
 #include "entrance/EntranceBestShotCoordinator.hpp"
 #include "entrance/EntranceEvWorker.hpp"
@@ -58,6 +60,7 @@ extern "C" {
 #include <iomanip>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -1226,6 +1229,7 @@ int main() {
 
     const sensor::SensorProtocolParser fire_line_parser;
     std::unique_ptr<device::SensorLinkManager> sensor_link;
+    std::unique_ptr<camera::OnvifIvaEventSource> onvif_iva_source;
     bool fire_alarm_service_started{};
     bool fire_delivery_coordinator_started{};
 
@@ -1246,6 +1250,7 @@ int main() {
         },
         [&] {
             sensor_link_for_led.store(nullptr, std::memory_order_release);
+            if (onvif_iva_source) onvif_iva_source->stop();
             if (sensor_link) sensor_link->stop();
         },
         [&] {
@@ -1611,6 +1616,94 @@ int main() {
         if (!http_server->start()) return shutdown_and_return(1);
     }
 
+    if (config.camera_iva_event_source == "ONVIF") {
+        if (!hall_service) {
+            util::logError(
+                "ONVIF IVA source requires the parking occupancy service");
+            return shutdown_and_return(1);
+        }
+
+        std::string event_endpoint = config.camera_onvif_event_url;
+        if (event_endpoint.empty()) {
+            if (config.camera_open_api_base.empty()) {
+                util::logError(
+                    "ONVIF IVA source requires CAMERA_ONVIF_EVENT_URL or "
+                    "CAMERA_OPEN_API_BASE");
+                return shutdown_and_return(1);
+            }
+            try {
+                event_endpoint =
+                    camera::OnvifIvaEventSource::deriveEventEndpoint(
+                        config.camera_open_api_base);
+            } catch (const std::exception& error) {
+                util::logError("ONVIF IVA endpoint configuration failed: " +
+                               std::string(error.what()));
+                return shutdown_and_return(1);
+            }
+        }
+
+        camera::OnvifIvaEventSource::Config source_config;
+        source_config.endpoint = std::move(event_endpoint);
+        source_config.username = config.camera_api_username;
+        source_config.password = config.camera_api_password;
+        for (const auto& slot : parking_slot_configs) {
+            if (!slot.enabled) continue;
+            for (const auto& binding : slot.cameraBindings) {
+                if (binding.enabled &&
+                    binding.cameraId == config.camera_id &&
+                    !binding.videoSourceToken.empty()) {
+                    source_config.acceptedVideoSourceTokens.insert(
+                        binding.videoSourceToken);
+                }
+            }
+        }
+        if (source_config.acceptedVideoSourceTokens.empty()) {
+            util::logError(
+                "ONVIF IVA source has no enabled camera token mapping");
+            return shutdown_and_return(1);
+        }
+
+        std::weak_ptr<sensor::HallParkingService> weak_hall = hall_service;
+        onvif_iva_source =
+            std::make_unique<camera::OnvifIvaEventSource>(
+                std::move(source_config),
+                [weak_hall, &config, &parking_slot_configs](
+                    const camera::OnvifIvaEvent& source_event) {
+                    std::string error;
+                    const auto signal = event::OnvifIvaEventAdapter::adapt(
+                        source_event, config, parking_slot_configs, &error);
+                    if (!signal) {
+                        util::logWarn(
+                            "ONVIF IVA event rejected: " + error +
+                            " token=" + source_event.videoSourceToken +
+                            " rule=" + source_event.ruleName +
+                            " action=" + source_event.action);
+                        return false;
+                    }
+                    util::logLine(
+                        "ONVIF_IVA",
+                        "slot=" + signal->slotId +
+                            " channel=" + signal->channelId +
+                            " token=" + signal->videoSourceToken +
+                            " rule=" + signal->ruleName +
+                            " action=" + source_event.action +
+                            " object_id=" +
+                            (source_event.objectId.empty()
+                                 ? "-" : source_event.objectId));
+                    const auto target = weak_hall.lock();
+                    return target &&
+                        target->handleCameraIvaSignal(*signal);
+                });
+        if (!onvif_iva_source->start()) {
+            util::logError("ONVIF IVA source could not be started");
+            return shutdown_and_return(1);
+        }
+        util::logInfo(
+            "camera IVA input=ONVIF PullPoint; MQTT IVA transitions disabled");
+    } else {
+        util::logInfo("camera IVA input=MQTT");
+    }
+
     // 화재와 홀센서는 같은 STM32 UART 링크를 공유하므로 하나만 열고,
     // 수신 라인을 접두사(FIRE:/SENSOR:)로 분리한다.
     if ((hall_service || fire_alarm_service) &&
@@ -1664,7 +1757,7 @@ int main() {
         sensor_link_for_led.store(sensor_link.get(), std::memory_order_release);
     }
 
-    util::logInfo("waiting for camera MQTT events...");
+    util::logInfo("waiting for camera and sensor events...");
     util::logInfo("press Ctrl+C to stop");
 
     // 실제 작업은 각 모듈의 작업 스레드가 수행하고 main은 종료 신호를 기다린다.
