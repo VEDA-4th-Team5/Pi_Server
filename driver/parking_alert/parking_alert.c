@@ -15,6 +15,7 @@
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/version.h>
 #include <linux/wait.h>
 
 #include "parking_alert.h"
@@ -267,7 +268,12 @@ static int __init parking_alert_init(void)
     if (ret)
         goto unregister_region;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
+    parking_alert.class = class_create(THIS_MODULE,
+                                       PARKING_ALERT_DEVICE_NAME);
+#else
     parking_alert.class = class_create(PARKING_ALERT_DEVICE_NAME);
+#endif
     if (IS_ERR(parking_alert.class)) {
         ret = PTR_ERR(parking_alert.class);
         goto delete_cdev;

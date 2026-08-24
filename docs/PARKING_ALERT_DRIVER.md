@@ -62,6 +62,9 @@ make -C driver/parking_alert
 
 생성 파일은 `driver/parking_alert/parking_alert.ko`다.
 
+커널 6.1의 `class_create()` API 차이와 `/dev/parking_alert` 미생성 장애 기록은
+[`TROUBLESHOOTING.md`의 TS-021](TROUBLESHOOTING.md)을 참고한다.
+
 ## 설치·자동 적재 및 권한
 
 현재 커널에 맞춰 모듈을 빌드하고 설치한 뒤, 재부팅 시 자동 적재되도록 설정한다.
