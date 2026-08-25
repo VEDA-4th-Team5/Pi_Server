@@ -27,11 +27,14 @@ void sendJson(httplib::Response& response, const nlohmann::json& body,
 int main() {
     httplib::Server server;
     std::atomic<int> generateCalls{};
+    std::atomic<int> startServerCalls{};
 
     server.Post("/opensdk/test/startserver",
-        [](const httplib::Request& request, httplib::Response& response) {
+        [&startServerCalls](const httplib::Request& request,
+                            httplib::Response& response) {
             const auto body = nlohmann::json::parse(request.body);
             require(body.at("port") == 18080, "startserver port mismatch");
+            startServerCalls.fetch_add(1);
             sendJson(response, {{"success", true}, {"http_status", 202}}, 202);
         });
     server.Get("/opensdk/test/channels",
@@ -58,10 +61,18 @@ int main() {
             require(body.at("channel") == 0, "generate channel mismatch");
             require(body.at("outputs").size() == 2,
                     "original/enhanced outputs missing");
-            if (generateCalls.fetch_add(1) == 0) {
+            const int call = generateCalls.fetch_add(1);
+            if (call == 0) {
                 sendJson(response, {
                     {"success", false}, {"error_code", "PROCESSING_BUSY"},
                     {"message", "busy"}}, 503);
+                return;
+            }
+            if (call == 1) {
+                sendJson(response, {
+                    {"success", false},
+                    {"error_code", "IMAGE_SERVER_NOT_STARTED"},
+                    {"message", "image server is stopped"}}, 409);
                 return;
             }
             sendJson(response, {
@@ -110,7 +121,10 @@ int main() {
         camera::CameraGeneratedImages images;
         require(client.generate(0, images), "generate failed: " +
                 client.lastError());
-        require(generateCalls.load() == 2, "PROCESSING_BUSY was not retried");
+        require(generateCalls.load() == 3,
+                "retryable generate failures were not retried");
+        require(startServerCalls.load() == 2,
+                "stopped image server was not restarted before retry");
         require(images.runId == "img-test-1" && images.channel == 0,
                 "run metadata mismatch");
         require(images.autoFilter == "fast_bilateral" &&
@@ -125,7 +139,8 @@ int main() {
 
         server.stop();
         serverThread.join();
-        std::cout << "[PASS] camera snapshot API discovery/generate/retry/JPEG\n";
+        std::cout << "[PASS] camera snapshot API discovery/generate/"
+                     "server-restart/retry/JPEG\n";
         return EXIT_SUCCESS;
     } catch (...) {
         server.stop();

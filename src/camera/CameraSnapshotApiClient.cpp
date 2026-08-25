@@ -230,13 +230,19 @@ bool CameraSnapshotApiClient::generate(const int channel,
             return false;
         }
         const std::string errorCode = responseJson.value("error_code", "");
+        const bool imageServerStopped = response.status == 409 &&
+            errorCode == "IMAGE_SERVER_NOT_STARTED";
         const bool retryable = response.status == 503 ||
             (response.status == 502 && errorCode == "SNAPSHOT_FAILED") ||
-            (response.status == 409 &&
-             errorCode == "IMAGE_SERVER_NOT_STARTED");
+            imageServerStopped;
         if (response.status == 200 && responseJson.value("success", false))
             break;
         if (retryable && attempt < config_.maxRetries) {
+            if (imageServerStopped) {
+                if (!startImageServer()) return false;
+                util::logWarn(
+                    "camera snapshot API image server stopped; restart requested");
+            }
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(config_.retryDelayMs));
             continue;
