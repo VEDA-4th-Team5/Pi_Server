@@ -1,6 +1,7 @@
 #include "database/EventDatabase.hpp"
 
 #include "database/db_manager.h"
+#include "util/Logger.hpp"
 
 #include <sqlite3.h>
 
@@ -199,8 +200,10 @@ bool tableHasColumn(sqlite3* database, const std::string_view table,
  *
  * @param[in] database_path 열거나 새로 만들 SQLite 파일 경로. `:memory:`도 가능하다.
  * @throws std::filesystem::filesystem_error 상위 디렉터리 생성에 실패한 경우.
- * @throws std::runtime_error DB open 또는 PRAGMA 설정에 실패한 경우.
- * @note foreign key, 3초 busy timeout, WAL 모드를 연결 생성 직후 활성화한다.
+ * @throws std::runtime_error DB open에 실패한 경우.
+ * @note 연결 단위 PRAGMA(busy_timeout/WAL/쿼리 플래너 통계/페이지 캐시)는
+ *       `open()`이 적용한다. 실패해도 예외를 던지지 않고 로그만 남긴다.
+ *       근거는 docs/PERFORMANCE_PROFILING_REPORT_1H.md 참고.
  */
 EventDatabase::EventDatabase(const std::filesystem::path& database_path) {
     const auto parent = database_path.parent_path();
@@ -213,14 +216,74 @@ EventDatabase::EventDatabase(const std::filesystem::path& database_path) {
                                  database_path.string());
     }
 
-    // 메인 서버와 타이머가 동일한 연결 정책을 공유한다.
-    try {
-        executeSqlUnlocked("PRAGMA busy_timeout = 3000;");
-        executeSqlUnlocked("PRAGMA journal_mode = WAL;");
-    } catch (...) {
-        close();
-        throw;
+    // 연결 정책은 open()이 적용한다. 과거에는 이 생성자에만 PRAGMA가 있어
+    // 기본 생성자 + open() 경로(main.cpp)에서는 한 번도 적용되지 않았다.
+}
+
+/**
+ * @brief 연결 단위 PRAGMA를 적용하고 실제 반영 여부를 검증한다.
+ *
+ * `PRAGMA journal_mode`는 전환에 실패해도 `sqlite3_exec`이 `SQLITE_OK`를
+ * 돌려주고 적용된 모드를 결과 행으로만 알려준다. 콜백 없이 호출하면 조용히
+ * 실패하므로, 여기서는 반환된 모드를 직접 읽어 확인하고 다르면 경고한다.
+ *
+ * 근거: docs/PERFORMANCE_PROFILING_REPORT_1H.md
+ */
+void EventDatabase::applyConnectionPragmasUnlocked() noexcept {
+    if (db_ == nullptr) return;
+
+    const auto exec = [this](const char* sql) noexcept -> bool {
+        char* raw_error{};
+        const int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &raw_error);
+        if (rc != SQLITE_OK) {
+            const std::string message =
+                raw_error == nullptr ? sqlite3_errmsg(db_) : raw_error;
+            util::logWarn("DB PRAGMA failed: " + std::string(sql) + " -> " +
+                          message);
+        }
+        sqlite3_free(raw_error);
+        return rc == SQLITE_OK;
+    };
+
+    // 경합 시 즉시 SQLITE_BUSY를 내지 않고 최대 3초 재시도한다. 이것이
+    // 빠져 있어 "database is locked" 오류가 반복 발생했다.
+    exec("PRAGMA busy_timeout = 3000;");
+
+    // 읽기와 쓰기가 서로를 막지 않게 한다.
+    exec("PRAGMA journal_mode = WAL;");
+
+    // OCCUPANCY_COMMAND_INBOX는 status='APPLIED'가 전체 행과 일치해 선택도가
+    // 없다. sqlite_stat1이 없으면 플래너가 이 인덱스를 골라 매 폴링마다 전
+    // 행을 훑는다(측정: 27ms/회, CPU 39%). 통계가 낡았을 때만 ANALYZE를
+    // 수행하므로 오픈 비용은 최초 1회 약 9ms, 이후 약 0ms다.
+    exec("PRAGMA optimize;");
+
+    // DB(5.3MB)가 기본 캐시(2MB)보다 커서 스캔마다 페이지가 축출되고
+    // pread64가 초당 3.4만 회 발생했다. 40MB면 당분간 전체가 상주한다.
+    exec("PRAGMA cache_size = -40000;");
+
+    // journal_mode는 조용히 실패할 수 있으므로 실제 적용값을 확인한다.
+    // `:memory:` DB는 WAL을 지원하지 않고 "memory"를 반환하는 것이 정상이다.
+    sqlite3_stmt* statement{};
+    if (sqlite3_prepare_v2(db_, "PRAGMA journal_mode;", -1, &statement,
+                           nullptr) == SQLITE_OK) {
+        if (sqlite3_step(statement) == SQLITE_ROW) {
+            const auto* text = sqlite3_column_text(statement, 0);
+            const std::string mode =
+                text == nullptr
+                    ? std::string{}
+                    : std::string(reinterpret_cast<const char*>(text));
+            if (mode == "wal" || mode == "memory") {
+                util::logInfo("DB journal_mode = " + mode);
+            } else {
+                util::logWarn(
+                    "DB journal_mode is '" + mode +
+                    "', expected 'wal'; readers and writers will block each "
+                    "other");
+            }
+        }
     }
+    sqlite3_finalize(statement);
 }
 
 /**

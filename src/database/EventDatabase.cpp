@@ -33,6 +33,10 @@ bool EventDatabase::open(const std::string& db_path) {
 
     db_ = db_native_handle();
     opened_ = true;
+    // 연결 정책은 어느 생성자를 거쳤든 항상 여기서 적용한다. 경로를 받는
+    // 생성자에만 두었을 때 기본 생성자 + open() 경로(main.cpp)가 통째로
+    // 누락됐다. 근거: docs/PERFORMANCE_PROFILING_REPORT_1H.md
+    applyConnectionPragmasUnlocked();
     util::logInfo("MVP parking DB opened: " + db_path_);
     return true;
 }

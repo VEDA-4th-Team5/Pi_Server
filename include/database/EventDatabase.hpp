@@ -384,6 +384,14 @@ public:
 
 private:
     void executeSqlUnlocked(const std::string& sql);
+    /**
+     * @brief 연결 단위 PRAGMA(busy_timeout/WAL/통계/캐시)를 적용한다.
+     *
+     * @note `db_mutex_`를 이미 보유한 상태에서만 호출한다.
+     * @note 실패해도 예외를 던지지 않는다. 모두 성능·동시성 튜닝이라
+     *       DB 열기 자체를 실패시킬 이유가 없다. 대신 로그를 남긴다.
+     */
+    void applyConnectionPragmasUnlocked() noexcept;
     static std::string readTextFile(const std::filesystem::path& path);
 
     bool opened_;
