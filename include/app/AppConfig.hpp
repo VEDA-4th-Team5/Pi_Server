@@ -114,6 +114,13 @@ struct AppConfig {
     int entrance_image_dedup_phash_threshold{10};
     bool entrance_delete_artifacts_on_success{true};
     int entrance_failure_retention_hours{24};
+    /**
+     * 종결된 OCCUPANCY_COMMAND_INBOX 행의 보존 일수.
+     *
+     * 이 테이블은 정리하지 않으면 무한히 커진다(시간당 약 184행).
+     * 근거: docs/PERFORMANCE_PROFILING_REPORT_1H.md
+     */
+    int occupancy_inbox_retention_days{30};
     int entrance_plate_match_window_minutes{30};
     double entrance_plate_match_min_confidence{0.85};
     bool entrance_ev_analysis_enabled{false};

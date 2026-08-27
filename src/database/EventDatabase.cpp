@@ -19,6 +19,9 @@ bool EventDatabase::open(const std::string& db_path) {
     // C DB manager가 전역 연결 하나를 사용하므로 모든 접근을 같은 mutex로 직렬화한다.
     std::lock_guard<std::mutex> lock(db_mutex_);
     if (opened_) {
+        // 캐시된 statement는 이전 연결에 묶여 있다. 연결을 닫기 전에
+        // finalize하지 않으면 dangling handle이 남는다.
+        clearStatementCacheUnlocked();
         db_close();
         opened_ = false;
     }
@@ -46,6 +49,8 @@ void EventDatabase::close() {
     runtime_schema_ready_ = false;
     occupancy_schema_ready_ = false;
     if (opened_) {
+        // sqlite3_close 전에 모든 statement를 finalize해야 한다.
+        clearStatementCacheUnlocked();
         db_close();
         db_ = nullptr;
         opened_ = false;

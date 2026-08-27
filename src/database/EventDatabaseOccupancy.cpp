@@ -32,7 +32,25 @@ public:
         }
     }
 
-    ~Statement() { sqlite3_finalize(statement_); }
+    /**
+     * @brief 캐시된 statement를 빌려 쓴다(비소유).
+     *
+     * `EventDatabase::cachedStatementUnlocked()`가 이미 reset/clear해서
+     * 넘겨주므로 여기서는 소유권만 구분한다.
+     */
+    Statement(sqlite3* database, sqlite3_stmt* cached) noexcept
+        : database_(database), statement_(cached), owned_(false) {}
+
+    ~Statement() {
+        if (owned_) {
+            sqlite3_finalize(statement_);
+        } else if (statement_ != nullptr) {
+            // 빌린 statement는 finalize하지 않는다. 다만 여기서 reset해
+            // 읽기 잠금과 잡고 있던 페이지를 즉시 놓아준다.
+            sqlite3_reset(statement_);
+            sqlite3_clear_bindings(statement_);
+        }
+    }
     Statement(const Statement&) = delete;
     Statement& operator=(const Statement&) = delete;
 
@@ -64,6 +82,7 @@ public:
 private:
     sqlite3* database_{};
     sqlite3_stmt* statement_{};
+    bool owned_{true};
 };
 
 std::string columnText(sqlite3_stmt* statement, const int column) {
@@ -458,6 +477,16 @@ std::size_t EventDatabase::admitDueSlotDeadlines(
     if (pending_capacity == 0) return 0;
     std::lock_guard lock(db_mutex_);
     if (!opened_ || db_ == nullptr) return 0;
+    // 액터가 50ms 주기로 호출하므로 대부분의 호출은 처리할 마감이 없다.
+    // 쓰기 트랜잭션은 RESERVED 락을 잡으므로, 할 일이 없을 때는 열지 않는다.
+    // 읽기 전용 확인이라 이후 BEGIN IMMEDIATE 구간에서 다시 검사한다.
+    {
+        Statement due_probe(db_, cachedStatementUnlocked(
+            "SELECT 1 FROM OCCUPANCY_EXIT_DEADLINE "
+            "WHERE state='SCHEDULED' AND due_at_epoch_ms<=? LIMIT 1;"));
+        due_probe.integer(1, now_epoch_ms);
+        if (sqlite3_step(due_probe.get()) == SQLITE_DONE) return 0;
+    }
     executeSqlUnlocked("BEGIN IMMEDIATE;");
     try {
         Statement count(db_,
@@ -572,7 +601,8 @@ EventDatabase::listRunnableSlotTransitionCommands(
     const std::int64_t now_epoch_ms) const {
     std::lock_guard lock(db_mutex_);
     if (!opened_ || db_ == nullptr) return {};
-    const std::string sql =
+    // 액터 루프가 한 반복에 두 번 호출한다. 캐시로 재파싱을 피한다.
+    static const std::string sql =
         "SELECT " + std::string(kCommandColumns) +
         " FROM OCCUPANCY_COMMAND_INBOX c "
         "WHERE c.status='PENDING_UNPREPARED' "
@@ -582,7 +612,7 @@ EventDatabase::listRunnableSlotTransitionCommands(
         "AND earlier.status='PENDING_UNPREPARED' "
         "AND earlier.admission_ordinal<c.admission_ordinal) "
         "ORDER BY c.admission_ordinal;";
-    Statement statement(db_, sql);
+    Statement statement(db_, cachedStatementUnlocked(sql));
     statement.integer(1, now_epoch_ms);
     statement.integer(2, now_epoch_ms);
     std::vector<parking::DurableSlotCommand> result;
@@ -622,9 +652,10 @@ std::optional<std::int64_t>
 EventDatabase::nextScheduledSlotDeadlineEpochMs() const {
     std::lock_guard lock(db_mutex_);
     if (!opened_ || db_ == nullptr) return std::nullopt;
-    Statement statement(db_,
+    // 액터 루프가 매 반복 대기 시간을 계산할 때 호출한다.
+    Statement statement(db_, cachedStatementUnlocked(
         "SELECT MIN(due_at_epoch_ms) FROM OCCUPANCY_EXIT_DEADLINE "
-        "WHERE state='SCHEDULED';");
+        "WHERE state='SCHEDULED';"));
     const int step = sqlite3_step(statement.get());
     if (step != SQLITE_ROW)
         throw std::runtime_error("occupancy deadline lookup failed");
@@ -1582,7 +1613,8 @@ EventDatabase::listPendingSlotTransitionEffects(
     const std::int64_t now_epoch_ms) const {
     std::lock_guard lock(db_mutex_);
     if (!opened_ || db_ == nullptr) return {};
-    Statement statement(db_,
+    // 액터 루프가 매 반복 호출하는 최대 빈도 쿼리다.
+    Statement statement(db_, cachedStatementUnlocked(
         "SELECT command_id,source_kind,slot_id,sensor_id,occurred_at,"
         "payload_json,occupancy_attempt_id,correlation_id,"
         "observation_generation,"
@@ -1593,7 +1625,7 @@ EventDatabase::listPendingSlotTransitionEffects(
         "WHERE earlier.slot_id=c.slot_id "
         "AND earlier.status='APPLIED' AND earlier.effect_state='PENDING' "
         "AND earlier.admission_ordinal<c.admission_ordinal) "
-        "ORDER BY c.admission_ordinal;");
+        "ORDER BY c.admission_ordinal;"));
     statement.integer(1, now_epoch_ms);
     std::vector<parking::CommittedOccupancyTransition> effects;
     for (;;) {
@@ -1709,6 +1741,36 @@ std::size_t EventDatabase::pendingSlotTransitionDrainCount(
         throw std::runtime_error("occupancy drain count failed");
     return static_cast<std::size_t>(
         std::max<std::int64_t>(0, sqlite3_column_int64(statement.get(), 0)));
+}
+
+std::size_t EventDatabase::purgeSettledSlotTransitionCommands(
+    const std::int64_t created_before_epoch_ms,
+    const std::size_t batch_limit) noexcept {
+    if (batch_limit == 0) return 0;
+    try {
+        std::lock_guard lock(db_mutex_);
+        if (!opened_ || db_ == nullptr) return 0;
+        // created_at은 CURRENT_TIMESTAMP가 넣는 UTC 'YYYY-MM-DD HH:MM:SS'
+        // 문자열이므로 같은 형식으로 변환해 비교한다.
+        //
+        // 한 번에 지우는 양을 batch_limit으로 묶어 db_mutex_ 보유 시간을
+        // 제한한다. 유입이 시간당 약 184행이므로 한 배치로도 충분히 따라간다.
+        Statement statement(db_,
+            "DELETE FROM OCCUPANCY_COMMAND_INBOX WHERE command_id IN ("
+            "SELECT command_id FROM OCCUPANCY_COMMAND_INBOX "
+            "WHERE status='APPLIED' "
+            "AND effect_state IN ('NONE','APPLIED') "
+            "AND created_at < strftime('%Y-%m-%d %H:%M:%S',?/1000,"
+            "'unixepoch') "
+            "ORDER BY admission_ordinal LIMIT ?);");
+        statement.integer(1, created_before_epoch_ms);
+        statement.integer(2, static_cast<std::int64_t>(batch_limit));
+        done(db_, statement.get());
+        const int changes = sqlite3_changes(db_);
+        return static_cast<std::size_t>(std::max(0, changes));
+    } catch (...) {
+        return 0;
+    }
 }
 
 }  // namespace database

@@ -54,6 +54,19 @@ public:
         std::size_t transportAdmissionCapacity{16};
         std::size_t durablePendingCapacity{100};
         std::chrono::milliseconds retryDelay{50};
+        /**
+         * 종결된 INBOX 행의 보존 기간. 0이면 정리를 하지 않는다.
+         *
+         * 이 테이블은 정리하지 않으면 무한히 커진다(시간당 약 184행). 쿼리
+         * 플래너 통계가 있으면 인덱스가 비용을 가려주지만, 테이블이 페이지
+         * 캐시를 넘어서면 다시 느려진다.
+         * 근거: docs/PERFORMANCE_PROFILING_REPORT_1H.md
+         */
+        std::chrono::hours retentionPeriod{24 * 30};
+        /** 정리 실행 간격. 매 반복마다 돌리지 않는다. */
+        std::chrono::minutes purgeInterval{60};
+        /** 1회 정리에서 지울 최대 행 수. 잠금 보유 시간을 제한한다. */
+        std::size_t purgeBatchSize{2000};
         std::function<void(SlotActorCheckpoint)> checkpoint;
     };
 
@@ -84,6 +97,14 @@ private:
     bool processRunnable(std::int64_t nowEpochMs);
     bool processDueDeadlines(std::int64_t nowEpochMs);
     bool processEffects(std::int64_t nowEpochMs);
+    /**
+     * @brief 정리 간격이 지났으면 종결 INBOX 행을 한 배치 삭제한다.
+     *
+     * 워커 스레드에서만 호출되므로 별도 동기화가 필요 없다. 진행 여부를
+     * 반환하지 않는다 — 정리는 액터의 작업 진행(progress)이 아니므로
+     * 폴링 대기를 건너뛰게 만들면 안 된다.
+     */
+    void purgeSettledIfDue(std::int64_t nowEpochMs);
     [[nodiscard]] static std::int64_t nowEpochMs();
 
     database::SessionTransitionStore& store_;
@@ -98,6 +119,8 @@ private:
     std::unordered_map<std::string, std::string> ingress_identity_index_;
     std::size_t ingress_size_{};
     std::uint64_t next_transport_ordinal_{};
+    /** 마지막 정리 시각(epoch ms). 0이면 아직 한 번도 돌지 않았다. */
+    std::int64_t last_purge_epoch_ms_{};
     bool admitting_{};
     bool deadline_admitting_{};
     bool started_{};

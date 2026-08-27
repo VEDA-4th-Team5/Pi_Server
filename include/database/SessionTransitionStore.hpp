@@ -47,6 +47,9 @@ public:
     [[nodiscard]] std::size_t pendingEffectCount() const;
     [[nodiscard]] std::size_t pendingDrainCount(
         std::int64_t shutdownCutoffEpochMs) const;
+    /** @brief 보존 기간이 지난 종결 INBOX 행을 한 배치 삭제하고 건수를 돌려준다. */
+    std::size_t purgeSettled(std::int64_t createdBeforeEpochMs,
+                             std::size_t batchLimit) noexcept;
 
 private:
     EventDatabase& database_;

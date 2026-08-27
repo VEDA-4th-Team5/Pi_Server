@@ -220,6 +220,36 @@ EventDatabase::EventDatabase(const std::filesystem::path& database_path) {
     // 기본 생성자 + open() 경로(main.cpp)에서는 한 번도 적용되지 않았다.
 }
 
+sqlite3_stmt* EventDatabase::cachedStatementUnlocked(
+    const std::string_view sql) const {
+    if (db_ == nullptr)
+        throw std::runtime_error("statement cache requires an open database");
+    std::string key{sql};
+    if (const auto hit = statement_cache_.find(key);
+        hit != statement_cache_.end()) {
+        // 이전 실행이 중간에 멈췄을 수 있으므로 항상 초기 상태로 되돌린다.
+        sqlite3_reset(hit->second);
+        sqlite3_clear_bindings(hit->second);
+        return hit->second;
+    }
+    sqlite3_stmt* statement{};
+    if (sqlite3_prepare_v2(db_, sql.data(), static_cast<int>(sql.size()),
+                           &statement, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("SQLite cached prepare failed: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    statement_cache_.emplace(std::move(key), statement);
+    return statement;
+}
+
+void EventDatabase::clearStatementCacheUnlocked() noexcept {
+    for (auto& [sql, statement] : statement_cache_) {
+        (void)sql;
+        sqlite3_finalize(statement);
+    }
+    statement_cache_.clear();
+}
+
 /**
  * @brief 연결 단위 PRAGMA를 적용하고 실제 반영 여부를 검증한다.
  *
@@ -259,8 +289,13 @@ void EventDatabase::applyConnectionPragmasUnlocked() noexcept {
     exec("PRAGMA optimize;");
 
     // DB(5.3MB)가 기본 캐시(2MB)보다 커서 스캔마다 페이지가 축출되고
-    // pread64가 초당 3.4만 회 발생했다. 40MB면 당분간 전체가 상주한다.
-    exec("PRAGMA cache_size = -40000;");
+    // pread64가 초당 3.4만 회 발생했다.
+    //
+    // 상한값이라 실제 사용량은 실제로 읽은 페이지만큼이다. 인덱스가 제대로
+    // 선택되는 한 이 상한에 도달하지 않는다. 보존 30일 정상상태에서
+    // OCCUPANCY_COMMAND_INBOX가 약 13만 행(DB 약 70MB)까지 자랄 수 있어,
+    // 플랜이 퇴화하더라도 전체가 상주할 수 있도록 여유를 둔다.
+    exec("PRAGMA cache_size = -80000;");
 
     // journal_mode는 조용히 실패할 수 있으므로 실제 적용값을 확인한다.
     // `:memory:` DB는 WAL을 지원하지 않고 "memory"를 반환하는 것이 정상이다.

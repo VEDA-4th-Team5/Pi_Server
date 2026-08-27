@@ -145,6 +145,8 @@ HallParkingService::HallParkingService(
            .durablePendingCapacity = static_cast<std::size_t>(
                 std::max(1, app_config.parking_hall_work_queue_capacity)),
             .retryDelay = std::chrono::milliseconds(50),
+            .retentionPeriod = std::chrono::hours(
+                24 * std::max(1, app_config.occupancy_inbox_retention_days)),
             .checkpoint = std::move(actor_checkpoint)},
            [this](const parking::CommittedOccupancyTransition& transition) {
               return applyCommittedEffects(transition);
