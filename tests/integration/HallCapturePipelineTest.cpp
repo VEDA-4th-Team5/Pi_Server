@@ -57,7 +57,7 @@ int main() {
     try {
         database::EventDatabase database(root / "parking.sqlite3");
         const fs::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-        database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+        database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
         database.migrateRuntimeSchema();
 
         std::atomic<bool> running{true};

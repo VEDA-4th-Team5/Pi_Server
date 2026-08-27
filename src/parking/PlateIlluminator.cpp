@@ -109,6 +109,9 @@ PlateIlluminator::Scope PlateIlluminator::illuminate(
     const CaptureRequest& request,
     const std::chrono::system_clock::time_point now) {
     if (!config_.enabled || !sender_ || request.sensorId.empty()) return {};
+    // IVA-only slots have no addressable STM32 Hall node. Their virtual
+    // occupancy source must never be serialized as an ALERT sensor field.
+    if (request.sensorId.rfind("IVA:", 0) == 0) return {};
     if (!needsLight(request, now)) return {};
 
     const std::uint32_t sequence = ++sequence_;

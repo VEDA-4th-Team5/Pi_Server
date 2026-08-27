@@ -4,6 +4,7 @@
 #include "parking_timer/TimerManager.hpp"
 #include "parking_timer/Types.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -92,7 +93,7 @@ bool waitUntil(Predicate predicate, const std::chrono::milliseconds timeout) {
  */
 void initialize(EventDatabase& database) {
     const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+    database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
 }
 
 /**
@@ -217,6 +218,67 @@ void testExistingCameraSessionScheduling() {
                 "both EV timers were not retained");
         require(database.listLogs().size() == 2,
                 "timer integration inserted a duplicate parking session");
+    }
+    removeDatabaseFiles(path);
+}
+
+void testNormalSlotSkipsEvViolationAndTimerPolicy() {
+    const auto path = temporaryDatabase("normal_slot_policy");
+    {
+        EventDatabase database(path);
+        initialize(database);
+        parking_timer::EventManager events;
+        std::vector<std::string> published;
+        events.setPublisher(
+            [&published](const std::string_view event_type, std::int64_t,
+                         std::string_view, std::string_view,
+                         std::string_view, std::string_view) {
+                published.emplace_back(event_type);
+                return true;
+            });
+        parking_timer::ParkingSlotManager slots(database, events, 60ms);
+        require(slots.start(), "normal-slot timer worker did not start");
+
+        int camera_session = -1;
+        require(database.createEntryWithBestShot(
+                    "P01", "normal-entry.jpg", "normal-object",
+                    &camera_session),
+                "normal camera session setup failed");
+        require(database.applyPlateOcr(
+                    camera_session, "P01", "normal-entry.jpg",
+                    "345다6789", 0.98) == "NON_EV",
+                "normal-slot fixture was not classified as NON_EV");
+        const auto recognized = slots.handleRecognizedSession(
+            camera_session, "P01", "345다6789");
+        require(recognized.accepted &&
+                    recognized.category ==
+                        parking_timer::VehicleCategory::NonEv,
+                "normal-slot NON_EV recognition was rejected");
+        require(slots.pendingTimerCount() == 0,
+                "normal-slot recognition scheduled an EV overstay timer");
+        const auto camera_record = database.findLogById(camera_session);
+        require(camera_record && camera_record->status == "ACTIVE" &&
+                    !camera_record->violation_at.has_value(),
+                "normal-slot NON_EV recognition became a violation");
+        require(std::find(published.begin(), published.end(),
+                          "PLATE_RECOGNIZED") != published.end() &&
+                    std::find(published.begin(), published.end(),
+                              "NON_EV_ALERT") == published.end(),
+                "normal-slot recognition emitted the wrong event policy");
+
+        const auto direct = slots.handleEntry("P02", "123가4567");
+        require(direct.accepted && direct.log_id.has_value() &&
+                    slots.pendingTimerCount() == 0,
+                "normal direct entry scheduled an EV overstay timer");
+        require(slots.restoreActiveSessions() == 0,
+                "normal active sessions were restored into EV timers");
+        require(slots.updateParkingTimeout(120ms) == 0,
+                "normal active sessions were rescheduled as EV timers");
+        std::this_thread::sleep_for(150ms);
+        const auto direct_record = database.findLogById(*direct.log_id);
+        require(direct_record && direct_record->status == "PARKED" &&
+                    !direct_record->violation_at.has_value(),
+                "normal slot became a time-based EV violation");
     }
     removeDatabaseFiles(path);
 }
@@ -456,6 +518,7 @@ int main() {
     try {
         testEntryViolationAndExit();
         testExistingCameraSessionScheduling();
+        testNormalSlotSkipsEvViolationAndTimerPolicy();
         testTimerRequiresExplicitStart();
         testEarlierDeadlineWakesWorker();
         testWorkerContainsCallbackExceptions();

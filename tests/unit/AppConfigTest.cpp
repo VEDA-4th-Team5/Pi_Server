@@ -143,26 +143,26 @@ int main() {
                           "rtsp://camera/1/profile2/media.smp",
                   "CAMERA_RTSP_CH2 must create the physical CH2 RTSP input");
     ok &= require(config.iva_areas.size() == 8,
-                  "EV01 through EV08 IVA mappings must be configured");
+                  "EV01~EV04 and P01~P04 IVA mappings must be configured");
     if (config.iva_areas.size() == 8) {
         const auto& ev01 = config.iva_areas[0];
-        const auto& ev05 = config.iva_areas[4];
-        const auto& ev08 = config.iva_areas[7];
+        const auto& p01 = config.iva_areas[4];
+        const auto& p04 = config.iva_areas[7];
         ok &= require(ev01.slot_id == "EV01" &&
                           ev01.area_name == "name1" &&
                           ev01.channel_id == "ch01" &&
                           ev01.snapshot_api_channel == 0,
                       "EV01 must use CH1/name1/Snapshot channel 0");
-        ok &= require(ev05.slot_id == "EV05" &&
-                          ev05.area_name == "name5" &&
-                          ev05.channel_id == "ch03" &&
-                          ev05.snapshot_api_channel == 2,
-                      "EV05 must use CH3/name5/Snapshot channel 2");
-        ok &= require(ev08.slot_id == "EV08" &&
-                          ev08.area_name == "name8" &&
-                          ev08.channel_id == "ch03" &&
-                          ev08.snapshot_api_channel == 2,
-                      "EV08 must use CH3/name8/Snapshot channel 2");
+        ok &= require(p01.slot_id == "P01" &&
+                          p01.area_name == "name5" &&
+                          p01.channel_id == "ch03" &&
+                          p01.snapshot_api_channel == 2,
+                      "P01 must use CH3/name5/Snapshot channel 2");
+        ok &= require(p04.slot_id == "P04" &&
+                          p04.area_name == "name8" &&
+                          p04.channel_id == "ch03" &&
+                          p04.snapshot_api_channel == 2,
+                      "P04 must use CH3/name8/Snapshot channel 2");
     }
 
     clearValue("PARKING_SLOT_CONFIG");

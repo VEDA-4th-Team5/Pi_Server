@@ -155,9 +155,24 @@ ParkingSlotConfig parseSlot(const Json& object, std::size_t index) {
         }
     }
 
-    if (config.enabled && config.sensorId.empty()) {
+    bool hasEnabledCameraBinding = false;
+    for (const auto& binding : config.cameraBindings) {
+        if (binding.enabled) {
+            hasEnabledCameraBinding = true;
+            break;
+        }
+    }
+    if (config.enabled && config.sensorId.empty() &&
+        !hasEnabledCameraBinding) {
         throw std::runtime_error(
-            context + ": enabled slot requires non-empty sensor_id");
+            context + ": enabled slot requires sensor_id or an enabled "
+                      "camera binding");
+    }
+    if (config.enabled && config.zoneType != "ev_charging" &&
+        config.zoneType != "normal") {
+        throw std::runtime_error(
+            context + ": enabled slot zone_type must be 'ev_charging' or "
+                      "'normal'");
     }
 
     return config;
@@ -206,7 +221,7 @@ std::vector<ParkingSlotConfig> ParkingSlotConfigLoader::parse(
                 "duplicate slot_id: " + config.slotId);
         }
 
-        if (config.enabled &&
+        if (config.enabled && !config.sensorId.empty() &&
             !enabledSensorIds.insert(config.sensorId).second) {
             throw std::runtime_error(
                 "duplicate sensor_id among enabled slots: " +

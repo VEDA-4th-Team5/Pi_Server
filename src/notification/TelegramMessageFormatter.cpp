@@ -1,9 +1,14 @@
 #include "notification/TelegramMessageFormatter.hpp"
 
+#include "util/TimeUtil.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -28,8 +33,27 @@ std::string stringField(const nlohmann::json& document,
 std::string displayTimestamp(const nlohmann::json& document) {
     std::string timestamp = stringField(document, "timestamp");
     if (timestamp.empty()) timestamp = stringField(document, "occurred_at");
-    if (timestamp.size() > 10 && timestamp[10] == 'T') timestamp[10] = ' ';
-    return timestamp;
+    if (timestamp.empty()) return {};
+
+    const auto utc = util::parseIso8601Utc(timestamp);
+    if (!utc) {
+        if (timestamp.size() > 10 && timestamp[10] == 'T') timestamp[10] = ' ';
+        return timestamp;
+    }
+
+    // 대한민국은 일광절약시간을 사용하지 않으므로, 서버의 TZ 설정과
+    // 무관하게 Telegram 운영 메시지는 UTC+09:00으로 고정해 표시한다.
+    const auto korea = *utc + std::chrono::hours(9);
+    const std::time_t seconds = std::chrono::system_clock::to_time_t(korea);
+    std::tm value{};
+#if defined(_WIN32)
+    gmtime_s(&value, &seconds);
+#else
+    gmtime_r(&seconds, &value);
+#endif
+    std::ostringstream output;
+    output << std::put_time(&value, "%Y-%m-%d %H:%M:%S KST");
+    return output.str();
 }
 
 void appendField(std::ostringstream& output,

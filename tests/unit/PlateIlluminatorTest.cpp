@@ -198,6 +198,16 @@ void missingSensorIdSkipsLed() {
     require(recorder.sent().empty(), "no sensor id means no command");
 }
 
+void virtualIvaSourceSkipsLed() {
+    Recorder recorder;
+    parking::CaptureRequest request = requestFor("42");
+    request.sensorId = "IVA:EV01";
+    require(!recorder->illuminate(request, atHour(22)).lit(),
+            "an IVA-only slot must not address an STM32 LED");
+    require(recorder.sent().empty(),
+            "a virtual IVA source must send no ALERT command");
+}
+
 // 가드를 옮겨도 소등은 정확히 한 번만 일어나야 한다.
 void movedScopeTurnsOffExactlyOnce() {
     Recorder recorder;
@@ -228,6 +238,7 @@ int main() {
         disabledIlluminatorStaysSilent();
         failedSendReportsNoBeam();
         missingSensorIdSkipsLed();
+        virtualIvaSourceSkipsLed();
         movedScopeTurnsOffExactlyOnce();
         std::cout << "PlateIlluminatorTest passed\n";
         return EXIT_SUCCESS;

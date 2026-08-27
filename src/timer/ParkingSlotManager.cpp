@@ -12,6 +12,20 @@
 namespace parking_timer {
 namespace {
 
+enum class SlotPolicy { EvCharging, Normal };
+
+SlotPolicy loadSlotPolicy(EventDatabase& store,
+                          const std::string& slot_id) {
+    database::ParkingSlotView slot;
+    if (!store.getParkingSlot(slot_id, slot)) {
+        throw std::runtime_error("parking slot policy is missing: " + slot_id);
+    }
+    if (slot.slot_type == "EV_CHARGING") return SlotPolicy::EvCharging;
+    if (slot.slot_type == "NORMAL") return SlotPolicy::Normal;
+    throw std::runtime_error("unsupported parking slot type: " +
+                             slot.slot_type + " slot=" + slot_id);
+}
+
 std::optional<std::chrono::system_clock::time_point> parseUtc(
     const std::string& value) {
     if (value.size() < 19) return std::nullopt;
@@ -108,6 +122,7 @@ EntryResult ParkingSlotManager::handleEntry(const std::string& slot_id,
 
     // 입차가 만료/출차 처리와 섞여 같은 구역에 모순된 상태를 만들지 않도록 직렬화한다.
     std::lock_guard transition_lock(transition_mutex_);
+    const auto slot_policy = loadSlotPolicy(database_, slot_id);
     const auto category = database_.classifyVehicle(car_number);
     const auto now = utcNow();
     // 미등록 차량은 정책이 정해지지 않았으므로 자동 타이머 대신 관리자 확인으로 보낸다.
@@ -116,7 +131,8 @@ EntryResult ParkingSlotManager::handleEntry(const std::string& slot_id,
                               "manual confirmation required");
         return {false, category, std::nullopt, "vehicle is not registered"};
     }
-    if (category == VehicleCategory::NonEv) {
+    if (slot_policy == SlotPolicy::EvCharging &&
+        category == VehicleCategory::NonEv) {
         (void)events_.publish("NON_EV_ALERT", slot_id, car_number, now,
                               "not scheduled in the EV overtime timer");
         return {false, category, std::nullopt, "non-EV vehicle"};
@@ -134,6 +150,13 @@ EntryResult ParkingSlotManager::handleEntry(const std::string& slot_id,
                                  : image_path_1;
     // DB 세션 ID를 먼저 얻어 큐 노드가 slot_id가 아닌 불변 log_id를 참조하게 한다.
     const auto log_id = database_.insertParked(car_number, slot_id, now, first_image);
+    if (slot_policy == SlotPolicy::Normal) {
+        (void)events_.publish(
+            "ARRIVAL", slot_id, car_number, now,
+            "normal parking session inserted; overstay timer not required",
+            log_id);
+        return {true, category, log_id, "normal slot; timer not required"};
+    }
     try {
         timers_.schedule(log_id, slot_id, car_number, parking_timeout_);
         scheduled_session_ids_.insert(log_id);
@@ -171,11 +194,20 @@ EntryResult ParkingSlotManager::handleRecognizedSession(
             "session is missing, mismatched, or already ended");
         return {false, category, session_id, "session is not active"};
     }
+    const auto slot_policy = loadSlotPolicy(database_, slot_id);
     if (category == VehicleCategory::Unknown) {
         (void)events_.publish(
             "UNKNOWN_VEHICLE", slot_id, car_number, now,
             "manual confirmation required; timer not started");
         return {false, category, session_id, "vehicle is not registered"};
+    }
+    if (slot_policy == SlotPolicy::Normal) {
+        (void)events_.publish(
+            "PLATE_RECOGNIZED", slot_id, car_number, now,
+            "normal parking slot; EV violation and overstay timer not applied",
+            session_id);
+        return {true, category, session_id,
+                "normal slot; timer not required"};
     }
     if (category == VehicleCategory::NonEv) {
         // 전기차 전용면의 일반 차량은 OCR 확정 시점에 즉시 위반으로 전환한다.
@@ -213,6 +245,10 @@ std::size_t ParkingSlotManager::restoreActiveSessions() {
             (record.status != "PARKED" && record.status != "ACTIVE")) {
             continue;
         }
+        if (loadSlotPolicy(database_, record.slot_id) !=
+            SlotPolicy::EvCharging) {
+            continue;
+        }
         const auto result = handleRecognizedSession(
             record.id, record.slot_id, record.car_number);
         if (result.accepted) ++restored;
@@ -231,6 +267,10 @@ std::size_t ParkingSlotManager::updateParkingTimeout(
     for (const auto& record : database_.listLogs()) {
         if (record.departed_at.has_value() || record.car_number.empty() ||
             (record.status != "PARKED" && record.status != "ACTIVE")) {
+            continue;
+        }
+        if (loadSlotPolicy(database_, record.slot_id) !=
+            SlotPolicy::EvCharging) {
             continue;
         }
         const auto category = database_.classifyVehicle(record.car_number);

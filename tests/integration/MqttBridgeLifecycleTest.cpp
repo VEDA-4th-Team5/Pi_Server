@@ -583,9 +583,9 @@ void testCh3PublicationSharesNativeWiseAiAreaIdentity() {
     config.fire_alarm_enabled = false;
     config.parking_occupancy_source = "HYBRID_OR";
     config.iva_areas.push_back(
-        {"EV05", "name5", "ch03", 0.0, 0.0, 1.0, 1.0, 2, true});
+        {"P01", "name5", "ch03", 0.0, 0.0, 1.0, 1.0, 2, true});
     std::vector<parking::ParkingSlotConfig> slots{
-        {"EV05", true, "EV", "hall-ev05",
+        {"P01", true, "normal", "HALL05",
          {{"cam01", "vs-2", "name5", true, 0}}}};
     std::vector<std::shared_ptr<camera::CameraChannel>> channels;
     database::EventDatabase database;
@@ -612,10 +612,10 @@ void testCh3PublicationSharesNativeWiseAiAreaIdentity() {
     require(bridge.start(), "CH3 publication bridge failed to start");
 
     fake->emitRaw(
-        "cam01/onvif-ej/iva/vs-2/EV05/intrusion",
-        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"EV05","event_type":"IVA_AREA","action":"INTRUSION","active":true})");
+        "cam01/onvif-ej/iva/vs-2/P01/intrusion",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"P01","event_type":"IVA_AREA","action":"INTRUSION","active":true})");
     require(received.size() == 1 &&
-                received[0].slotId == "EV05" &&
+                received[0].slotId == "P01" &&
                 received[0].channelId == "ch03" &&
                 received[0].videoSourceToken == "vs-2" &&
                 received[0].ruleName == "name5" &&
@@ -624,12 +624,12 @@ void testCh3PublicationSharesNativeWiseAiAreaIdentity() {
                 !received[0].authoritativeExit &&
                 !received[0].occurredAtFromSource &&
                 coordination[0] == event::IvaCoordinationCode::Occupied,
-            "vs-2 custom intrusion was not normalized to EV05 native area");
+            "vs-2 custom intrusion was not normalized to P01 native area");
 
     // 고정 Publication EXIT는 카메라 실제 Action의 증거가 아니므로 무시한다.
     fake->emitRaw(
-        "cam01/onvif-ej/iva/vs-2/EV05/exit",
-        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"EV05","event_type":"IVA_AREA","action":"EXIT","active":false})");
+        "cam01/onvif-ej/iva/vs-2/P01/exit",
+        R"({"schema":"smart-parking-iva-v1","camera_id":"cam01","video_source_token":"vs-2","rule_name":"name5","slot_id":"P01","event_type":"IVA_AREA","action":"EXIT","active":false})");
     require(received.size() == 1,
             "custom EXIT must not alter CH3 occupancy");
 
@@ -648,7 +648,7 @@ void testCh3PublicationSharesNativeWiseAiAreaIdentity() {
         nativeTopic,
         R"({"UtcTime":"2026-08-24T03:10:10.000Z","Source":{"VideoSourceToken":"vs-2","RuleName":"name5"},"Data":{"State":"true","ObjectId":"9001","Action":"Exit"}})");
     require(received.size() == 3 &&
-                received.back().slotId == "EV05" &&
+                received.back().slotId == "P01" &&
                 received.back().channelId == "ch03" &&
                 received.back().videoSourceToken == "vs-2" &&
                 received.back().action == event::IvaOccupancyAction::Exit &&
@@ -656,7 +656,7 @@ void testCh3PublicationSharesNativeWiseAiAreaIdentity() {
                 received.back().occurredAtFromSource &&
                 coordination.back() ==
                     event::IvaCoordinationCode::ExitPending,
-            "native vs-2/name5 Exit did not clear the CH3 EV05 area");
+            "native vs-2/name5 Exit did not clear the CH3 P01 area");
 
     require(bridge.stop(), "CH3 publication bridge stop failed");
 }
@@ -677,7 +677,7 @@ void testProductionBridgeAndActorOrderBothSidesOfDeadline() {
 
     database::EventDatabase database(temporary.path / "parking.sqlite3");
     const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+    database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
 
     auto channel = std::make_shared<camera::CameraChannel>();
     channel->camera_id = "cam01";

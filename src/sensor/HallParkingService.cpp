@@ -24,6 +24,16 @@ const app::IvaAreaConfig* findArea(const app::AppConfig& config,
     return nullptr;
 }
 
+const parking::ParkingSlotConfig* findSlotConfig(
+    const std::vector<parking::ParkingSlotConfig>& slots,
+    const std::string& slot_id) {
+    const auto found = std::find_if(
+        slots.begin(), slots.end(), [&slot_id](const auto& slot) {
+            return slot.slotId == slot_id;
+        });
+    return found == slots.end() ? nullptr : &*found;
+}
+
 std::shared_ptr<camera::CameraChannel> findChannel(
     const std::vector<std::shared_ptr<camera::CameraChannel>>& channels,
     const std::string& channel_id) {
@@ -52,6 +62,10 @@ std::string stableHash(const std::string_view value) {
 std::string areaKey(const event::IvaOccupancySignal& signal) {
     return signal.cameraId + "|" + signal.videoSourceToken + "|" +
            signal.ruleName;
+}
+
+std::string ivaOccupancySourceId(const std::string& slot_id) {
+    return "IVA:" + slot_id;
 }
 
 const char* actionName(const event::IvaOccupancyAction action) {
@@ -289,6 +303,9 @@ parking::SlotTransitionCommand HallParkingService::makeCameraCommand(
     command.commandId = "camera:" + stableHash(source_identity);
     command.kind = parking::SlotCommandKind::CameraObservation;
     command.slotId = signal.slotId;
+    // Keep the durable fact compatible with camera commands admitted before
+    // virtual IVA source IDs existed. The effect projection below supplies
+    // the non-empty runtime source required by ParkingOccupancySession.
     command.sensorId = slot == slot_configs_.end() ? std::string{}
                                                     : slot->sensorId;
     command.sourceIdentity = source_identity;
@@ -424,18 +441,36 @@ bool HallParkingService::applyCommittedEffects(
         const auto started_monotonic = steady_now - elapsed;
 
         transition.code = parking::ParkingTransitionCode::SessionStarted;
+        const std::string occupancy_source_id =
+            committed.sensorId.empty() &&
+                    committed.sourceKind ==
+                        parking::SlotCommandKind::CameraObservation
+                ? ivaOccupancySourceId(committed.slotId)
+                : committed.sensorId;
         transition.session.emplace(
-            transition.sessionId, committed.slotId, committed.sensorId,
+            transition.sessionId, committed.slotId, occupancy_source_id,
             started_system, started_monotonic);
         if (transition_sink_) transition_sink_(transition);
 
-        if (!evidence_worker_.scheduleSession({
-                committed.sessionId, committed.slotId, channel,
-                {},
-                started_monotonic, area->snapshot_api_channel})) {
+        const auto* slot = findSlotConfig(slot_configs_, committed.slotId);
+        if (!slot) {
             report(::event::SystemEventCode::SensorHandlerFailed,
                    ::event::SystemEventSeverity::Error,
-                   "evidence capture scheduling failed after occupancy commit; "
+                   "no slot policy for committed occupied slot",
+                   committed.sourceTransport, committed.slotId);
+            return false;
+        }
+        parking::EvidenceCaptureRequest evidence_request{
+            committed.sessionId, committed.slotId, channel, {},
+            started_monotonic, area->snapshot_api_channel};
+        const bool scheduled = slot->zoneType == "normal"
+            ? evidence_worker_.scheduleParkingEntry(
+                  std::move(evidence_request))
+            : evidence_worker_.scheduleSession(std::move(evidence_request));
+        if (!scheduled) {
+            report(::event::SystemEventCode::SensorHandlerFailed,
+                   ::event::SystemEventSeverity::Error,
+                   "parking image capture scheduling failed after occupancy commit; "
                    "session retained for retry",
                    committed.sourceTransport, committed.slotId);
             return false;
@@ -448,6 +483,15 @@ bool HallParkingService::applyCommittedEffects(
 
     if (committed.code != parking::CommittedOccupancyCode::SessionEnded)
         return true;
+
+    const auto* slot = findSlotConfig(slot_configs_, committed.slotId);
+    if (!slot) {
+        report(::event::SystemEventCode::SensorHandlerFailed,
+               ::event::SystemEventSeverity::Error,
+               "no slot policy for committed vacant slot",
+               committed.sourceTransport, committed.slotId);
+        return false;
+    }
 
     const auto departed = timer_manager_.handleCommittedExit(
         committed.sessionId, committed.slotId);
@@ -470,7 +514,10 @@ bool HallParkingService::applyCommittedEffects(
         "lazily canceled",
         departed->id);
     bool cleanup_published = true;
-    if (!departed->violation_at.has_value()) {
+    // 일반 주차면은 입차 시점 증거 한 장이 유일한 기록이므로 출차 후에도
+    // 보존한다. EV 충전면의 기존 조기 출차 임시 이미지 정리 정책은 유지한다.
+    if (slot->zoneType != "normal" &&
+        !departed->violation_at.has_value()) {
         if (!removeEarlyDepartureImages(departed->id)) return false;
         cleanup_published = event_manager_.publish(
             "EARLY_DEPARTURE_IMAGES_DELETED", committed.slotId,

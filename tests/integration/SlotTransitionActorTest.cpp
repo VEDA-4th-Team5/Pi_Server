@@ -159,7 +159,7 @@ private:
 
 void initialize(database::EventDatabase& database) {
     const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+    database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
 }
 
 parking::SlotTransitionActor::Config actorConfig() {
@@ -1893,8 +1893,8 @@ void testInitializeMigratesOldDatabaseAndIsIdempotent() {
         "'P01','2026-08-11 00:00:00','ACTIVE');");
 
     const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
-    database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+    database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
+    database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
     require(probe.integer(
                 "SELECT COUNT(*) FROM pragma_table_info('PARKING_SESSION') "
                 "WHERE name IN ('occupancy_attempt_id','entry_command_id',"

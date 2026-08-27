@@ -41,6 +41,7 @@ bool writeBytes(const fs::path& path,
 }
 
 std::string stageDirectoryName(const std::string& value) {
+    if (value == "PARKING_ENTRY_IMAGE") return "parking_entry";
     if (value == "OCCUPANCY_START_EVIDENCE") return "occupancy_start";
     if (value == "OVERSTAY_EVIDENCE") return "overstay";
     // 점유 감지는 Hall 또는 IVA가 시작할 수 있으므로 저장 경로에는

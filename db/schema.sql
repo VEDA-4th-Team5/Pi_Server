@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS VEHICLE (
     vehicle_id INTEGER PRIMARY KEY AUTOINCREMENT,
     plate_number TEXT UNIQUE NOT NULL,
     is_ev INTEGER NOT NULL DEFAULT 0 CHECK (is_ev IN (0, 1)),
+    is_reference INTEGER NOT NULL DEFAULT 0 CHECK (is_reference IN (0, 1)),
     registered_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 

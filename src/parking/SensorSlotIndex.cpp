@@ -11,9 +11,8 @@ SensorSlotIndex::SensorSlotIndex(
             continue;
         }
         if (config.sensorId.empty()) {
-            throw std::invalid_argument(
-                "enabled slot has an empty sensor id: " +
-                config.slotId);
+            // Camera-only slots intentionally have no Hall sensor mapping.
+            continue;
         }
 
         const auto inserted = bySensorId_.emplace(

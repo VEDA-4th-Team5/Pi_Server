@@ -174,7 +174,8 @@ constexpr std::string_view kLogSelect =
     "CASE s.status WHEN 'ACTIVE' THEN 'PARKED' WHEN 'ENDED' THEN 'DEPARTS' "
     "ELSE s.status END, s.entry_time, s.violation_at, s.exit_time, "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
-    "AND (i.enhancement_type IN ('TIMER_ENTRY','HALL_ENTRY','BESTSHOT_VEHICLE') "
+    "AND (i.enhancement_type IN ('TIMER_ENTRY','HALL_ENTRY','BESTSHOT_VEHICLE',"
+    "'PARKING_ENTRY_IMAGE') "
     "OR i.evidence_reason='OCCUPANCY_START_EVIDENCE') "
     "ORDER BY i.image_id LIMIT 1), "
     "(SELECT i.original_image_path FROM IMAGE_LOG i WHERE i.session_id=s.session_id "
@@ -275,6 +276,12 @@ void EventDatabase::initialize(const std::filesystem::path& schema_file,
                 throw std::runtime_error(
                     "VEHICLE binary migration violated a foreign key");
             }
+        }
+        if (tableHasColumn(db_, "VEHICLE", "vehicle_id") &&
+            !tableHasColumn(db_, "VEHICLE", "is_reference")) {
+            executeSqlUnlocked(
+                "ALTER TABLE VEHICLE ADD COLUMN is_reference INTEGER "
+                "NOT NULL DEFAULT 0 CHECK(is_reference IN (0,1));");
         }
         // Add columns referenced by current schema indexes/triggers before
         // executing CREATE ... IF NOT EXISTS against a representative older
@@ -1208,12 +1215,14 @@ EvidenceInsertResult EventDatabase::insertHallCaptureImage(
     const std::uint64_t roi_revision) {
     if (session_id < 0 || original_path.empty() || captured_at.empty() ||
         (enhancement_type != "HALL_30S" &&
-         enhancement_type != "HALL_60S")) {
-        throw std::invalid_argument("invalid hall capture image fields");
+         enhancement_type != "HALL_60S" &&
+         enhancement_type != "PARKING_ENTRY_IMAGE")) {
+        throw std::invalid_argument("invalid parking capture image fields");
     }
     std::lock_guard lock(db_mutex_);
     if (!opened_ || db_ == nullptr)
-        throw std::runtime_error("cannot insert hall capture in a closed database");
+        throw std::runtime_error(
+            "cannot insert parking capture in a closed database");
 
     executeSqlUnlocked("BEGIN IMMEDIATE;");
     try {
@@ -1244,7 +1253,8 @@ EvidenceInsertResult EventDatabase::insertHallCaptureImage(
         image.bindText(2, original_path);
         if (enhanced_path.empty()) {
             if (sqlite3_bind_null(image.get(), 3) != SQLITE_OK)
-                throw std::runtime_error("SQLite hall enhanced NULL bind failed");
+                throw std::runtime_error(
+                    "SQLite parking capture enhanced NULL bind failed");
         } else {
             image.bindText(3, enhanced_path);
         }
@@ -1257,22 +1267,28 @@ EvidenceInsertResult EventDatabase::insertHallCaptureImage(
                 sqlite3_bind_double(image.get(), 9, applied_roi.height) != SQLITE_OK ||
                 sqlite3_bind_int64(image.get(), 10,
                                    static_cast<sqlite3_int64>(roi_revision)) != SQLITE_OK)
-                throw std::runtime_error("SQLite hall ROI bind failed");
+                throw std::runtime_error("SQLite parking capture ROI bind failed");
         } else {
             for (int index = 6; index <= 10; ++index)
                 if (sqlite3_bind_null(image.get(), index) != SQLITE_OK)
-                    throw std::runtime_error("SQLite hall ROI NULL bind failed");
+                    throw std::runtime_error(
+                        "SQLite parking capture ROI NULL bind failed");
         }
         requireDone(db_, image.get());
 
+        const bool parking_entry =
+            enhancement_type == "PARKING_ENTRY_IMAGE";
         Statement event(db_,
             "INSERT INTO EVENT_LOG(session_id,slot_id,event_type,message) "
-            "SELECT ?,slot_id,'HALL_CAPTURE_STORED',? "
+            "SELECT ?,slot_id,?,? "
             "FROM PARKING_SESSION WHERE session_id=?;");
         event.bindInt64(1, session_id);
-        event.bindText(2, "type=" + enhancement_type +
+        event.bindText(2, parking_entry
+                              ? "PARKING_ENTRY_IMAGE_STORED"
+                              : "HALL_CAPTURE_STORED");
+        event.bindText(3, "type=" + enhancement_type +
                                " image=" + original_path);
-        event.bindInt64(3, session_id);
+        event.bindInt64(4, session_id);
         requireDone(db_, event.get());
         executeSqlUnlocked("COMMIT;");
         return EvidenceInsertResult::Inserted;

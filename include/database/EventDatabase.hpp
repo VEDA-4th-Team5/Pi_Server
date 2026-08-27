@@ -338,7 +338,7 @@ public:
     std::optional<std::string> findEvidenceImagePath(
         std::int64_t session_id,
         const std::string& evidence_reason) const;
-    /** @brief 활성 세션에 30/60초 ROI 촬영본을 단계별 최대 한 장 연결한다. */
+    /** @brief 활성 세션에 일반 입차 또는 30/60초 ROI 촬영본을 종류별 한 장 연결한다. */
     EvidenceInsertResult insertHallCaptureImage(
         std::int64_t session_id,
         const std::string& original_path,

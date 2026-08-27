@@ -32,6 +32,8 @@ int main() {
             "fire title is not user-facing");
     require(fire_text.find("ch01") != std::string::npos,
             "fire channel is missing");
+    require(fire_text.find("2026-08-17 21:30:00 KST") != std::string::npos,
+            "UTC fire timestamp was not converted to Korea time");
     require(fire_text.find("Topic:") == std::string::npos &&
                 fire_text.find("QoS:") == std::string::npos &&
                 fire_text.find("Payload:") == std::string::npos &&
@@ -45,7 +47,9 @@ int main() {
     require(formatter.shouldNotify(non_ev), "NON_EV alert was filtered");
     const std::string non_ev_text = formatter.format(non_ev);
     require(non_ev_text.find("EV01") != std::string::npos &&
-                non_ev_text.find("315다8504") != std::string::npos,
+                non_ev_text.find("315다8504") != std::string::npos &&
+                non_ev_text.find("2026-08-17 21:31:00 KST") !=
+                    std::string::npos,
             "NON_EV alert omitted operator information");
 
     const auto overstay = message(
@@ -53,8 +57,16 @@ int main() {
     require(formatter.shouldNotify(overstay), "overstay alert was filtered");
     const std::string overstay_text = formatter.format(overstay);
     require(overstay_text.find("장기 점유 경고") != std::string::npos &&
-                overstay_text.find("60분") != std::string::npos,
+                overstay_text.find("60분") != std::string::npos &&
+                overstay_text.find("2026-08-17 21:32:00 KST") !=
+                    std::string::npos,
             "overstay alert omitted threshold information");
+
+    const auto already_kst = message(
+        R"({"event_type":"OVERTIME_VIOLATION","slot_id":"EV02","timestamp":"2026-08-17T21:32:00+09:00"})");
+    require(formatter.format(already_kst).find(
+                "2026-08-17 21:32:00 KST") != std::string::npos,
+            "offset timestamp was converted twice");
 
     const auto warning = message(
         R"({"event_type":"SENSOR_ERROR","severity":"WARNING","error_code":"SENSOR_MESSAGE_INVALID"})");

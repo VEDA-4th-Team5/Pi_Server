@@ -3,6 +3,7 @@
 #include "parking_timer/Types.hpp"
 #include "util/Logger.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 #include <system_error>
@@ -11,10 +12,23 @@
 namespace parking {
 
 const char* toString(const EvidenceReason reason) noexcept {
-    return reason == EvidenceReason::OccupancyStart
-        ? "OCCUPANCY_START_EVIDENCE"
-        : "OVERSTAY_EVIDENCE";
+    switch (reason) {
+    case EvidenceReason::ParkingEntry:
+        return "PARKING_ENTRY_IMAGE";
+    case EvidenceReason::OccupancyStart:
+        return "OCCUPANCY_START_EVIDENCE";
+    case EvidenceReason::Overstay:
+        return "OVERSTAY_EVIDENCE";
+    }
+    return "UNKNOWN_CAPTURE_REASON";
 }
+
+namespace {
+const char* logCategory(const EvidenceReason reason) noexcept {
+    return reason == EvidenceReason::ParkingEntry
+        ? "PARKING_CAPTURE" : "EVIDENCE_CAPTURE";
+}
+}  // namespace
 
 bool EvidenceCaptureWorker::Later::operator()(const Job& left,
                                                const Job& right) const noexcept {
@@ -76,7 +90,14 @@ void EvidenceCaptureWorker::stop() {
 }
 
 bool EvidenceCaptureWorker::scheduleSession(EvidenceCaptureRequest request) {
-    return scheduleSessionImpl(std::move(request), true, true, false);
+    return scheduleSessionImpl(std::move(request), true, true, false,
+                               EvidenceReason::OccupancyStart);
+}
+
+bool EvidenceCaptureWorker::scheduleParkingEntry(
+    EvidenceCaptureRequest request) {
+    return scheduleSessionImpl(std::move(request), true, false, false,
+                               EvidenceReason::ParkingEntry);
 }
 
 bool EvidenceCaptureWorker::restoreSession(EvidenceCaptureRequest request) {
@@ -86,9 +107,32 @@ bool EvidenceCaptureWorker::restoreSession(EvidenceCaptureRequest request) {
         const bool include_overstay = !database_.findEvidenceImagePath(
             request.sessionId, "OVERSTAY_EVIDENCE").has_value();
         return scheduleSessionImpl(std::move(request), include_start,
-                                   include_overstay, true);
+                                   include_overstay, true,
+                                   EvidenceReason::OccupancyStart);
     } catch (const std::exception& error) {
         util::logError("Evidence restore lookup failed: session=" +
+                       std::to_string(request.sessionId) + " error=" +
+                       error.what());
+        return false;
+    }
+}
+
+bool EvidenceCaptureWorker::restoreParkingEntry(
+    EvidenceCaptureRequest request) {
+    try {
+        std::vector<database::ImageView> images;
+        if (!database_.listSessionImages(
+                static_cast<int>(request.sessionId), images)) {
+            throw std::runtime_error("parking entry image lookup failed");
+        }
+        const bool include_start = std::none_of(
+            images.begin(), images.end(), [](const auto& image) {
+                return image.enhancement_type == "PARKING_ENTRY_IMAGE";
+            });
+        return scheduleSessionImpl(std::move(request), include_start, false,
+                                   true, EvidenceReason::ParkingEntry);
+    } catch (const std::exception& error) {
+        util::logError("Normal-slot entry image restore lookup failed: session=" +
                        std::to_string(request.sessionId) + " error=" +
                        error.what());
         return false;
@@ -99,29 +143,30 @@ bool EvidenceCaptureWorker::scheduleSessionImpl(
     EvidenceCaptureRequest request,
     const bool include_start,
     const bool include_overstay,
-    const bool restored) {
+    const bool restored,
+    const EvidenceReason start_reason) {
     if (request.sessionId < 0 || request.slotId.empty() || !request.channel)
         return false;
     const std::size_t requested_jobs =
         static_cast<std::size_t>(include_start) +
         static_cast<std::size_t>(include_overstay);
     if (requested_jobs == 0) {
-        util::logLine("EVIDENCE_CAPTURE",
-            "restore skipped; evidence already complete session=" +
+        util::logLine(logCategory(start_reason),
+            "restore skipped; capture already complete session=" +
             std::to_string(request.sessionId) + " slot=" + request.slotId);
         return true;
     }
     std::lock_guard lock(mutex_);
     if (!running_ || stopping_) return false;
     if (!scheduledSessions_.insert(request.sessionId).second) {
-        util::logLine("EVIDENCE_CAPTURE",
+        util::logLine(logCategory(start_reason),
             "duplicate schedule ignored session=" +
             std::to_string(request.sessionId) + " slot=" + request.slotId);
         return true;
     }
     if (jobs_.size() + requested_jobs > config_.maxPendingJobs) {
         scheduledSessions_.erase(request.sessionId);
-        util::logError("Evidence queue full: session=" +
+        util::logError("Parking capture queue full: session=" +
                        std::to_string(request.sessionId) + " slot=" +
                        request.slotId);
         return false;
@@ -133,13 +178,13 @@ bool EvidenceCaptureWorker::scheduleSessionImpl(
     const auto channel_id = request.channel->channel_id;
     if (include_start) {
         jobs_.push(Job{now, nextSequence_++, 0, request,
-                       EvidenceReason::OccupancyStart, !include_overstay});
-        util::logLine("EVIDENCE_CAPTURE",
+                       start_reason, !include_overstay});
+        util::logLine(logCategory(start_reason),
             std::string(restored ? "restored start capture" :
                                    "start capture scheduled") +
             " session=" + std::to_string(session_id) + " slot=" + slot_id +
             " channel=" + channel_id +
-            " reason=OCCUPANCY_START_EVIDENCE");
+            " reason=" + toString(start_reason));
     }
     if (include_overstay) {
         jobs_.push(Job{request.startedAtMonotonic + config_.overstayDelay,
@@ -179,7 +224,7 @@ void EvidenceCaptureWorker::cancelSession(const std::int64_t session_id) {
         if (!inFlightSession_ || *inFlightSession_ != session_id)
             canceledSessions_.erase(session_id);
     }
-    util::logLine("EVIDENCE_CAPTURE",
+    util::logLine("PARKING_CAPTURE",
         "pending jobs removed by cancellation session=" +
         std::to_string(session_id) + " removed=" +
         std::to_string(removed));
@@ -272,7 +317,7 @@ void EvidenceCaptureWorker::run() noexcept {
                 continue;
             }
             if (canceledSessions_.contains(job.request.sessionId)) {
-                util::logLine("EVIDENCE_CAPTURE",
+                util::logLine(logCategory(job.reason),
                     "capture canceled session=" +
                     std::to_string(job.request.sessionId) + " slot=" +
                     job.request.slotId + " channel=" +
@@ -356,17 +401,22 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
             result.imagePath.clear();
             result.enhancedImagePath.clear();
             result.message = "camera API/FrameBuffer image file save failed";
-            util::logError("Evidence capture failed: session=" +
+            util::logError("Parking capture failed: session=" +
                 std::to_string(session_id) + " slot=" + job.request.slotId +
                 " channel=" + channel_id + " reason=" + reason +
                 " error=" + result.message);
             emit(std::move(result));
             return;
         }
-        const auto inserted = database_.insertEvidenceImage(
-            session_id, paths.originalPath, reason, parking_timer::utcNow(),
-            paths.enhancedPath, job.request.roi,
-            job.request.roiRevision);
+        const auto inserted = job.reason == EvidenceReason::ParkingEntry
+            ? database_.insertHallCaptureImage(
+                  session_id, paths.originalPath, paths.enhancedPath, reason,
+                  parking_timer::utcNow(), job.request.roi,
+                  job.request.roiRevision)
+            : database_.insertEvidenceImage(
+                  session_id, paths.originalPath, reason,
+                  parking_timer::utcNow(), paths.enhancedPath,
+                  job.request.roi, job.request.roiRevision);
         if (inserted != database::EvidenceInsertResult::Inserted) {
             for (const auto* path : {&paths.originalPath, &paths.enhancedPath}) {
                 if (path->empty()) continue;
@@ -378,9 +428,9 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
             result.duplicate =
                 inserted == database::EvidenceInsertResult::Duplicate;
             result.message = result.duplicate
-                ? "duplicate evidence ignored"
+                ? "duplicate capture ignored"
                 : "session is no longer active";
-            util::logLine("EVIDENCE_CAPTURE",
+            util::logLine(logCategory(job.reason),
                 result.message + " session=" + std::to_string(session_id) +
                 " slot=" + job.request.slotId + " channel=" + channel_id +
                 " reason=" + reason);
@@ -388,8 +438,9 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
             return;
         }
         result.stored = true;
-        result.message = "evidence stored";
-        util::logLine("EVIDENCE_CAPTURE",
+        result.message = job.reason == EvidenceReason::ParkingEntry
+            ? "parking entry image stored" : "evidence stored";
+        util::logLine(logCategory(job.reason),
             "capture success session=" + std::to_string(session_id) +
             " slot=" + job.request.slotId + " channel=" + channel_id +
             " reason=" + reason + " path=" + paths.originalPath +
@@ -405,7 +456,7 @@ void EvidenceCaptureWorker::process(Job job) noexcept {
         result.imagePath.clear();
         result.enhancedImagePath.clear();
         result.message = error.what();
-        util::logError("Evidence DB/save failed: session=" +
+        util::logError("Parking capture DB/save failed: session=" +
             std::to_string(session_id) + " slot=" + job.request.slotId +
             " channel=" + channel_id + " reason=" + reason +
             " error=" + result.message);

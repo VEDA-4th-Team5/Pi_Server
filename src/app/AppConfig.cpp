@@ -355,7 +355,7 @@ AppConfig AppConfig::loadFromEnv() {
         "PARKING_ALERT_DEVICE_PATH", "/dev/parking_alert");
     config.parking_alert_slot_map = getEnvOrDefault(
         "PARKING_ALERT_SLOT_MAP",
-        "EV01:0,EV02:1,EV03:2,EV04:3,EV05:4,EV06:5,EV07:6,EV08:7");
+        "EV01:0,EV02:1,EV03:2,EV04:3");
 
     config.snapshot_dir = getEnvOrDefault("SNAPSHOT_DIR", "data/snapshots");
     config.snapshot_dir = resolveProjectPath("SNAPSHOT_DIR", config.snapshot_dir);
@@ -461,17 +461,28 @@ AppConfig AppConfig::loadFromEnv() {
         });
     }
 
-    // EV01~EV04는 CH1, EV05~EV08은 CH3의 IVA Area를 사용한다.
+    // EV01~EV04는 CH1 전기차면, P01~P04는 CH3 일반면의 IVA Area를 사용한다.
     // ROI 네 값이 전혀 없으면 좌표는 "미설정"으로 유지한다. SQLite에 Qt가
     // 저장한 값이 있으면 ParkingRoiSettingsService가 그것을 우선 복원한다.
-    for (int i = 1; i <= 8; ++i) {
-        std::ostringstream slot;
-        slot << "EV" << std::setw(2) << std::setfill('0') << i;
-        const std::string channel = i <= 4 ? "ch01" : "ch03";
-        const int snapshot_api_channel = i <= 4 ? 0 : 2;
-        const std::string default_area_name =
-            "name" + std::to_string(i);
-        const std::string prefix = "IVA_" + slot.str() + "_";
+    struct IvaAreaDefault {
+        const char* slotId;
+        const char* channelId;
+        const char* areaName;
+        int snapshotApiChannel;
+    };
+    const IvaAreaDefault iva_area_defaults[] = {
+        {"EV01", "ch01", "name1", 0},
+        {"EV02", "ch01", "name2", 0},
+        {"EV03", "ch01", "name3", 0},
+        {"EV04", "ch01", "name4", 0},
+        {"P01", "ch03", "name5", 2},
+        {"P02", "ch03", "name6", 2},
+        {"P03", "ch03", "name7", 2},
+        {"P04", "ch03", "name8", 2},
+    };
+    for (const auto& defaults : iva_area_defaults) {
+        const std::string prefix =
+            "IVA_" + std::string(defaults.slotId) + "_";
         const std::string public_env_path = localSettingPath(".env.public");
         const std::string roi_x = getEnvOrLocalSetting(
             (prefix + "ROI_X").c_str(), "", public_env_path);
@@ -486,10 +497,11 @@ AppConfig AppConfig::loadFromEnv() {
             !roi_width.empty() || !roi_height.empty();
 
         config.iva_areas.push_back({
-            slot.str(),
+            defaults.slotId,
             getEnvOrLocalSetting((prefix + "AREA_NAME").c_str(),
-                                 default_area_name, public_env_path),
-            getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(), channel,
+                                 defaults.areaName, public_env_path),
+            getEnvOrLocalSetting((prefix + "CHANNEL_ID").c_str(),
+                                 defaults.channelId,
                                  public_env_path),
             parseDoubleOrDefault(roi_x, 0.0),
             parseDoubleOrDefault(roi_y, 0.0),
@@ -497,7 +509,7 @@ AppConfig AppConfig::loadFromEnv() {
             parseDoubleOrDefault(roi_height, 1.0),
             std::max(0, getEnvIntOrDefault(
                 (prefix + "SNAPSHOT_API_CHANNEL").c_str(),
-                snapshot_api_channel)),
+                defaults.snapshotApiChannel)),
             roi_configured
         });
     }

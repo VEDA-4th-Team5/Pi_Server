@@ -22,6 +22,7 @@
 namespace parking {
 
 enum class EvidenceReason {
+    ParkingEntry,
     OccupancyStart,
     Overstay
 };
@@ -81,8 +82,12 @@ public:
 
     /** @brief 시작 즉시 한 장과 T0+지연 한 장을 세션당 한 번 예약한다. */
     bool scheduleSession(EvidenceCaptureRequest request);
+    /** @brief 일반 주차면용 입차 사진 한 장을 Evidence와 별도로 예약한다. */
+    bool scheduleParkingEntry(EvidenceCaptureRequest request);
     /** @brief 재시작 시 DB에 없는 증거만 원래 T0 기준으로 다시 예약한다. */
     bool restoreSession(EvidenceCaptureRequest request);
+    /** @brief 일반 주차면 재시작 시 입차 사진이 없을 때만 한 장 복원한다. */
+    bool restoreParkingEntry(EvidenceCaptureRequest request);
     /** @brief 타이머가 먼저 만료되면 기존 초과 증거 작업을 즉시 실행 대상으로 만든다. */
     bool expediteOverstay(std::int64_t session_id);
     /** @brief 모든 활성 세션의 초과 증거 deadline을 같은 T0 기준으로 재계산한다. */
@@ -110,7 +115,8 @@ private:
     bool scheduleSessionImpl(EvidenceCaptureRequest request,
                              bool include_start,
                              bool include_overstay,
-                             bool restored);
+                             bool restored,
+                             EvidenceReason start_reason);
     [[nodiscard]] bool canceled(std::int64_t session_id) const;
     void emit(EvidenceCaptureResult result) noexcept;
 

@@ -117,6 +117,23 @@ const app::IvaAreaConfig* findArea(const app::AppConfig& config,
     return nullptr;
 }
 
+const parking::ParkingSlotConfig* findSlotConfig(
+    const std::vector<parking::ParkingSlotConfig>& slots,
+    const std::string& slot_id) {
+    const auto found = std::find_if(
+        slots.begin(), slots.end(), [&slot_id](const auto& slot) {
+            return slot.slotId == slot_id;
+        });
+    return found == slots.end() ? nullptr : &*found;
+}
+
+bool usesTimedEvidence(
+    const std::vector<parking::ParkingSlotConfig>& slots,
+    const std::string& slot_id) {
+    const auto* slot = findSlotConfig(slots, slot_id);
+    return slot != nullptr && slot->zoneType == "ev_charging";
+}
+
 event::FireSignal toFireSignal(const sensor::FireSensorMessage& message) {
     event::FireSignal signal;
     signal.sensorId = message.sensorId;
@@ -880,9 +897,20 @@ int main() {
         [&ocr_worker, timer_events_callback_target, &config](
             const parking::EvidenceCaptureResult& result) {
             if (!result.stored) return;
-            if (result.reason == parking::EvidenceReason::OccupancyStart) {
+            if (result.reason == parking::EvidenceReason::ParkingEntry) {
+                ocr_worker.enqueue(static_cast<int>(result.sessionId),
+                                   result.slotId, result.imagePath,
+                                   result.enhancedImagePath);
+                if (timer_events_callback_target) {
+                    (void)timer_events_callback_target->publish(
+                        "PARKING_ENTRY_IMAGE_STORED", result.slotId, "",
+                        parking_timer::utcNow(), result.imagePath,
+                        result.sessionId);
+                }
+            } else if (result.reason ==
+                       parking::EvidenceReason::OccupancyStart) {
                 // 30/60초 홀 OCR이 활성화되면 차량이 자리를 잡은 뒤의 ROI를
-                // 사용한다. 스케줄러가 꺼진 환경에서는 기존 시작 증거 OCR로
+                // 사용한다. 스케줄러가 꺼진 EV 환경에서는 시작 Evidence로
                 // fallback하여 번호판 인식 기능이 사라지지 않게 한다.
                 if (!(config.hall_capture_ocr_enabled &&
                       config.capture_sched_enabled)) {
@@ -920,7 +948,7 @@ int main() {
                             !paths.enhancedPath.empty()) {
                             util::logLine(
                                 "CAMERA_SNAPSHOT_API",
-                                "evidence stored session=" +
+                                "capture stored session=" +
                                     std::to_string(request.sessionId) +
                                     " slot=" + request.slotId + " reason=" +
                                     parking::toString(reason) + " run_id=" +
@@ -929,7 +957,7 @@ int main() {
                         return paths;
                     }
                     util::logError(
-                        "camera snapshot API evidence failed session=" +
+                        "camera snapshot API capture failed session=" +
                         std::to_string(request.sessionId) + " slot=" +
                         request.slotId + " reason=" +
                         parking::toString(reason) + " error=" +
@@ -938,7 +966,7 @@ int main() {
                         return snapshot::StoredImagePair{};
                     }
                     util::logWarn(
-                        "falling back to RTSP evidence capture session=" +
+                        "falling back to RTSP capture session=" +
                         std::to_string(request.sessionId) + " slot=" +
                         request.slotId);
                     return snapshot::StoredImagePair{
@@ -1383,12 +1411,17 @@ int main() {
             *parking_timer, *timer_events, *evidence_worker,
             system_event_sink,
             [capture_transition_target, hall_ocr_callback_target,
-             plate_illuminator_callback_target](
+             plate_illuminator_callback_target, &parking_slot_configs](
                 const parking::ParkingTransitionResult& transition) {
-                if (hall_ocr_callback_target)
-                    hall_ocr_callback_target->onTransition(transition);
-                if (capture_transition_target)
-                    capture_transition_target->onTransition(transition);
+                // P01~P04 일반면은 시작 증거만 사용한다. 30/60초 예약 촬영과
+                // 그 촬영에 연결된 Pi->STM 번호판 LED 명령을 모두 건너뛴다.
+                if (usesTimedEvidence(parking_slot_configs,
+                                      transition.slotId)) {
+                    if (hall_ocr_callback_target)
+                        hall_ocr_callback_target->onTransition(transition);
+                    if (capture_transition_target)
+                        capture_transition_target->onTransition(transition);
+                }
                 if (plate_illuminator_callback_target &&
                     transition.code ==
                         parking::ParkingTransitionCode::SessionCompleted) {
@@ -1508,11 +1541,16 @@ int main() {
         }
         const auto fallback_elapsed = std::chrono::seconds(
             overstay_settings.thresholdSeconds());
-        if (evidence_worker->restoreSession({
-                record.id, record.slot_id, std::move(channel),
-                {},
-                restoreMonotonicStart(record.parked_at, fallback_elapsed),
-                area->snapshot_api_channel})) {
+        parking::EvidenceCaptureRequest restore_request{
+            record.id, record.slot_id, std::move(channel), {},
+            restoreMonotonicStart(record.parked_at, fallback_elapsed),
+            area->snapshot_api_channel};
+        const bool restored = usesTimedEvidence(
+            parking_slot_configs, record.slot_id)
+            ? evidence_worker->restoreSession(std::move(restore_request))
+            : evidence_worker->restoreParkingEntry(
+                  std::move(restore_request));
+        if (restored) {
             ++restored_evidence;
         } else {
             ++failed_evidence_restore;

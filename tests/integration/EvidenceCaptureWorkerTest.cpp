@@ -6,6 +6,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -55,7 +56,7 @@ int main() {
     try {
         database::EventDatabase database(db_path);
         const fs::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-        database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+        database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
         database.migrateRuntimeSchema();
         database.migrateRuntimeSchema();
 
@@ -167,6 +168,41 @@ int main() {
             require(stored.cols == 320 && stored.rows == 240,
                     "full-frame ROI must preserve source dimensions");
         }
+
+        const auto normal_session = database.createHallSession(
+            "P01", "HALL05", "2026-07-27T09:05:00");
+        require(worker.scheduleParkingEntry({
+                    normal_session, "P01", channel,
+                    {0.0, 0.0, 1.0, 1.0},
+                    std::chrono::steady_clock::now()}),
+                "normal-slot start-only schedule failed");
+        require(waitUntil([&] {
+                    std::vector<database::ImageView> images;
+                    return database.listSessionImages(
+                               static_cast<int>(normal_session), images) &&
+                           std::count_if(
+                               images.begin(), images.end(),
+                               [](const database::ImageView& image) {
+                                   return image.enhancement_type ==
+                                              "PARKING_ENTRY_IMAGE" &&
+                                          image.evidence_reason.empty();
+                               }) == 1;
+                }, 1s), "normal-slot entry image was not stored");
+        std::this_thread::sleep_for(100ms);
+        std::vector<database::ImageView> normal_images;
+        require(database.listSessionImages(
+                    static_cast<int>(normal_session), normal_images) &&
+                    normal_images.size() == 1 &&
+                    normal_images.front().enhancement_type ==
+                        "PARKING_ENTRY_IMAGE" &&
+                    normal_images.front().evidence_reason.empty() &&
+                    countReason(normal_images,
+                                "OCCUPANCY_START_EVIDENCE") == 0 &&
+                    countReason(normal_images, "OVERSTAY_EVIDENCE") == 0,
+                "normal slot image was classified as EV evidence");
+        require(database.departActiveBySlot(
+                    "P01", "2026-07-27T09:06:00").has_value(),
+                "normal-slot fixture session was not closed");
 
         const auto session2 = database.createHallSession(
             "EV02", "HALL02", "2026-07-27T09:10:00");

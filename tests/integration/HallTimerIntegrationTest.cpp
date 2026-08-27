@@ -128,19 +128,27 @@ int main(int argc, char* argv[]) {
 
         database::EventDatabase database(temporary.database);
         const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-        database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+        database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
 
         app::AppConfig app_config{};
         app_config.parking_occupancy_source = "HALL";
         app_config.parking_occupancy_confirm_ms = 40;
         app_config.iva_areas.push_back(
             {"EV01", "EV01", "ch01", 0.0, 0.0, 1.0, 1.0});
+        app_config.iva_areas.push_back(
+            {"P01", "P01", "ch03", 0.0, 0.0, 1.0, 1.0, 2});
         auto channel = std::make_shared<camera::CameraChannel>();
         channel->camera_id = "mock-camera";
         channel->channel_id = "ch01";
         channel->latest_full_frame = cv::Mat(
             720, 1280, CV_8UC3, cv::Scalar(20, 80, 160));
-        std::vector<std::shared_ptr<camera::CameraChannel>> channels{channel};
+        auto normal_channel = std::make_shared<camera::CameraChannel>();
+        normal_channel->camera_id = "mock-camera";
+        normal_channel->channel_id = "ch03";
+        normal_channel->latest_full_frame = cv::Mat(
+            720, 1280, CV_8UC3, cv::Scalar(40, 100, 180));
+        std::vector<std::shared_ptr<camera::CameraChannel>> channels{
+            channel, normal_channel};
         std::atomic<bool> running{true};
         snapshot::SnapshotStorage snapshots(
             temporary.snapshots.string(), 100, running);
@@ -441,6 +449,47 @@ int main(int argc, char* argv[]) {
                     non_ev_images.size() == 1 &&
                     std::filesystem::exists(non_ev_path),
                 "NON_EV evidence was incorrectly deleted on departure");
+
+        // CH3 일반 주차면은 HALL05로 세션을 만들고 시작 증거 한 장만
+        // 보존한다. 출차 시 EV 면의 조기 출차 이미지 삭제 정책을 적용하지
+        // 않는다.
+        require(service.handleLine("SENSOR:HALL05:OCCUPIED:1"),
+                "normal-slot OCCUPIED was rejected");
+        require(waitUntil([&] {
+                    return database.findActiveBySlot("P01").has_value();
+                }, 1s),
+                "normal-slot session was not created");
+        const auto normal = database.findActiveBySlot("P01");
+        require(normal.has_value(), "normal-slot active session is missing");
+        std::vector<database::ImageView> normal_images;
+        require(waitUntil([&] {
+                    normal_images.clear();
+                    return database.listSessionImages(
+                               static_cast<int>(normal->id), normal_images) &&
+                           normal_images.size() == 1;
+                }, 1s),
+                "normal-slot entry evidence was not stored");
+        const std::string normal_path = normal_images.front().original_path;
+        require(normal_images.front().enhancement_type ==
+                    "PARKING_ENTRY_IMAGE" &&
+                    normal_images.front().evidence_reason.empty() &&
+                    std::filesystem::exists(normal_path),
+                "normal-slot photo was classified as EV evidence");
+        require(service.handleLine("SENSOR:HALL05:VACANT:2"),
+                "normal-slot VACANT was rejected");
+        require(waitUntil([&] {
+                    return !database.findActiveBySlot("P01").has_value();
+                }, 1s),
+                "normal-slot session did not close");
+        normal_images.clear();
+        require(database.listSessionImages(
+                    static_cast<int>(normal->id), normal_images) &&
+                    normal_images.size() == 1 &&
+                    normal_images.front().enhancement_type ==
+                        "PARKING_ENTRY_IMAGE" &&
+                    normal_images.front().evidence_reason.empty() &&
+                    std::filesystem::exists(normal_path),
+                "normal-slot entry evidence was deleted on departure");
 
         // 재시작을 모사해 메모리 상태에는 없고 DB에만 남은 ACTIVE를 만든다.
         const auto adopted_id = database.createHallSession(

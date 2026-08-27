@@ -10,6 +10,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -69,13 +70,19 @@ int main(int argc, char* argv[]) {
     try {
         require(argc >= 2, "parking slot fixture path is required");
         auto slots = parking::ParkingSlotConfigLoader::loadFromFile(argv[1]);
+        const auto ev01 = std::find_if(
+            slots.begin(), slots.end(), [](const auto& slot) {
+                return slot.slotId == "EV01";
+            });
+        require(ev01 != slots.end(), "EV01 fixture is missing");
+        ev01->sensorId.clear();
 
         database::EventDatabase database(temporary.path / "parking.sqlite3");
         const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-        database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+        database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
 
         app::AppConfig config{};
-        config.parking_occupancy_source = "CAMERA_IVA";
+        config.parking_occupancy_source = "HYBRID_OR";
         config.camera_iva_exit_confirm_ms = 50;
         config.parking_occupancy_confirm_ms = 0;
         config.parking_hall_work_queue_capacity = 100;
@@ -115,12 +122,20 @@ int main(int argc, char* argv[]) {
 
         {
             std::atomic<int> canceledSession{-1};
+            std::atomic<bool> ivaSourceObserved{false};
             sensor::HallParkingService service(
                 std::move(slots), config, channels, database,
                 [&canceledSession](const int sessionId) {
                     canceledSession.store(sessionId);
                 },
-                timer, events, evidence);
+                timer, events, evidence, nullptr,
+                [&ivaSourceObserved](
+                    const parking::ParkingTransitionResult& transition) {
+                    if (transition.session &&
+                        transition.session->sensorId() == "IVA:EV01") {
+                        ivaSourceObserved.store(true);
+                    }
+                });
 
             require(service.handleCameraIvaSignal(
                         ivaSignal(event::IvaOccupancyAction::Enter)),
@@ -145,6 +160,8 @@ int main(int argc, char* argv[]) {
                     "ACTIVE session");
             const auto first = database.findActiveBySlot("EV01");
             require(first.has_value(), "first IVA session is missing");
+            require(waitUntil([&] { return ivaSourceObserved.load(); }),
+                    "camera-only slot did not use its virtual IVA source ID");
 
             std::vector<database::ImageView> images;
             require(waitUntil([&] {

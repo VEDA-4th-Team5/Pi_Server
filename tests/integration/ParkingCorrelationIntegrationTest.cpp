@@ -127,7 +127,7 @@ private:
 
 void initialize(database::EventDatabase& database) {
     const std::filesystem::path sql_dir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sql_dir / "schema.sql", sql_dir / "seed.sql");
+    database.initialize(sql_dir / "schema.sql", sql_dir / "seed_test.sql");
 }
 
 parking::SlotTransitionActor::Config actorConfig() {

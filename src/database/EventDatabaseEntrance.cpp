@@ -66,6 +66,50 @@ struct EntranceCandidate {
     ocr::PlateSimilarity similarity;
 };
 
+struct RegisteredVehicleMatch {
+    std::int64_t vehicleId{-1};
+    std::string plate;
+    bool isEv{};
+    bool isReference{};
+};
+
+std::optional<RegisteredVehicleMatch> findRegisteredVehicle(
+    sqlite3* database, const std::string& observedPlate) {
+    // 완전 일치는 숫자가 같은 다른 등록 번호가 있더라도 항상 우선한다.
+    {
+        Statement exact(
+            database,
+            "SELECT vehicle_id,plate_number,is_ev,is_reference FROM VEHICLE "
+            "WHERE plate_number=?;");
+        exact.text(1, observedPlate);
+        if (sqlite3_step(exact.get()) == SQLITE_ROW) {
+            return RegisteredVehicleMatch{
+                sqlite3_column_int64(exact.get(), 0),
+                columnText(exact.get(), 1),
+                sqlite3_column_int(exact.get(), 2) != 0,
+                sqlite3_column_int(exact.get(), 3) != 0};
+        }
+    }
+
+    std::optional<RegisteredVehicleMatch> selected;
+    Statement candidates(
+        database,
+        "SELECT vehicle_id,plate_number,is_ev,is_reference FROM VEHICLE "
+        "WHERE is_reference=1 ORDER BY vehicle_id;");
+    while (sqlite3_step(candidates.get()) == SQLITE_ROW) {
+        RegisteredVehicleMatch candidate{
+            sqlite3_column_int64(candidates.get(), 0),
+            columnText(candidates.get(), 1),
+            sqlite3_column_int(candidates.get(), 2) != 0,
+            sqlite3_column_int(candidates.get(), 3) != 0};
+        if (!ocr::samePlateDigits(observedPlate, candidate.plate)) continue;
+        // 숫자가 같은 등록 번호가 둘 이상이면 한글을 추측하지 않는다.
+        if (selected.has_value()) return std::nullopt;
+        selected = std::move(candidate);
+    }
+    return selected;
+}
+
 }  // namespace
 
 namespace database {
@@ -222,19 +266,28 @@ std::string EventDatabase::finishEntranceRecognition(
             return "EV_FAILED";
         }
 
-        const std::string classification = *isEv ? "EV" : "NON_EV";
+        const auto registered = findRegisteredVehicle(db_, plate_number);
+        const std::string canonicalPlate = registered.has_value()
+            ? registered->plate : plate_number;
+        const bool referenceMatched = registered.has_value() &&
+                                      registered->isReference;
+        const bool resolvedIsEv = referenceMatched ? registered->isEv : *isEv;
+        const std::string classification = resolvedIsEv ? "EV" : "NON_EV";
+        const std::string decisionSource = referenceMatched
+            ? (registered->isEv == *isEv ? "CONSENSUS" : "VEHICLE_DB")
+            : "VISION";
         Statement upsertVehicle(
             db_, "INSERT INTO VEHICLE(plate_number,is_ev) VALUES(?,?) "
                  "ON CONFLICT(plate_number) DO UPDATE SET is_ev=excluded.is_ev;");
-        upsertVehicle.text(1, plate_number);
-        upsertVehicle.integer(2, *isEv ? 1 : 0);
+        upsertVehicle.text(1, canonicalPlate);
+        upsertVehicle.integer(2, resolvedIsEv ? 1 : 0);
         requireDone(db_, upsertVehicle.get());
 
         std::int64_t resolvedVehicleId{};
         {
             Statement vehicleId(
                 db_, "SELECT vehicle_id FROM VEHICLE WHERE plate_number=?;");
-            vehicleId.text(1, plate_number);
+            vehicleId.text(1, canonicalPlate);
             if (sqlite3_step(vehicleId.get()) != SQLITE_ROW)
                 throw std::runtime_error("entrance vehicle upsert was not found");
             resolvedVehicleId = sqlite3_column_int64(vehicleId.get(), 0);
@@ -243,7 +296,7 @@ std::string EventDatabase::finishEntranceRecognition(
         Statement update(
             db_, "UPDATE ENTRANCE_RECOGNITION SET state='COMPLETED',"
                  "vehicle_id=?,plate_number=?,classification=?,"
-                 "registered_is_ev=?,resolved_is_ev=?,decision_source='VISION',"
+                 "registered_is_ev=?,resolved_is_ev=?,decision_source=?,"
                  "artifact_state='DELETE_PENDING',"
                  "confidence=?,"
                  "ocr_attempts=?,last_error=?,"
@@ -251,14 +304,15 @@ std::string EventDatabase::finishEntranceRecognition(
                  "updated_at_epoch_ms=CAST(strftime('%s','now') AS INTEGER)*1000 "
                  "WHERE entrance_event_id=?;");
         update.integer(1, resolvedVehicleId);
-        update.text(2, plate_number);
+        update.text(2, canonicalPlate);
         update.text(3, classification);
-        update.integer(4, *isEv ? 1 : 0);
-        update.integer(5, *isEv ? 1 : 0);
-        update.real(6, confidence);
-        update.integer(7, attempts);
-        update.text(8, error);
-        update.integer(9, event_id);
+        update.integer(4, resolvedIsEv ? 1 : 0);
+        update.integer(5, resolvedIsEv ? 1 : 0);
+        update.text(6, decisionSource);
+        update.real(7, confidence);
+        update.integer(8, attempts);
+        update.text(9, error);
+        update.integer(10, event_id);
         requireDone(db_, update.get());
         if (sqlite3_changes(db_) != 1)
             throw std::runtime_error("entrance event row was not found");
@@ -422,16 +476,17 @@ ParkingPlateResolution EventDatabase::applyPlateOcrWithEntrance(
                        ? "ENTRANCE_EXACT" : "ENTRANCE_FUZZY");
             result.classification = selected->isEv ? "EV" : "NON_EV";
         } else {
-            Statement vehicle(
-                db_, "SELECT vehicle_id,is_ev FROM VEHICLE "
-                     "WHERE plate_number=?;");
-            vehicle.text(1, plate_number);
-            if (sqlite3_step(vehicle.get()) == SQLITE_ROW) {
-                result.vehicle_id = sqlite3_column_int64(vehicle.get(), 0);
+            const auto vehicle = findRegisteredVehicle(db_, plate_number);
+            if (vehicle.has_value()) {
+                result.vehicle_id = vehicle->vehicleId;
+                result.canonical_plate = vehicle->plate;
                 result.classification =
-                    sqlite3_column_int(vehicle.get(), 1) != 0 ? "EV" : "NON_EV";
+                    vehicle->isEv ? "EV" : "NON_EV";
                 result.source = "VEHICLE_EXACT";
-                result.match_score = 1.0;
+                const auto similarity = ocr::comparePlateNumbers(
+                    plate_number, vehicle->plate);
+                result.match_score = similarity.comparable
+                    ? similarity.score : 1.0;
             } else {
                 result.classification = "UNKNOWN";
                 result.source = "UNRESOLVED";

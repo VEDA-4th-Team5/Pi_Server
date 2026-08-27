@@ -22,12 +22,12 @@ public:
     /** @brief Starts the owned timer worker after runtime teardown is armed. */
     [[nodiscard]] bool start() noexcept;
 
-    /** @brief EV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다. */
+    /** @brief 전기차면은 타이머를, 일반면은 세션만 등록하고 중복 입차를 거부한다. */
     EntryResult handleEntry(const std::string& slot_id,
                             const std::string& car_number,
                             const std::string& image_path_1 = {});
 
-    /** @brief 카메라 흐름이 이미 만든 세션을 중복 INSERT 없이 타이머에 등록한다. */
+    /** @brief 기존 세션에 슬롯 종류별 OCR 후속 정책을 적용한다. */
     EntryResult handleRecognizedSession(std::int64_t session_id,
                                         const std::string& slot_id,
                                         const std::string& car_number);

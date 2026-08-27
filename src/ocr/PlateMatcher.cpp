@@ -98,4 +98,24 @@ PlateSimilarity comparePlateNumbers(const std::string_view observed,
     return result;
 }
 
+bool samePlateDigits(const std::string_view observed,
+                     const std::string_view candidate) {
+    const auto left = decodeUtf8(observed);
+    const auto right = decodeUtf8(candidate);
+    if (!left.has_value() || !right.has_value() ||
+        !plausiblePlateShape(*left) || !plausiblePlateShape(*right)) {
+        return false;
+    }
+
+    std::vector<std::uint32_t> leftDigits;
+    std::vector<std::uint32_t> rightDigits;
+    for (const auto value : *left) {
+        if (asciiDigit(value)) leftDigits.push_back(value);
+    }
+    for (const auto value : *right) {
+        if (asciiDigit(value)) rightDigits.push_back(value);
+    }
+    return leftDigits == rightDigits;
+}
+
 }  // namespace ocr

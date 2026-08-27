@@ -1,3 +1,4 @@
+-- 통합 테스트 전용 Seed다. 운영과 동일한 EV 4면/일반 4면 구성을 사용한다.
 INSERT INTO VEHICLE(plate_number, is_ev, is_reference)
 VALUES
     ('123가4567', 1, 1),

@@ -92,10 +92,10 @@ int main() {
         config.parking_occupancy_source = "HYBRID_OR";
         config.iva_areas = {
             area("EV01", "name1", "ch01", 0),
-            area("EV05", "name5", "ch03", 2)};
+            area("P01", "name5", "ch03", 2)};
         const std::vector<parking::ParkingSlotConfig> slots{
             slot("EV01", "vs-0", "name1"),
-            slot("EV05", "vs-2", "name5")};
+            slot("P01", "vs-2", "name5")};
 
         std::string error;
         const auto intrusion = event::OnvifIvaEventAdapter::adapt(
@@ -114,14 +114,14 @@ int main() {
         error.clear();
         const auto exit = event::OnvifIvaEventAdapter::adapt(
             events[1], config, slots, &error);
-        require(exit && exit->slotId == "EV05" &&
+        require(exit && exit->slotId == "P01" &&
                     exit->channelId == "ch03" &&
                     exit->videoSourceToken == "vs-2" &&
                     exit->ruleName == "name5" &&
                     exit->objectId == "200" &&
                     exit->action == event::IvaOccupancyAction::Exit &&
                     exit->authoritativeExit,
-                "CH3 Exit was not adapted to EV05: " + error);
+                "CH3 Exit was not adapted to P01: " + error);
         require(exit->occurredAt - intrusion->occurredAt == 10125ms,
                 "camera UtcTime precision/order was not preserved");
 

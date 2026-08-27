@@ -1,5 +1,8 @@
 #include "parking/ParkingSlotConfig.hpp"
 #include "parking/ParkingSlotManager.hpp"
+#include "parking/SensorSlotIndex.hpp"
+#include "sensor/ParkingSensorEventAdapter.hpp"
+#include "sensor/SensorProtocolParser.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -53,38 +56,78 @@ int main(int argc, char* argv[]) {
                 configPath);
 
         if (argc >= 3 && std::string(argv[2]) == "--validate-production") {
+            struct ExpectedSlot {
+                const char* slotId;
+                const char* zoneType;
+                const char* sensorId;
+                const char* videoSourceToken;
+                const char* ruleName;
+            };
+            const ExpectedSlot expectedSlots[] = {
+                {"EV01", "ev_charging", "",       "vs-0", "name1"},
+                {"EV02", "ev_charging", "HALL02", "vs-0", "name2"},
+                {"EV03", "ev_charging", "HALL01", "vs-0", "name3"},
+                {"EV04", "ev_charging", "",       "vs-0", "name4"},
+                {"P01",  "normal",      "",       "vs-2", "name5"},
+                {"P02",  "normal",      "HALL03", "vs-2", "name6"},
+                {"P03",  "normal",      "HALL04", "vs-2", "name7"},
+                {"P04",  "normal",      "",       "vs-2", "name8"},
+            };
             require(configs.size() == 8,
-                    "production config must contain EV01 through EV08");
-            for (int index = 1; index <= 8; ++index) {
-                std::ostringstream slotId;
-                slotId << "EV" << std::setw(2) << std::setfill('0')
-                       << index;
-                const std::string expectedSlot = slotId.str();
-                const std::string expectedSensor =
-                    "HALL" + expectedSlot.substr(2);
-                const std::string expectedRule =
-                    "name" + std::to_string(index);
-                const std::string expectedToken =
-                    index <= 4 ? "vs-0" : "vs-2";
+                    "production config must contain four EV and four normal slots");
+            for (const auto& expected : expectedSlots) {
                 const auto found = std::find_if(
                     configs.begin(), configs.end(),
-                    [&expectedSlot](const auto& config) {
-                        return config.slotId == expectedSlot;
+                    [&expected](const auto& config) {
+                        return config.slotId == expected.slotId;
                     });
                 require(found != configs.end() && found->enabled,
-                        expectedSlot + " must be enabled");
-                require(found->sensorId == expectedSensor,
-                        expectedSlot + " sensor mapping mismatch");
+                        std::string(expected.slotId) + " must be enabled");
+                require(found->zoneType == expected.zoneType,
+                        std::string(expected.slotId) +
+                            " zone policy mismatch");
+                require(found->sensorId == expected.sensorId,
+                        std::string(expected.slotId) +
+                            " sensor mapping mismatch");
                 require(found->cameraBindings.size() == 1 &&
                             found->cameraBindings.front().enabled &&
                             found->cameraBindings.front().cameraId == "cam01" &&
                             found->cameraBindings.front().videoSourceToken ==
-                                expectedToken &&
+                                expected.videoSourceToken &&
                             found->cameraBindings.front().ruleName ==
-                                expectedRule,
-                        expectedSlot + " native WiseAI mapping mismatch");
+                                expected.ruleName,
+                        std::string(expected.slotId) +
+                            " native WiseAI mapping mismatch");
             }
-            std::cout << "[PASS] production parking slot config EV01~EV08\n";
+
+            parking::SensorSlotIndex sensorIndex(configs);
+            require(sensorIndex.size() == 4,
+                    "production config must expose four Hall mappings");
+            sensor::SensorProtocolParser parser;
+            sensor::ParkingSensorEventAdapter adapter(sensorIndex);
+            struct ExpectedMessage {
+                const char* raw;
+                const char* slotId;
+            };
+            const ExpectedMessage expectedMessages[] = {
+                {"SENSOR:STM1:HALL02:OCCUPIED:12", "EV02"},
+                {"SENSOR:STM1:HALL01:VACANT:13",   "EV03"},
+                {"SENSOR:STM2:HALL03:OCCUPIED:7", "P02"},
+                {"SENSOR:STM2:HALL04:VACANT:8",   "P03"},
+            };
+            const auto receivedAt = std::chrono::system_clock::now();
+            for (const auto& expected : expectedMessages) {
+                std::string error;
+                const auto message = parser.parse(
+                    expected.raw, receivedAt, &error);
+                require(message.has_value(),
+                        std::string("real Hall message parse failed: ") +
+                            error);
+                const auto event = adapter.adapt(*message, &error);
+                require(event.has_value() && event->slotId == expected.slotId,
+                        std::string(expected.raw) + " mapping mismatch");
+            }
+            std::cout << "[PASS] production parking slots CH1 EV / CH3 normal\n";
             return EXIT_SUCCESS;
         }
 

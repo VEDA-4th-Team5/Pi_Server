@@ -110,7 +110,7 @@ void schemaAndLifecyclePersist() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
 
     const auto first = database.createEntranceRecognition(
         "cam01", "ch02", "123", 1000);
@@ -165,7 +165,7 @@ void parkingOcrUsesRecentEntranceAsAuthoritativeSource() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
 
     const auto entranceId = database.createEntranceRecognition(
         "cam01", "ch02", "entrance-object", 1'000'000);
@@ -228,17 +228,18 @@ void parkingOcrUsesRecentEntranceAsAuthoritativeSource() {
         "1200000);");
     const auto unlinked = database.applyPlateOcrWithEntrance(
         501, "EV03", {}, "294미3087", 0.70, 30 * 60 * 1000, 0.85);
-    require(unlinked.persisted && unlinked.classification == "UNKNOWN" &&
-                unlinked.source == "UNRESOLVED" &&
+    require(unlinked.persisted && unlinked.classification == "EV" &&
+                unlinked.source == "VEHICLE_EXACT" &&
+                unlinked.canonical_plate == "294마3087" &&
                 unlinked.entrance_event_id < 0,
-            "one entrance event was incorrectly reused by another session");
+            "consumed entrance event was reused instead of vehicle DB fallback");
 }
 
 void ambiguousEntranceCandidatesStayUnknown() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
 
     const auto completeEntrance = [&database](const std::string& objectId,
                                               const std::string& plate,
@@ -260,8 +261,8 @@ void ambiguousEntranceCandidatesStayUnknown() {
                     (isEv ? "EV" : "NON_EV"),
                 "ambiguous entrance candidate was not completed");
     };
-    completeEntrance("candidate-a", "294마3087", true, 2'000'000, 0.99);
-    completeEntrance("candidate-b", "294바3087", false, 2'010'000, 0.97);
+    completeEntrance("candidate-a", "864마1357", true, 2'000'000, 0.99);
+    completeEntrance("candidate-b", "864바1357", false, 2'010'000, 0.97);
     executeSql(
         temporary.path,
         "INSERT INTO PARKING_SESSION(session_id,slot_id,status,entry_time,"
@@ -269,17 +270,93 @@ void ambiguousEntranceCandidatesStayUnknown() {
         "2100000);");
 
     const auto result = database.applyPlateOcrWithEntrance(
-        600, "EV04", {}, "294미3087", 0.70, 30 * 60 * 1000, 0.85);
+        600, "EV04", {}, "864미1357", 0.70, 30 * 60 * 1000, 0.85);
     require(result.persisted && result.classification == "UNKNOWN" &&
                 result.source == "UNRESOLVED" && result.vehicle_id < 0,
             "ambiguous entrance candidates produced an automatic decision");
+}
+
+void registeredVehicleDigitsCanonicalizeBothFlows() {
+    TemporaryDatabase temporary;
+    database::EventDatabase database(temporary.path);
+    const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
+
+    const auto entranceId = database.createEntranceRecognition(
+        "cam01", "ch02", "known-digit-plate", 1000);
+    database::EntranceVisionAnalysis analysis;
+    // 기준 목록은 NON_EV다. 아이콘 분석이 반대로 나와도 기준 분류를 보존한다.
+    analysis.is_ev = true;
+    analysis.decision = "EV_CANDIDATE";
+    analysis.reason = "registered-digit-test";
+    analysis.model_version = "test-v1";
+    require(database.updateEntranceVisionAnalysis(entranceId, analysis),
+            "registered plate entrance analysis was not stored");
+    require(database.finishEntranceRecognition(
+                entranceId, "315너8504", 0.91, 1, {}) == "NON_EV",
+            "entrance OCR Hangul error was not completed");
+    require(scalarInt(
+                temporary.path,
+                "SELECT COUNT(*) FROM ENTRANCE_RECOGNITION e JOIN VEHICLE v "
+                "ON v.vehicle_id=e.vehicle_id WHERE e.entrance_event_id=" +
+                    std::to_string(entranceId) +
+                " AND e.plate_number='315다8504' "
+                "AND v.plate_number='315다8504' AND v.is_ev=0 "
+                "AND e.resolved_is_ev=0 "
+                "AND e.decision_source='VEHICLE_DB';") == 1,
+            "entrance OCR did not use the registered canonical plate");
+    require(scalarInt(temporary.path,
+                      "SELECT COUNT(*) FROM VEHICLE WHERE "
+                      "plate_number='315너8504';") == 0,
+            "entrance OCR created a duplicate vehicle for a Hangul error");
+
+    executeSql(
+        temporary.path,
+        "INSERT INTO PARKING_SESSION(session_id,slot_id,status,entry_time,"
+        "entry_time_epoch_ms) VALUES(700,'EV02','ACTIVE',CURRENT_TIMESTAMP,"
+        "10000000);"
+        "INSERT INTO IMAGE_LOG(session_id,original_image_path) "
+        "VALUES(700,'registered-observed.jpg');");
+    const auto resolved = database.applyPlateOcrWithEntrance(
+        700, "EV02", "registered-observed.jpg", "294미3087", 0.73,
+        30 * 60 * 1000, 0.85);
+    require(resolved.persisted && resolved.classification == "EV" &&
+                resolved.observed_plate == "294미3087" &&
+                resolved.canonical_plate == "294마3087" &&
+                resolved.vehicle_id >= 0,
+            "parking OCR did not use the registered canonical plate");
+    require(scalarInt(
+                temporary.path,
+                "SELECT COUNT(*) FROM PARKING_SESSION WHERE session_id=700 "
+                "AND parking_ocr_plate='294미3087' "
+                "AND plate_number='294마3087' AND vehicle_id IS NOT NULL;") == 1,
+            "parking session did not preserve observed and canonical plates");
+    require(scalarText(temporary.path,
+                       "SELECT ocr_result FROM IMAGE_LOG WHERE session_id=700;") ==
+                "294미3087",
+            "parking image did not preserve the raw OCR plate");
+
+    // 같은 숫자를 가진 등록 번호가 둘이면 한글을 추측하지 않는다.
+    executeSql(
+        temporary.path,
+        "INSERT INTO VEHICLE(plate_number,is_ev,is_reference) "
+        "VALUES('294바3087',0,1);"
+        "INSERT INTO PARKING_SESSION(session_id,slot_id,status,entry_time,"
+        "entry_time_epoch_ms) VALUES(701,'EV03','ACTIVE',CURRENT_TIMESTAMP,"
+        "11000000);");
+    const auto ambiguous = database.applyPlateOcrWithEntrance(
+        701, "EV03", {}, "294미3087", 0.70, 30 * 60 * 1000, 0.85);
+    require(ambiguous.persisted && ambiguous.classification == "UNKNOWN" &&
+                ambiguous.canonical_plate == "294미3087" &&
+                ambiguous.vehicle_id < 0,
+            "ambiguous registered digit candidates were auto-corrected");
 }
 
 void staleWorkingArtifactsBecomeFailedAndDeleted() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
     const auto eventId = database.createEntranceRecognition(
         "cam01", "ch02", "stale-object", 1000);
     require(database.updateEntranceImage(eventId, true, "stale/plate.jpg"),
@@ -306,7 +383,7 @@ void iconDecisionUpsertsAndUpdatesVehicle() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
     const auto eventId = database.createEntranceRecognition(
         "cam01", "ch02", "new-non-ev", 2000);
     database::EntranceVisionAnalysis analysis;
@@ -344,7 +421,7 @@ void reviewDoesNotCreateVehicle() {
     TemporaryDatabase temporary;
     database::EventDatabase database(temporary.path);
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-    database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+    database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
 
     const auto reviewId = database.createEntranceRecognition(
         "cam01", "ch02", "review", 4000);
@@ -375,7 +452,7 @@ void legacyPhevMigrationPreservesVehicleAndForeignKey() {
     const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
     {
         database::EventDatabase database(temporary.path);
-        database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+        database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
     }
     executeSql(
         temporary.path,
@@ -394,7 +471,7 @@ void legacyPhevMigrationPreservesVehicleAndForeignKey() {
         "PRAGMA foreign_keys=ON;");
     {
         database::EventDatabase database(temporary.path);
-        database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+        database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
         require(database.classifyVehicle("234나5678") ==
                     parking_timer::VehicleCategory::Ev,
                 "legacy PHEV was not folded into EV");
@@ -425,7 +502,7 @@ void migrateExistingDatabaseCopy(const std::filesystem::path& path) {
     {
         database::EventDatabase database(path);
         const std::filesystem::path sqlDir{PARKING_TIMER_TEST_SQL_DIR};
-        database.initialize(sqlDir / "schema.sql", sqlDir / "seed.sql");
+        database.initialize(sqlDir / "schema.sql", sqlDir / "seed_test.sql");
     }
     require(scalarInt(path,
                       "SELECT COUNT(*) FROM pragma_table_info('VEHICLE') "
@@ -472,6 +549,7 @@ int main(int argc, char** argv) {
         schemaAndLifecyclePersist();
         parkingOcrUsesRecentEntranceAsAuthoritativeSource();
         ambiguousEntranceCandidatesStayUnknown();
+        registeredVehicleDigitsCanonicalizeBothFlows();
         staleWorkingArtifactsBecomeFailedAndDeleted();
         iconDecisionUpsertsAndUpdatesVehicle();
         reviewDoesNotCreateVehicle();
