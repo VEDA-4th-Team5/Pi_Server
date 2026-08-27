@@ -413,6 +413,28 @@ bool SlotTransitionActor::processEffects(const std::int64_t now_epoch_ms) {
     return made_progress;
 }
 
+void SlotTransitionActor::purgeSettledIfDue(const std::int64_t now_epoch_ms) {
+    if (config_.retentionPeriod.count() <= 0 || config_.purgeBatchSize == 0)
+        return;
+    const auto interval_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            config_.purgeInterval).count();
+    if (last_purge_epoch_ms_ != 0 &&
+        now_epoch_ms - last_purge_epoch_ms_ < interval_ms) {
+        return;
+    }
+    last_purge_epoch_ms_ = now_epoch_ms;
+    const auto retention_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            config_.retentionPeriod).count();
+    const std::size_t removed = store_.purgeSettled(
+        now_epoch_ms - retention_ms, config_.purgeBatchSize);
+    if (removed != 0) {
+        util::logInfo("Settled occupancy commands purged: count=" +
+                      std::to_string(removed));
+    }
+}
+
 void SlotTransitionActor::run() {
     for (;;) {
         bool progressed = false;
@@ -423,6 +445,9 @@ void SlotTransitionActor::run() {
             progressed = processDueDeadlines(nowEpochMs()) || progressed;
             while (processRunnable(nowEpochMs())) progressed = true;
             progressed = processEffects(nowEpochMs()) || progressed;
+            // 정리는 진행(progress)으로 치지 않는다. progressed를 세우면
+            // 폴링 대기를 건너뛰어 루프가 바쁘게 돌게 된다.
+            purgeSettledIfDue(nowEpochMs());
         } catch (const std::exception& error) {
             util::logError("SlotTransitionActor iteration failed: " +
                            std::string(error.what()));

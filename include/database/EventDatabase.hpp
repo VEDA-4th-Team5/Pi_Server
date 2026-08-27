@@ -12,10 +12,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 struct sqlite3;
+struct sqlite3_stmt;
 
 namespace database {
 
@@ -305,6 +307,26 @@ public:
     std::size_t pendingSlotTransitionEffectCount() const;
     std::size_t pendingSlotTransitionDrainCount(
         std::int64_t shutdown_cutoff_epoch_ms) const;
+    /**
+     * @brief 보존 기간이 지난 종결 상태 INBOX 행을 한 배치만큼 삭제한다.
+     *
+     * `status='APPLIED'`이고 효과까지 끝난(`effect_state IN ('NONE','APPLIED')`)
+     * 행만 지운다. 진행 중이거나 재시도 대기 중인 행은 대상이 아니다.
+     *
+     * @param[in] created_before_epoch_ms 이 시각 이전 생성분만 삭제한다.
+     * @param[in] batch_limit 1회 호출에서 지울 최대 행 수. 잠금 보유 시간을
+     *            제한하기 위한 상한이며, 0이면 아무것도 하지 않는다.
+     * @return 실제로 삭제된 행 수.
+     *
+     * @note 홀 센서 재생(replay) 방어는 이 테이블이 아니라
+     *       `OCCUPANCY_SENSOR_SEQUENCE_STATE`와 `SENSOR_RETIRED_BOOT_ID`가
+     *       담당하므로, 오래된 행을 지워도 중복 수용이 발생하지 않는다.
+     * @note 가장 최근 행은 절대 삭제되지 않으므로
+     *       `MAX(admission_ordinal)` 기반 채번은 영향을 받지 않는다.
+     */
+    std::size_t purgeSettledSlotTransitionCommands(
+        std::int64_t created_before_epoch_ms,
+        std::size_t batch_limit) noexcept;
 
     parking::ParkingCorrelationMatch resolveParkingCorrelation(
         const std::string& camera_id,
@@ -384,6 +406,32 @@ public:
 
 private:
     void executeSqlUnlocked(const std::string& sql);
+    /**
+     * @brief 연결 단위 PRAGMA(busy_timeout/WAL/통계/캐시)를 적용한다.
+     *
+     * @note `db_mutex_`를 이미 보유한 상태에서만 호출한다.
+     * @note 실패해도 예외를 던지지 않는다. 모두 성능·동시성 튜닝이라
+     *       DB 열기 자체를 실패시킬 이유가 없다. 대신 로그를 남긴다.
+     */
+    void applyConnectionPragmasUnlocked() noexcept;
+    /**
+     * @brief 반복 실행되는 SQL의 prepared statement를 캐시해 재사용한다.
+     *
+     * 액터 폴링 루프는 같은 SQL을 초당 수십 회 실행한다. 매번
+     * `sqlite3_prepare_v2`로 재파싱하면 그 비용이 쿼리 실행 자체를 넘어선다
+     * (측정: 조치 후 CPU의 51.90%). 근거는
+     * docs/PERFORMANCE_PROFILING_REPORT_1H.md 참고.
+     *
+     * @param[in] sql 캐시 키로 쓰이는 SQL 문자열. 정적 리터럴이어야 한다.
+     * @return 호출자가 소유하지 않는 statement. 반환 전에 reset/clear된다.
+     * @throws std::runtime_error prepare에 실패한 경우.
+     *
+     * @note `db_mutex_`를 이미 보유한 상태에서만 호출한다. 이 뮤텍스가 모든
+     *       DB 접근을 직렬화하므로 캐시된 statement가 동시에 사용되지 않는다.
+     */
+    sqlite3_stmt* cachedStatementUnlocked(std::string_view sql) const;
+    /** @brief 캐시된 statement를 모두 finalize한다. 연결을 닫기 전에 부른다. */
+    void clearStatementCacheUnlocked() noexcept;
     static std::string readTextFile(const std::filesystem::path& path);
 
     bool opened_;
@@ -392,6 +440,13 @@ private:
     std::string db_path_;
     mutable std::mutex db_mutex_;
     sqlite3* db_{};
+    /**
+     * @brief SQL 문자열 -> 재사용 중인 prepared statement.
+     *
+     * 논리적으로는 메모이제이션이라 const 조회 경로에서도 채워진다.
+     * `db_mutex_`가 접근을 직렬화한다.
+     */
+    mutable std::unordered_map<std::string, sqlite3_stmt*> statement_cache_;
 };
 
 }

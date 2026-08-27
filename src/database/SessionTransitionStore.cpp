@@ -76,6 +76,13 @@ std::size_t SessionTransitionStore::pendingEffectCount() const {
     return database_.pendingSlotTransitionEffectCount();
 }
 
+std::size_t SessionTransitionStore::purgeSettled(
+    const std::int64_t createdBeforeEpochMs,
+    const std::size_t batchLimit) noexcept {
+    return database_.purgeSettledSlotTransitionCommands(
+        createdBeforeEpochMs, batchLimit);
+}
+
 std::size_t SessionTransitionStore::pendingDrainCount(
     const std::int64_t shutdownCutoffEpochMs) const {
     return database_.pendingSlotTransitionDrainCount(shutdownCutoffEpochMs);

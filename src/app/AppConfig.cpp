@@ -284,6 +284,10 @@ AppConfig AppConfig::loadFromEnv() {
         getEnvOrLocalIntOrDefault("ENTRANCE_FAILURE_RETENTION_HOURS", 24,
                                  localSettingPath(".env.public")),
         1, 168);
+    config.occupancy_inbox_retention_days = std::clamp(
+        getEnvOrLocalIntOrDefault("OCCUPANCY_INBOX_RETENTION_DAYS", 30,
+                                 localSettingPath(".env.public")),
+        1, 365);
     config.entrance_plate_match_window_minutes = std::clamp(
         getEnvOrLocalIntOrDefault("ENTRANCE_PLATE_MATCH_WINDOW_MINUTES", 30,
                                  localSettingPath(".env.public")),
