@@ -1,27 +1,55 @@
-# 스마트 주차장 MVP SQLite DB
+# 스마트 주차장 SQLite DB
+
+기준일: 2026-08-24 (`db/schema.sql` 기준, EVDA-238)
 
 ## 설계 목적
 
-`data/db/parking.db`는 Raspberry Pi 스마트 주차장 MVP에서 필요한 차량 판별, 주차면 상태,
-입·출차 세션, 이미지와 OCR 결과, 이벤트 이력을 간단한 5개 테이블로 관리한다.
+`data/db/parking.db`는 Raspberry Pi 스마트 주차장에서 필요한 차량 판별, 주차면 상태,
+입·출차 세션, 이미지와 OCR 결과, 이벤트 이력, 화재 경보, Qt 계정/세션, 점유 판정
+파이프라인의 진행 상태를 16개 테이블로 관리한다. 5개 핵심 테이블은 MVP 시절과
+이름이 같지만 `PARKING_SESSION`과 `IMAGE_LOG`는 이후 열이 크게 늘었다(아래 ERD 참고).
 SQLite 연결 시 foreign key를 활성화하며 C DB Manager는 prepared statement와 bind API를
 사용한다.
 
 ## 테이블
 
-- `VEHICLE`: 데모 차량번호와 EV 여부
+핵심 5개(MVP 때부터 존재, 열 구성은 아래 ERD가 최신):
+
+- `VEHICLE`: 차량번호와 EV 여부(1=EV, 0=NON_EV로 단순화, 기존 PHEV 값은 EV로 흡수)
 - `PARKING_SLOT`: EV 충전구역 및 일반 주차면의 현재 상태와 센서 유형
 - `PARKING_SESSION`: 차량별 입차, 출차, 점유 시간과 세션 상태. 미등록 차량이나 OCR 실패는
-  `vehicle_id=NULL`을 허용하고 입차 당시 OCR 문자열은 `plate_number`에 보존
-- `IMAGE_LOG`: 원본/개선 이미지 경로, 화질개선 방식, OCR 결과
+  `vehicle_id=NULL`을 허용하고 입차 당시 OCR 문자열은 `plate_number`에 보존. CH2 입구
+  매칭 결과(`entrance_event_id`, `plate_match_score`)와 Hall/IVA 확인 상태 4개 플래그도
+  이 테이블에 있다
+- `IMAGE_LOG`: 원본/개선 이미지 경로, ROI 좌표·revision, correlation 식별자, OCR 결과
 - `EVENT_LOG`: 입출차, 부정주차, 장기점유, 센서 오류, 알람 해제 이벤트
 
-## ERD
+EVDA-192 이후 추가된 11개(점유 판정 파이프라인, 화재, Qt 계정, CH2 입구):
+
+| 테이블 | 역할 |
+|---|---|
+| `SYSTEM_SETTINGS` | Qt REST API로 바꾼 런타임 설정(예: overstay 임계값)을 재시작 후에도 복원 |
+| `ENTRANCE_RECOGNITION` | CH2 입구 BestShot의 EV 판정·OCR 결과. `PARKING_SESSION`과 수명이 달라 별도 보관 |
+| `app_users` | Qt 로그인 계정. `password_hash`는 libsodium Argon2id PHC 문자열만 저장 |
+| `app_sessions` | Qt Bearer 세션. 원문 access token은 반환 직후 폐기하고 SHA-256 digest만 저장 |
+| `FIRE_ALARM_STATE` | 채널별 화재 경보 lifecycle(OPEN/ACKNOWLEDGED/RESOLVED) 현재 상태 |
+| `FIRE_MQTT_OUTBOX` | 화재 상태/이벤트를 Qt MQTT로 신뢰성 있게 전달하는 재시도 큐 |
+| `SENSOR_RETIRED_BOOT_ID` | 재부팅한 센서의 이전 boot_id를 기록해 재전송 시퀀스를 구분 |
+| `OCCUPANCY_COMMAND_INBOX` | Hall/카메라/출차 타임아웃 관측을 순서대로 적용하는 명령 큐 |
+| `PARKING_CORRELATION_BINDING` | IVA object_id ↔ 세션 correlation 바인딩과 만료 |
+| `OCCUPANCY_SENSOR_SEQUENCE_STATE` | Hall 센서별 마지막 시퀀스 번호(중복/역전 판별) |
+| `IVA_SLOT_OBSERVATION_STATE` | 슬롯별 IVA 관측 상태(OCCUPIED/VACANT_PENDING/VACANT)와 영역별 원시 상태 |
+| `OCCUPANCY_EXIT_DEADLINE` | IVA EXIT 확인 대기(`CAMERA_IVA_EXIT_CONFIRM_MS`) 타이머 상태 |
+
+정확한 열과 제약은 `db/schema.sql`이 최종 근거다.
+
+## ERD (핵심 5개 테이블)
 
 ```mermaid
 erDiagram
     VEHICLE ||--o{ PARKING_SESSION : "vehicle_id"
     PARKING_SLOT ||--o{ PARKING_SESSION : "slot_id"
+    ENTRANCE_RECOGNITION |o--o{ PARKING_SESSION : "entrance_event_id"
     PARKING_SESSION ||--o{ IMAGE_LOG : "session_id"
     PARKING_SESSION ||--o{ EVENT_LOG : "session_id"
     PARKING_SLOT ||--o{ EVENT_LOG : "slot_id"
@@ -44,10 +72,21 @@ erDiagram
         INTEGER vehicle_id FK
         TEXT slot_id FK
         TEXT plate_number
+        TEXT parking_ocr_plate
+        REAL parking_ocr_confidence
+        INTEGER entrance_event_id FK
+        REAL plate_match_score
+        TEXT plate_resolution_source
         TEXT entry_time
+        TEXT violation_at
         TEXT exit_time
         INTEGER duration_sec
         TEXT status
+        TEXT occupancy_attempt_id
+        INTEGER hall_confirmed
+        INTEGER iva_confirmed
+        INTEGER hall_occupied
+        INTEGER iva_occupied
     }
     IMAGE_LOG {
         INTEGER image_id PK
@@ -55,6 +94,13 @@ erDiagram
         TEXT original_image_path
         TEXT enhanced_image_path
         TEXT enhancement_type
+        TEXT correlation_id
+        TEXT camera_object_id
+        REAL roi_x
+        REAL roi_y
+        REAL roi_width
+        REAL roi_height
+        TEXT evidence_reason
         TEXT ocr_result
         TEXT captured_at
     }
@@ -68,6 +114,10 @@ erDiagram
         INTEGER handled
     }
 ```
+
+나머지 11개 테이블은 자기 완결적인 상태 저장소라 위 ERD의 외래키 그래프와
+직접 연결되지 않으며(내부적으로 `slot_id`/`session_id` 문자열로만 참조),
+`db/schema.sql`에 개별 정의돼 있다.
 
 ## 설치 및 초기화
 

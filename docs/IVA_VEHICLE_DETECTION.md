@@ -1,16 +1,17 @@
 # WiseAI IVA 차량 탐지 연동
 
-기준 기능: EVDA-192
+기준 기능: EVDA-192, EVDA-238(CH3 확장 및 ONVIF PullPoint 입력)
 
 ## 역할 분리
 
 카메라의 WiseAI가 영상과 IVA Area를 분석하고, Raspberry Pi는 카메라가 발행한
-ONVIF MQTT 이벤트를 주차면 이벤트로 변환한다. Qt의 실시간 RTSP 표시는 이 흐름과
-독립적이다.
+이벤트를 주차면 이벤트로 변환한다. Qt의 실시간 RTSP 표시는 이 흐름과
+독립적이다. 이벤트 전송 경로는 `CAMERA_IVA_EVENT_SOURCE`로 선택하며
+아래 두 경로 모두 같은 `IvaEventResolver`로 수렴한다.
 
 ```text
 Hanwha WiseAI IVA Area
-→ Camera ONVIF MQTT
+→ Camera ONVIF MQTT (CAMERA_IVA_EVENT_SOURCE=MQTT, 코드 기본값)
 → Mosquitto
 → CameraEventParser
 → IvaEventResolver
@@ -18,10 +19,36 @@ Hanwha WiseAI IVA Area
 → Snapshot / DB / OCR / Qt MQTT
 ```
 
-## 2026-08-05 배치 기준
+```text
+Hanwha WiseAI IVA Area
+→ Camera ONVIF PullPoint long-poll (CAMERA_IVA_EVENT_SOURCE=ONVIF, 운영값)
+→ OnvifIvaEventSource
+→ OnvifIvaEventAdapter
+→ IvaEventResolver
+→ HallParkingService::handleCameraIvaSignal
+→ Snapshot / DB / OCR / Qt MQTT
+```
 
-현재 실기기 배치는 한 카메라 채널의 고정 화면 안에서 WiseAI 기본 영역
-`name1`~`name4`를 EV 주차면과 1:1로 매핑한다.
+두 경로는 동시에 활성화되지 않는다. `ONVIF`를 선택하면 `MqttEventBridge`는
+자신의 IVA 처리 경로를 건너뛴다(`src/mqtt/MqttEventBridge.cpp:383`). `OnvifIvaEventSource`는
+카메라 ONVIF 이벤트 서비스를 PullPoint로 구독하고, 매핑 실패 시 아래 형식으로
+경고를 남긴다(`src/main.cpp`의 콜백 로그).
+
+```text
+[WARN] ONVIF IVA event rejected: <IvaEventResolver 원인> token=<video_source_token> rule=<rule_name> action=<Intrusion|Exit>
+```
+
+원인 문자열이 `camera/token/rule mapping not found`이면 카메라가 실제로 발행하는
+`video_source_token`/`rule_name` 조합이 `config/parking_slots.json`의
+`camera_bindings`와 다르다는 뜻이다. 카메라 IVA Area 설정 화면에서 실제 값을
+확인하고 슬롯 설정을 맞춘다.
+
+## CH1·CH3 슬롯 매핑 (EVDA-192 / EVDA-238)
+
+두 카메라 채널이 각각 고정 화면 안에서 WiseAI 기본 영역 `name1`~`name8`를
+EV 주차면과 1:1로 매핑한다. CH1과 CH3는 `video_source_token`이 다르므로
+Rule 이름이 채널마다 `name1`부터 반복돼도 슬롯 매핑은 모호해지지 않는다 —
+`camera_id + video_source_token + rule_name` 세 값이 모두 일치해야 하기 때문이다.
 
 | 서버 채널 | Video source token | IVA Rule | 전역 slot_id | Snapshot API channel |
 |---|---|---|---|---:|
@@ -29,13 +56,20 @@ Hanwha WiseAI IVA Area
 | `ch01` | `vs-0` | `name2` | `EV02` | 0 |
 | `ch01` | `vs-0` | `name3` | `EV03` | 0 |
 | `ch01` | `vs-0` | `name4` | `EV04` | 0 |
+| `ch03` | `vs-2` | `name5` | `EV05` | 2 |
+| `ch03` | `vs-2` | `name6` | `EV06` | 2 |
+| `ch03` | `vs-2` | `name7` | `EV07` | 2 |
+| `ch03` | `vs-2` | `name8` | `EV08` | 2 |
 
-네 슬롯은 같은 전체 프레임을 공유하지만 ROI가 서로 다르다. 실제 좌표는 카메라
+여덟 슬롯은 각각 다른 ROI를 사용한다. 실제 좌표는 카메라
 설치 후 캡처한 기준 프레임에서 측정하며 문서가 임의 값을 확정하지 않는다.
+실제 배치의 Rule 이름·채널·slot_id 대응은 배치마다 달라질 수 있으므로 이 표는
+develop 기준 기본 배선이고, 실제 값은 `config/parking_slots.json`이 최종
+근거다.
 
-향후 여러 카메라 채널에서 `EV01~EV04` Rule 이름을 반복한다면 DB의 `slot_id`는
-전역적으로 유일해야 하므로 `CH02_EV01` 같은 전역 ID를 사용하거나 별도 매핑을
-정해야 한다. 현재 표는 `ch01` 한 채널 기준이다.
+향후 세 번째 카메라 채널을 추가해 `name1~name4` Rule 이름을 다시 반복한다면
+DB의 `slot_id`는 전역적으로 유일해야 하므로 `CH0x_EV01` 같은 전역 ID를 사용하거나
+별도 매핑을 정해야 한다.
 
 ## 슬롯 매핑 계약
 
@@ -88,25 +122,18 @@ ROI는 입력 해상도와 무관한 0.0~1.0 정규화 좌표를 사용한다. �
 세션을 구분한다.
 
 ```text
-data/snapshots/ch1/
-└─ EV01/
-   ├─ occupancy_start/
-   │  ├─ original/
-   │  └─ enhanced/
-   ├─ occupied_30s/
-   │  ├─ original/
-   │  └─ enhanced/
-   ├─ occupied_60s/
-   │  ├─ original/
-   │  └─ enhanced/
-   └─ overstay/
-      ├─ original/
-      └─ enhanced/
+data/snapshots/
+├─ ch1/EV01~EV04/
+│  ├─ occupancy_start/{original,enhanced}/
+│  ├─ occupied_30s/{original,enhanced}/
+│  ├─ occupied_60s/{original,enhanced}/
+│  └─ overstay/{original,enhanced}/
+└─ ch3/EV05~EV08/  (구조 동일)
 ```
 
 각 촬영 단계의 original/enhanced 파일은 각각 `original/`과 `enhanced/`
 하위 디렉터리에 둔다. 세션에
-연결되지 않은 IVA 진단 이미지만 `EV01/events/iva/`에 격리한다.
+연결되지 않은 IVA 진단 이미지만 `EVxx/events/iva/`에 격리한다.
 
 ## Hall 센서 없이 운영하는 상태 머신
 
@@ -169,14 +196,21 @@ Hall VACANT는 무시하고, Hall만 확인한 세션은 IVA EXIT을 기다리�
 
 ## 카메라 MQTT 계약
 
-운영 점유 판정은 카메라가 자동 발행하는 네이티브 IvaArea 상태를 사용한다.
+`CAMERA_IVA_EVENT_SOURCE=MQTT`일 때의 계약이다. 운영 기본값인 `ONVIF`에서는
+아래 topic 구조 대신 ONVIF PullPoint 응답의 같은 필드(`VideoSourceToken`,
+`RuleName`, `Action`, `UtcTime`, `ObjectId`)를 직접 읽으며, 이후 슬롯 매핑·판정
+로직은 동일하다. 운영 점유 판정은 카메라가 자동 발행하는 네이티브 IvaArea 상태를 사용한다.
 
 ```text
 .../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name1
 .../onvif-ej/OpenApp/WiseAI/IvaArea/&vs-0/name4
 ```
 
-`name1`~`name4`는 각각 `EV01`~`EV04`다. `Data.Action=Intrusion`만 대응 슬롯의
+CH1(`vs-0`) 예시이며 CH3는 같은 구조에서 토큰만 `vs-2`, Rule 이름은
+`name5`~`name8`이다(§CH1·CH3 슬롯 매핑 참고).
+
+`name1`~`name4`는 각각 `EV01`~`EV04`다(CH3의 `name5`~`name8`은 `EV05`~`EV08`).
+`Data.Action=Intrusion`만 대응 슬롯의
 OCCUPIED로 전달하고 `Data.Action=Exit`는 VACANT 후보로 전달한다. WiseAI의
 `Data.State=true`는 액션 발생 상태이므로 EXIT payload에서도 점유 true로 해석하지
 않는다. `ObjectId`는 EXIT와 후속 INTRUSION의 상관관계 로그에 보존한다.
@@ -209,12 +243,12 @@ Default topic prefix: false
 ## Snapshot API 기반 현재 촬영 흐름
 
 ```text
-IVA MQTT active 수신
-→ (camera_id, token, rule_name)으로 EV01~EV04 결정
-→ bounded capture queue에 작업 등록 후 MQTT callback 즉시 반환
+IVA active 수신 (MQTT 또는 ONVIF PullPoint)
+→ (camera_id, token, rule_name)으로 EV01~EV08 결정 (CH1: EV01~04, CH3: EV05~08)
+→ bounded capture queue에 작업 등록 후 콜백 즉시 반환
 → CameraSnapshotApiClient /images/generate 호출
 → 해당 API channel의 original/enhanced JPEG 즉시 다운로드
-→ data/snapshots/ch1/EVxx/<stage> 저장
+→ data/snapshots/ch{1,3}/EVxx/<stage> 저장
 → 카메라 enhanced ROI를 Gemini OCR 우선 입력으로 사용
 → IMAGE_LOG / OCR / Qt 이벤트 연결
 ```

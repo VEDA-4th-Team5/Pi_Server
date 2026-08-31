@@ -313,6 +313,47 @@ sqlite3 -header -column data/db/parking.db 'SELECT * FROM VEHICLE;'
 - 정책: OCR 실패를 `NON_EV`로 단정하지 않고 `UNKNOWN`과 `PLATE_OCR_UNRESOLVED`로 기록한다.
 - 비밀값 확인 시 API Key 자체를 출력하지 않는다.
 
+### TS-022 `ONVIF IVA event rejected: camera/token/rule mapping not found`
+
+- 발생일: 2026-08-28
+- 상태: 해결(원인 확인 후 설정으로 조치)
+- 증상: 로그에 다음 두 줄이 짝으로 반복된다.
+
+```text
+[WARN] ONVIF IVA event rejected: ONVIF IvaArea mapping failed: camera/token/rule mapping not found token=<video_source_token> rule=<rule_name> action=<Intrusion|Exit>
+[WARN] ONVIF IVA event rejected by server: token=<video_source_token> rule=<rule_name> action=<Intrusion|Exit>
+```
+
+- 영향 범위: MQTT 수신·연결 자체는 정상이며(`CAMERA_IVA_EVENT_SOURCE=ONVIF`이면
+  ONVIF PullPoint 자체는 정상), 해당 채널의 입출차 이벤트만 서버가 세션에
+  반영하지 못하고 매 이벤트가 거부된다.
+- 확인 명령:
+
+```bash
+grep -c "camera/token/rule mapping not found" data/logs/pi-server.log
+grep -o "token=[a-z0-9-]* rule=[A-Za-z0-9_-]*" data/logs/pi-server.log | sort | uniq -c | sort -rn
+```
+
+- 확인 결과: 위 집계로 나온 `token`/`rule` 조합을 `config/parking_slots.json`의
+  `camera_bindings[].video_source_token` / `rule_name`과 대조한다.
+- 원인: `IvaEventResolver::resolve()`(`src/event/IvaEventResolver.cpp`)는
+  `camera_id + video_source_token + rule_name` 세 값이 슬롯 설정과 모두 일치해야
+  매핑한다. 카메라는 IVA rule 이름을 **채널마다 `name1`부터 다시 매긴다** — 예를
+  들어 CH1(`vs-0`)과 CH3(`vs-2`)가 똑같이 `name1~name4`를 쓸 수 있다. 카메라
+  IVA Area 설정 화면의 실제 Rule 이름과 `parking_slots.json`의 `rule_name`이
+  어긋나면 토큰은 맞아도 이름에서 거부된다.
+- 해결: 카메라 웹 설정에서 대상 채널의 IVA Area 이름을 확인하고
+  `config/parking_slots.json`의 해당 슬롯 `rule_name`을 맞춘 뒤 서버를
+  재시작한다(설정은 기동 시 1회만 읽는다). develop 기본 배선은
+  CH1 `vs-0`=`name1~name4`→`EV01~EV04`, CH3 `vs-2`=`name5~name8`→`EV05~EV08`이며
+  실제 배치가 다르면 이 값이 근거가 아니라 카메라 설정 화면이 근거다.
+- 재발 방지: 카메라 IVA Area 이름을 바꾸거나 채널을 추가할 때는
+  `config/parking_slots.json`을 함께 갱신하고, TS-022의 확인 명령으로 거부
+  0건을 확인한 뒤 배포한다.
+- 관련 파일/이슈: `src/event/IvaEventResolver.cpp`,
+  `src/event/OnvifIvaEventAdapter.cpp`, `config/parking_slots.json`,
+  `docs/IVA_VEHICLE_DETECTION.md`
+
 ### TS-013 MJPEG/H.264 decoder 경고
 
 관찰된 예:

@@ -46,7 +46,8 @@ add_executable(gemini-ocr-test
     tests/integration/GeminiOcrTest.cpp
     src/ocr/GeminiOcrClient.cpp
     src/ocr/PlateImageEnhancer.cpp
-    src/ocr/PlateNormalizer.cpp)
+    src/ocr/PlateNormalizer.cpp
+    src/util/Logger.cpp)
 target_include_directories(gemini-ocr-test PRIVATE include)
 target_compile_options(gemini-ocr-test PRIVATE -Wall -Wextra)
 target_link_libraries(gemini-ocr-test PRIVATE
@@ -55,7 +56,8 @@ target_link_libraries(gemini-ocr-test PRIVATE
 # 외부 Gemini 호출 없이 HTTP 상태/JSON/MIME/fallback 계약을 검증한다.
 add_executable(gemini-ocr-client-test
     tests/unit/GeminiOcrClientTest.cpp
-    src/ocr/GeminiOcrClient.cpp)
+    src/ocr/GeminiOcrClient.cpp
+    src/util/Logger.cpp)
 target_include_directories(gemini-ocr-client-test PRIVATE include)
 target_compile_options(gemini-ocr-client-test PRIVATE -Wall -Wextra)
 target_link_libraries(gemini-ocr-client-test PRIVATE PkgConfig::CURL)

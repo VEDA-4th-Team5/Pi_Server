@@ -92,6 +92,12 @@ ACK는 화재 해제가 아니다. 동일 DETECTED는 ACK 상태를 OPEN으로 �
 
 ## Post-entry capture request (draft, not finalized — EVDA-135)
 
+> 실제 T0+30/60초 촬영은 이 MQTT draft가 아니라 Camera Snapshot API
+> (`/images/generate`)로 구현이 확정됐다 — 상세는
+> [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](CAMERA_SNAPSHOT_API_INTEGRATION.md).
+> 아래 `capture_request_draft_v0` 발행은 코드에 여전히 남아 있지만(`main.cpp`)
+> 진단/호환용 부가 신호이며 실제 촬영 트리거가 아니다.
+
 After a hall session starts (OCCUPIED confirmed at T0), the Pi asks the camera to
 shoot the settled plate at **T0+30s** and **T0+60s**. `CaptureScheduler` owns the
 schedule/dedup/retry policy; `CaptureSchedulerRuntime` publishes each request.

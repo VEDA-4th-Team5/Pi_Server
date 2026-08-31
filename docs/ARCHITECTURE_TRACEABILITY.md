@@ -1,12 +1,13 @@
 # Architecture Traceability
 
-기준일: 2026-08-12
+기준일: 2026-08-24
 
 | Interface | 실제 코드 대응 | 상태 |
 |---|---|---|
 | I-01 Hall Sensor → STM32 | 이 저장소에 STM32 펌웨어와 실제 센서 입력 코드는 없음 | 미구현 |
 | I-02 STM32 → Pi UART | `UartDriver`, `device::SensorLinkManager`, `SensorProtocolParser`, `HallParkingService` | 구현: POSIX UART/재연결/화재·홀 공유 라인 분기 |
-| I-03 Camera → Pi MQTT | `MqttEventBridge`, `CameraEventParser`, `IvaOccupancyCoordinator` | 구현: WiseAI Intrusion/Exit, 다중 notification 분리, 슬롯 매핑 |
+| I-03 Camera → Pi MQTT | `MqttEventBridge`, `CameraEventParser`, `IvaOccupancyCoordinator` | 구현: WiseAI Intrusion/Exit, 다중 notification 분리, 슬롯 매핑, CH1(EV01~04)·CH3(EV05~08) |
+| I-03b Camera → Pi ONVIF PullPoint | `OnvifIvaEventSource`, `OnvifIvaEventAdapter`, `IvaEventResolver`(I-03과 공유) | 구현: `CAMERA_IVA_EVENT_SOURCE=ONVIF`가 운영 기본값, MQTT와 상호 배타 |
 | I-04 Pi ↔ Camera Snapshot/현재 프레임 | `CameraSnapshotApiClient`, `HallCaptureExecutor`, `SnapshotStorage`; 선택적 `RtspStreamReceiver` | 구현: original/enhanced 다운로드, 실행 중 ROI crop, IMAGE_LOG/OCR 연결; RTSP는 fallback |
 | I-05 Camera → Qt RTSP 4채널 | Qt 클라이언트 저장소의 책임이며 Pi는 영상 프록시를 하지 않음 | Pi 범위 외 |
 | I-06 Pi ↔ Gemini HTTPS OCR | `GeminiOcrClient`, `OcrWorker`, `PlateNormalizer` | 구현 |
@@ -20,6 +21,7 @@
 | I-14 LoRa 수신 → Pi | `UartDriver` → `LoRaDriver` → `SensorLinkManager` → `HallParkingService`; 알림 상태 경계는 `parking_alert.ko`/`LinuxDriverAdapter` | 구현: `/dev/parking_alert` 실기기 read/write/ioctl/poll 검증, LoRa 실물 검증 필요 |
 | I-15 Pi → Qt 화재 근거/Alarm ACK | `FireAlarmManager`, `MqttEventBridge` ACK handler, `parking/fire/{channel}` | 구현: OPEN/ACKNOWLEDGED/RESOLVED, STM32 실제 경보 출력은 별도 |
 | I-16 Pi → STM32 번호판 조명 LED | `PlateIlluminator` → `SensorLinkManager::sendAlertCommand`, payload 규격은 `docs/UART_LORA_PROTOCOL.md` | 부분 구현: Pi 송신부와 점등 정책 구현, STM32 수신·GPIO·페일세이프 타이머 미구현 |
+| I-17 Camera CH2 RTSP metadata → Pi 입구 인식 | `BestShotReceiver`, `EntranceBestShotCoordinator`, `EntranceVehicleService`, `EntranceEvWorker`(Python), `GeminiOcrClient` | 구현: EV 아이콘 판정+OCR, `ENTRANCE_RECOGNITION` 저장, 주차 세션 번호판 fuzzy/exact 매칭. 상세는 `docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md` |
 
 ## 현재 홀센서 대체 입력 흐름
 
@@ -28,7 +30,7 @@ parking/sensor/hall MQTT
 → MqttEventBridge::onMessage()
 → HallParkingService::handleLine()
 → SensorProtocolParser / ParkingSensorEventAdapter
-→ OCCUPIED confirmation gate / EV01~EV04 상태 전이
+→ OCCUPIED confirmation gate / EV01~EV08 상태 전이
 → SQLite PARKING_SESSION 생성
 → CaptureScheduler의 T0+30초/60초 작업
 → Camera Snapshot API original/enhanced 다운로드 + ROI crop

@@ -141,7 +141,7 @@ sudo rmmod parking_alert
 커널 bit의 대응은 `PARKING_ALERT_SLOT_MAP`으로 설정한다.
 
 ```text
-EV01:0,EV02:1,EV03:2,EV04:3
+EV01:0,EV02:1,EV03:2,EV04:3,EV05:4,EV06:5,EV07:6,EV08:7
 ```
 
 - `NON_EV_ALERT`, `VIOLATION_TRIGGERED`: 해당 슬롯 bit SET

@@ -1,0 +1,11 @@
+=== LOAD WINDOW 183.449s (HZ=100) ===
+cpu_total_pct=7.22  user_pct=5.09  sys_pct=2.13
+rchar=12.24 KB/s  wchar=15.24 KB/s  syscr=20.73 /s  syscw=7.92 /s
+eth0(system) rx=735.9 KB/s  tx=174.8 KB/s
+vol_ctxsw=1.0 /s  nonvol_ctxsw=0.0 /s
+log_lines_added=56
+PARKING_SESSION: 78 -> 82 (+4)
+IMAGE_LOG:       43 -> 46 (+3)
+db_size: 5.09 MB -> 5.09 MB (+0.0 KB)
+loadavg: 0.74 0.70 0.71 1/1246 1443509
+temp: temp=39.9'C  throttled: throttled=0x0

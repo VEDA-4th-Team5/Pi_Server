@@ -10,8 +10,13 @@ cmake --build cmake-build -j2
 ctest --test-dir cmake-build --output-on-failure
 ```
 
-현재 CTest에는 소프트웨어 자동 테스트 39개와 기본 실행 시 Skip되는 실기기 HIL 테스트
-1개, 총 40개가 등록되어 있다. 대표 항목은 다음과 같다.
+현재 CTest에는 소프트웨어 자동 테스트 41개와 기본 실행 시 Skip되는 실기기 HIL 테스트
+1개, 총 42개가 등록되어 있다(`grep -c '^add_test(NAME' CMakeLists.txt`로 확인). 대표
+항목은 다음과 같다. 전체 목록은 명령으로 직접 뽑는 것이 가장 정확하다.
+
+```bash
+ctest --test-dir cmake-build -N
+```
 
 1. `gemini-ocr-client-test`: Gemini HTTP/JSON/MIME/재시도 계약
 2. `hall-ocr-policy-test`: 30초 우선 OCR, 60초 fallback, UNKNOWN 정책
@@ -37,6 +42,11 @@ ctest --test-dir cmake-build --output-on-failure
 20. `hall-capture-pipeline-test`: Snapshot/RTSP 촬영 port → ROI JPEG → IMAGE_LOG/OCR
 21. `camera-snapshot-api-client-test`: `/startserver`, discovery, generate, JPEG 검증/재시도
 22. `http-api-test`: 슬롯·세션·이미지·설정 API와 data root 경로 보안
+23. `onvif-iva-event-source-test`: ONVIF PullPoint 구독·long-poll·재접속(EVDA-238)
+24. `parking-production-config-test`: `config/parking_slots.json` 운영 설정이
+    CH1/CH3 슬롯·토큰·rule 매핑 계약을 실제로 만족하는지 검증
+25. `parking-alert-controller-test`: `/dev/parking_alert` 연동, 슬롯→bit 매핑,
+    위반 세션 복원
 
 입구 CH2 기능은 다음 테스트로 분리해 검증한다.
 

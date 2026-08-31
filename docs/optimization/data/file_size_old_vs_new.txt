@@ -1,0 +1,37 @@
+# 파일 크기 / Gemini 토큰 원본 측정  (생성일 2026-08-28, Pi 4B 8GB)
+# 옛 방식 = d41e2f09 / 현재 = demo_0826 79c5de4
+
+[1] 옛 방식 이벤트 1건 (같은 프레임 2장을 한 프롬프트에)
+  scene JPEG     1280x720    164538 B    160.7 KB  base64   214.2 KB  tiles=2 tok=516
+  enhanced PNG   1280x720    831401 B    811.9 KB  base64  1082.6 KB  tiles=2 tok=516
+  합계                          995939 B    972.6 KB  base64  1296.8 KB  tok=1032
+
+[2] 현재 방식 실파일 전수 (data/snapshots)
+  파일수=178  총량=11.25 MB
+  평균=64.7 KB  중앙=67.1 KB  최소=14.4 KB  최대=122.1 KB
+  100KB 미만 158장 / 이상 20장
+  타일 분포 {1: 178}  -> 전 장 258 tok
+  해상도 분포:
+    406x421   n=44   avg=   64.0KB tiles=1
+    401x643   n=30   avg=   72.6KB tiles=1
+    410x601   n=20   avg=   76.5KB tiles=1
+    467x496   n=12   avg=   64.3KB tiles=1
+    473x638   n=10   avg=  102.7KB tiles=1
+    287x386   n=8    avg=   20.6KB tiles=1
+    285x458   n=8    avg=   45.4KB tiles=1
+    280x339   n=8    avg=   23.4KB tiles=1
+    495x595   n=8    avg=  112.7KB tiles=1
+    327x218   n=4    avg=   28.2KB tiles=1
+    422x502   n=4    avg=   74.7KB tiles=1
+    583x683   n=4    avg=   62.7KB tiles=1
+    422x501   n=4    avg=   54.5KB tiles=1
+    358x566   n=4    avg=   50.9KB tiles=1
+    525x456   n=2    avg=   77.2KB tiles=1
+    565x636   n=2    avg=  113.8KB tiles=1
+    337x145   n=2    avg=   27.5KB tiles=1
+    352x144   n=2    avg=   16.1KB tiles=1
+    238x110   n=2    avg=   14.4KB tiles=1
+
+[3] original / enhanced 중복 검사
+  쌍=89  byte-identical=73 (82%)  실제개선=16
+  총 11.25 MB 중 중복사본 5073 KB (44%)

@@ -1,4 +1,9 @@
-# Merge Notes
+# Merge Notes (historical — 최초 저장소 병합 기록)
+
+> "imported sensor domain is intentionally not wired into main.cpp yet"는
+> 지금은 사실이 아니다(UART/센서 도메인은 오래 전에 배선됐다). 이 문서는
+> `pi_server_taejun` + `pi-server_submit` 최초 병합 당시의 기록으로만 유지한다.
+> 현재 아키텍처는 [`docs/architecture/README.md`](architecture/README.md)를 참고한다.
 
 `pi-server_merged` is based on `pi-server_submit`. The original submit and
 Taejun directories and timestamped copies remain unchanged.

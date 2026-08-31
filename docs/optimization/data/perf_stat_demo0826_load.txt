@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '1438340':
+
+     2,088,930,385      task-clock:u                     #    0.069 CPUs utilized             
+     2,149,661,362      cycles:u                         #    1.029 GHz                       
+     1,606,254,029      instructions:u                   #    0.75  insn per cycle            
+       543,385,659      cache-references:u               #  260.126 M/sec                     
+        10,428,557      cache-misses:u                   #    1.92% of all cache refs         
+        11,356,308      branch-misses:u                                                       
+
+      30.098493719 seconds time elapsed
+

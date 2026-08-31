@@ -68,10 +68,14 @@ int main(int argc, char* argv[]) {
                 {"EV02", "ev_charging", "HALL02", "vs-0", "name2"},
                 {"EV03", "ev_charging", "HALL01", "vs-0", "name3"},
                 {"EV04", "ev_charging", "",       "vs-0", "name4"},
-                {"P01",  "normal",      "",       "vs-2", "name5"},
-                {"P02",  "normal",      "HALL03", "vs-2", "name6"},
-                {"P03",  "normal",      "HALL04", "vs-2", "name7"},
-                {"P04",  "normal",      "",       "vs-2", "name8"},
+                // 카메라는 IVA rule 이름을 채널마다 name1 부터 다시 매긴다.
+                // CH3(vs-2)도 CH1 과 똑같이 name1~name4 를 내보내므로 이름만으로는
+                // 채널을 구분할 수 없고, videoSourceToken 이 유일한 판별자다.
+                // 근거: 운영 로그에서 vs-2 가 실제로 name1~name4 를 발행한다.
+                {"P01",  "normal",      "",       "vs-2", "name1"},
+                {"P02",  "normal",      "HALL03", "vs-2", "name2"},
+                {"P03",  "normal",      "HALL04", "vs-2", "name3"},
+                {"P04",  "normal",      "",       "vs-2", "name4"},
             };
             require(configs.size() == 8,
                     "production config must contain four EV and four normal slots");

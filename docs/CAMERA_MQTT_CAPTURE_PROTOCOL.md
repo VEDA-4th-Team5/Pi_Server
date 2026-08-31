@@ -2,6 +2,11 @@
 
 기준일: 2026-07-26
 
+> 이 문서가 정의한 목표 규약 중 촬영 트리거는 이후 Camera Snapshot API
+> (`/images/generate`)로 구현이 확정됐다. 실제 구현·설정은
+> [`docs/CAMERA_SNAPSHOT_API_INTEGRATION.md`](CAMERA_SNAPSHOT_API_INTEGRATION.md)를
+> 참고한다. 아래 내용은 draft 규약과 미구현 항목을 추적하는 기록으로 남긴다.
+
 ## 1. 문서 상태
 
 이 문서는 홀센서 차량 감지 후 Raspberry Pi가 MQTT로 카메라 촬영을 요청하고,

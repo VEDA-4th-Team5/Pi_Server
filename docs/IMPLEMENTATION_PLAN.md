@@ -1,4 +1,9 @@
-# Implementation Plan
+# Implementation Plan (historical — 초기 계획, 아래 6단계 모두 완료됨)
+
+> 이 문서가 "Next phases"로 나열한 STM32 UART, OCCUPIED/VACANT 전이, Qt 발행,
+> HTTP 상태 API, 화재 인터페이스는 모두 구현됐다. C++17이라는 baseline도
+> 현재는 C++20이다(`CMakeLists.txt`). 현재 아키텍처는
+> [`docs/architecture/README.md`](architecture/README.md)를 참고한다.
 
 ## Current baseline
 

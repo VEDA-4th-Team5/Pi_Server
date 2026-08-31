@@ -29,6 +29,16 @@ struct OcrResult {
     OcrErrorKind error_kind{OcrErrorKind::None};
     long http_status{};
 
+    // Gemini 응답의 usageMetadata. 응답에 없거나 본문 파싱 전에 실패하면 -1로 남는다.
+    // 0은 "모델이 0토큰을 청구했다"는 뜻이라 미측정과 구분해야 한다.
+    int prompt_token_count{-1};
+    int candidates_token_count{-1};
+    int total_token_count{-1};
+    // 이 요청에 실제로 실린 이미지 수와 원본 바이트 합(base64 이전).
+    // 토큰이 파일 크기가 아니라 해상도로 정해진다는 점을 로그에서 바로 대조하려는 값이다.
+    int image_count{0};
+    long long image_bytes{0};
+
     [[nodiscard]] bool retryable() const noexcept {
         return error_kind == OcrErrorKind::Transport ||
                error_kind == OcrErrorKind::RateLimited ||

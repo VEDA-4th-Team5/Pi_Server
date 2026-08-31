@@ -1,0 +1,14 @@
+    28.80%  libcrypto.so.3          
+    21.28%  libc.so.6               
+    16.05%  libsqlite3.so.0.8.6     
+    10.68%  libavformat.so.61.7.103 
+     8.60%  libavcodec.so.61.19.101 
+     3.74%  libavutil.so.59.39.100  
+     3.67%  libstdc++.so.6.0.33     
+     2.78%  pi-server               
+     2.12%  [unknown]               
+     1.20%  libcpp-httplib.so.0.18.7
+     0.62%  [vdso]                  
+     0.44%  libssl.so.3             
+     0.02%  libmosquitto.so.2.0.21  
+     0.00%  libcurl.so.4.8.0        

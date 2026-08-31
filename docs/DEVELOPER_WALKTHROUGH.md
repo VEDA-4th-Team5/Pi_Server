@@ -1,4 +1,8 @@
-# Developer Walkthrough
+# Developer Walkthrough (historical — 프로젝트 초기 상태)
+
+> 이 문서는 UART/HTTP/타이머/화재 알람이 구현되기 전 초기 상태의 기록이다.
+> 아래 "not yet implemented" 목록은 현재 모두 구현돼 있다. 현재 아키텍처는
+> [`docs/architecture/README.md`](architecture/README.md)를 참고한다.
 
 1. `src/main.cpp` constructs and starts every server component.
 2. `src/camera/RtspStreamReceiver.cpp` keeps the latest camera frame.

@@ -15,10 +15,10 @@ blockquote { border-left: 4px solid #df9f32; background: #fff8e8; margin-left: 0
 
 # Pi Server 실기기 E2E 테스트 지침서
 
-- 기준일: 2026-08-12
+- 기준일: 2026-08-24 (EVDA-238 CH3 확장 반영)
 - 대상: Raspberry Pi C++ `pi-server`, Hanwha Vision WiseAI, Mosquitto, Camera Snapshot API, SQLite, Qt
 - 기준 브랜치: 테스트 시작 시 `git branch --show-current` 결과를 기록한다.
-- 적용 슬롯: `name1 → EV01`, `name2 → EV02`, `name3 → EV03`, `name4 → EV04`
+- 적용 슬롯: CH1 `name1 → EV01`~`name4 → EV04`(`vs-0`), CH3 `name5 → EV05`~`name8 → EV08`(`vs-2`)
 
 > 이 문서는 운영 DB와 실기기 상태를 변경하는 테스트를 포함한다. 실행 전 DB를 백업하고, 카메라 비밀번호·Gemini API Key·Telegram Token을 화면이나 문서에 노출하지 않는다.
 
@@ -37,7 +37,7 @@ WiseAI Intrusion
 → IMAGE_LOG 및 Gemini OCR 연결
 → Qt OCCUPIED/이미지 표시
 → WiseAI Exit
-→ 20초 확인 대기
+→ 10초 확인 대기(`CAMERA_IVA_EXIT_CONFIRM_MS` 기본값)
 → 조기 출차면 이미지/IMAGE_LOG 삭제
   또는 위반 세션이면 증거 보존
 ```
@@ -147,6 +147,9 @@ CH1에서 다음 매핑을 확인한다.
 | `name4` | `EV04` | `vs-0` |
 
 각 영역에서 `Intrusion`과 운영에 필요한 `Exit` 분석이 활성화되고 Apply/Save 되었는지 확인한다.
+
+CH3(EVDA-238)도 검증 대상이면 같은 표를 `vs-2`/`name5~name8`/`EV05~EV08`로
+반복한다(§12 참고).
 
 ### 4.2 MQTT Client
 
@@ -413,14 +416,24 @@ sqlite3 -header -column data/db/parking.db "SELECT session_id,slot_id,status,vio
 curl -fsS -X PUT http://127.0.0.1:8080/api/v1/settings/overstay-threshold -H 'Content-Type: application/json' -d '{"thresholdSeconds":3600}' && echo
 ```
 
-## 12. 4개 슬롯 반복표
+## 12. 8개 슬롯 반복표
 
-| 슬롯 | WiseAI Rule | Intrusion MQTT | ACTIVE 세션 | ROI crop | Exit confirmed | 조기 삭제 | 위반 보존 | 결과 |
-|---|---|---|---|---|---|---|---|---|
-| EV01 | name1 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
-| EV02 | name2 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
-| EV03 | name3 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
-| EV04 | name4 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+CH1(EV01~04, `vs-0`)과 CH3(EV05~08, `vs-2`, EVDA-238)를 모두 검증한다. CH3는
+§4.1의 절차를 그대로 따르되 `vs-0` 대신 `vs-2`, `EVxx`는 아래 표의 값을 쓴다.
+
+| 슬롯 | WiseAI Rule | Video token | Intrusion MQTT | ACTIVE 세션 | ROI crop | Exit confirmed | 조기 삭제 | 위반 보존 | 결과 |
+|---|---|---|---|---|---|---|---|---|---|
+| EV01 | name1 | vs-0 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV02 | name2 | vs-0 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV03 | name3 | vs-0 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV04 | name4 | vs-0 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV05 | name5 | vs-2 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV06 | name6 | vs-2 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV07 | name7 | vs-2 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+| EV08 | name8 | vs-2 | □ | □ | □ | □ | □ | □ | PASS / FAIL |
+
+실제 배치의 Rule 이름·토큰이 이 표와 다르면 카메라 IVA Area 설정 화면과
+`config/parking_slots.json`이 근거이며, 이 표는 develop 기본 배선 기준이다.
 
 ## 13. 장애 판정표
 
@@ -429,7 +442,7 @@ curl -fsS -X PUT http://127.0.0.1:8080/api/v1/settings/overstay-threshold -H 'Co
 | 영역이 빨갛게 되지 않음 | WiseAI 영역/검출 조건/적용 상태 |
 | 영역은 빨갛지만 Broker에 IVA 없음 | Event Rule, MQTT Action, Publication Enable, Apply/Save |
 | Broker에는 IVA가 있지만 서버 로그 없음 | `pi-server` 실행, 구독 토픽, parser/mapping rejection 로그 |
-| `camera/token/rule mapping not found` | `parking_slots.json`의 `cam01 + vs-0 + nameN` |
+| `camera/token/rule mapping not found` | `parking_slots.json`의 `camera_id + video_source_token + rule_name`이 카메라 실제 설정과 일치하는지(CH1 `vs-0`, CH3 `vs-2`); 진단 절차는 `TROUBLESHOOTING.md`의 TS-022 |
 | OCCUPIED지만 사진 없음 | Snapshot API 준비 로그, ROI 존재, API 인증/주소 |
 | `ROI mapping not found` | Qt ROI PUT 또는 슬롯별 ROI 설정 |
 | 촬영 직후 사진 삭제 | 원본/고정 EXIT 동시 발행, 조기 출차 처리 로그 |
@@ -453,7 +466,7 @@ ctest --test-dir cmake-build --output-on-failure
 IVA 관련 빠른 회귀:
 
 ```bash
-ctest --test-dir cmake-build -R 'camera-iva-event-test|camera-iva-occupancy-integration-test|camera-snapshot-api-client-test|hall-capture-pipeline-test|http-api-test' --output-on-failure
+ctest --test-dir cmake-build -R 'camera-iva-event-test|onvif-iva-event-source-test|camera-iva-occupancy-integration-test|camera-snapshot-api-client-test|hall-capture-pipeline-test|http-api-test' --output-on-failure
 ```
 
 ## 15. 제출용 증거 목록

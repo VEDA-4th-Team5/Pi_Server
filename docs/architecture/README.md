@@ -3,9 +3,9 @@
 WiseAI IVA 차량 탐지의 MQTT parsing 및 슬롯 매핑 계약은
 [`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
 
-기준일: 2026-08-12
+기준일: 2026-08-24
 
-기준 코드: `chore/cleanup-unused-features_EVDA-205` (`7968a58`)
+기준 코드: `develop` (`08a0341`, EVDA-238 CH2 입구·CH1·CH3 ONVIF IVA 통합)
 
 이 문서는 외부 발표 자료가 아니라 현재 `Pi_Server` C/C++ 코드에 실제로
 연결된 런타임 아키텍처를 설명한다. 외부 기획서와 발표 자료는
@@ -24,8 +24,15 @@ flowchart LR
 
     Camera[Hanwha Vision Camera] -->|RTSP video| FrameBuffer[CameraChannel FrameBuffer]
     Camera -->|CV Snapshot OpenAPI / JPEG| CameraApi[CameraSnapshotApiClient]
-    Camera -->|ONVIF MQTT event| Mosquitto
-    Camera -.->|BESTSHOT_ENABLED=true일 때 RTSP metadata| BestShot[BestShotReceiver]
+    Camera -->|ONVIF MQTT event, CAMERA_IVA_EVENT_SOURCE=MQTT| Mosquitto
+    Camera -->|ONVIF PullPoint long-poll, CAMERA_IVA_EVENT_SOURCE=ONVIF| OnvifSource[OnvifIvaEventSource]
+    OnvifSource --> HallService
+    Camera -.->|BESTSHOT_ENABLED=true 또는 ENTRANCE_ENABLED=true일 때 RTSP metadata| BestShot[BestShotReceiver]
+    BestShot --> EntranceCoord[EntranceBestShotCoordinator]
+    EntranceCoord --> EntranceEv[EntranceEvWorker Python EV 판정]
+    EntranceCoord --> EntranceOcr[Gemini OCR]
+    EntranceCoord --> EntranceRecog[(SQLite ENTRANCE_RECOGNITION)]
+    EntranceRecog -.->|번호판 fuzzy/exact 매칭| Session
 
     HallService --> Session[(SQLite PARKING_SESSION)]
     HallService --> Evidence[EvidenceCaptureWorker]
@@ -55,14 +62,31 @@ Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 
 실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
 
 EVDA-192에서는 CH1의 WiseAI `name1`~`name4`를 EV01~EV04에 1:1로
-묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다.
+묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다. EVDA-238에서는 같은
+매핑 규약(`camera_id + video_source_token + rule_name`)을 CH3(`vs-2`)에도 적용해
+`name5`~`name8`을 EV05~EV08에 연결했다 — 코드 경로는 채널을 구분하지 않고
+`config/parking_slots.json`의 `camera_bindings`만으로 슬롯을 결정한다.
 `PARKING_OCCUPANCY_SOURCE=HYBRID_OR`이면 영역 하나의 INTRUSION 또는 5초 유지된
 Hall OCCUPIED 중 먼저 확정된 입력으로 세션 하나를 만들고, 나중 입력은 동일
 세션의 확인 상태만 보강한다. IVA만 확인한 세션은 IVA EXIT, Hall만 확인한 세션은
 Hall VACANT이 종료 권한을 가지며, 둘 다 확인한 세션은 두 입력이 모두 VACANT일
 때 종료한다. IVA EXIT는 기본 10초 확인 후 확정한다. 신규 이미지는
-`ch1/EV01/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
+`ch{1,3}/EVxx/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
 API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
+
+EVDA-238은 IVA 이벤트 입력을 `CAMERA_IVA_EVENT_SOURCE`로 선택 가능하게 만들었다.
+기본값은 기존 호환을 위한 `MQTT`이고, 운영값은 카메라 ONVIF PullPoint를 직접
+long-poll하는 `ONVIF`다. 두 경로 모두 같은 `OnvifIvaEventAdapter` /
+`IvaEventResolver`로 수렴하므로 슬롯 매핑 규약과 이벤트 의미는 동일하다. `ONVIF`
+선택 시 `MqttEventBridge`는 중복 처리를 막기 위해 자신의 IVA 처리 경로를
+건너뛴다(`MqttEventBridge.cpp:383`). 자세한 계약은
+[`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
+
+CH2 입구는 별도 점유 판정이 아니라 번호판 매칭 보조 입력이다. RTSP metadata의
+Plate BestShot을 `EntranceBestShotCoordinator`가 EV 아이콘 판정(Python worker)과
+Gemini OCR로 처리해 `ENTRANCE_RECOGNITION`에 저장하고, 주차 세션 시작 시 최근
+입구 이벤트 중 번호판이 일치하는 것을 찾아 연결한다. 상세 구조는
+[`docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md`](ENTRANCE_BESTSHOT_PIPELINE.md)에 있다.
 
 ## 2. 프로세스 시작 순서
 
@@ -73,14 +97,17 @@ AppConfig 환경변수 로드
 → CameraChannel 생성
 → SQLite open / runtime migration
 → SystemEventReporter 시작
-→ ParkingHttpServer 시작
+→ `ENTRANCE_ENABLED=true`일 때만 EntranceEvWorker(Python EV 판정) 시작
 → 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
 → RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
 → OcrWorker 시작
-→ `BESTSHOT_ENABLED=true`일 때만 BestShotReceiver 시작
-→ MqttEventBridge 연결
+→ `ENTRANCE_ENABLED=true`일 때만 EntranceVehicleService 시작
+→ `BESTSHOT_ENABLED=true` 또는 `ENTRANCE_ENABLED=true`일 때만 BestShotReceiver 시작
 → CaptureSchedulerRuntime 시작
+→ MqttEventBridge 연결
+→ ParkingHttpServer 시작
+→ `CAMERA_IVA_EVENT_SOURCE=ONVIF`일 때만 OnvifIvaEventSource 시작
 → UART/LoRa SensorLinkManager 시작
 → 기존 ACTIVE 타이머 복구
 → SIGINT/SIGTERM 대기
@@ -227,11 +254,13 @@ TimerManager
 ### 5.1 IVA MQTT
 
 ```text
-Camera ONVIF MQTT
-→ MqttEventBridge
-→ CameraEventParser
+Camera ONVIF MQTT (CAMERA_IVA_EVENT_SOURCE=MQTT)
+  또는 ONVIF PullPoint long-poll (CAMERA_IVA_EVENT_SOURCE=ONVIF, 운영 기본)
+→ MqttEventBridge 또는 OnvifIvaEventSource
+→ CameraEventParser 또는 OnvifIvaEventAdapter
 → active IVA Area 확인
-→ Area name 또는 channel로 EV01~EV04 매핑
+→ camera_id + video_source_token + rule_name으로 슬롯 매핑
+  (CH1 EV01~EV04, CH3 EV05~EV08)
 → Snapshot API original/enhanced 다운로드 후 ROI crop
 → scene JPEG + OpenCV enhanced 생성
 → EVENT_LOG / IMAGE_LOG
@@ -239,24 +268,34 @@ Camera ONVIF MQTT
 → Qt 카메라 이벤트 topic 발행
 ```
 
+두 입력은 같은 `IvaEventResolver`로 수렴하므로 이벤트 의미와 매핑 실패 시
+거부 사유(`camera/token/rule mapping not found` 등)가 동일하다. ONVIF PullPoint
+선택 시 MQTT 경로는 중복 이벤트를 막기 위해 자신의 IVA 처리를 건너뛴다.
 MotionAlarm, MotionDetection, ObjectDetection 등 비 IVA 이벤트는 중복 사진을 막기 위해
 현재 Snapshot을 저장하지 않는다.
 
-### 5.2 선택적 BestShot metadata
+### 5.2 CH2 입구 BestShot과 레거시 Vehicle/Plate BestShot
+
+`BestShotReceiver`는 하나의 RTSP metadata 연결을 두 콜백 경로에 공유한다.
+`ENTRANCE_ENABLED` 또는 `BESTSHOT_ENABLED` 둘 중 하나만 `true`여도 스레드가 시작된다.
 
 ```text
 Camera RTSP metadata track
 → BestShotReceiver
 → ONVIF XML Object / ImageRef 파싱
 → Camera HTTPS Digest 인증 JPEG 다운로드
-→ Vehicle BestShot이 별도 PARKING_SESSION 생성
-→ Plate BestShot을 같은 채널 세션에 연결
-→ Gemini OCR
+→ (ENTRANCE_ENABLED=true, 운영 기본) EntranceBestShotCoordinator
+   → EntranceEvWorker EV 아이콘 판정 → Gemini OCR
+   → ENTRANCE_RECOGNITION 저장, PARKING_SESSION은 직접 만들지 않음
+→ (BESTSHOT_ENABLED=true, 현재 비활성) Vehicle BestShot이 별도 PARKING_SESSION 생성
+   → Plate BestShot을 같은 채널 세션에 연결 → Gemini OCR
 ```
 
-이 경로는 현재 `BESTSHOT_ENABLED=false`로 비활성화되어 스레드,
-RTSP metadata 연결, JPEG 다운로드를 시작하지 않는다. 운영 기본 경로는
-WiseAI IVA MQTT → Snapshot API → ROI crop → Gemini OCR이다.
+`ENTRANCE_ENABLED=true`, `BESTSHOT_ENABLED=false`가 현재 운영값이다. 레거시
+Vehicle/Plate BestShot 경로는 코드에 남아 있지만 비활성이며, 운영 기본 점유
+경로는 WiseAI IVA(MQTT 또는 ONVIF) → Snapshot API → ROI crop → Gemini OCR이고
+입구 CH2는 그 세션에 번호판을 사후 연결하는 보조 입력이다. 상세는
+[`docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md`](ENTRANCE_BESTSHOT_PIPELINE.md) 참고.
 
 ## 6. 저장 구조
 
@@ -344,7 +383,10 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 
 - `CAPTURE_SCHED_ENABLED`의 기본값은 `false`라 30/60초 경로는 운영 설정에서
   명시적으로 켜야 한다.
-- EV01~EV04의 기본 카메라 채널은 모두 `ch01`이다.
+- EV01~EV04의 기본 카메라 채널은 `ch01`(CH1), EV05~EV08은 `ch03`(CH3)이다.
+- IVA 이벤트 입력은 `CAMERA_IVA_EVENT_SOURCE=MQTT|ONVIF`로 선택한다. 코드
+  기본값은 `MQTT`이지만 운영값은 카메라 ONVIF PullPoint를 직접 수신하는
+  `ONVIF`다.
 - SQLite와 `IVA_EVxx_ROI_*` 설정에 ROI가 모두 없으면 해당 슬롯 ROI는
   미설정 상태로 유지한다. 촬영/OCR은 전체 프레임을 임의로 사용하지 않고
   명확한 오류를 남긴 뒤 건너뛴다.
@@ -355,7 +397,11 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 - `FIRE_ALARM_ENABLED=true`이면 `SensorLinkManager` → `FireAlarmManager` → Qt MQTT와
   ACK 명령 경로가 `main.cpp`에 배선된다.
 - `FIRE_UART_*`는 구형 설정이며 실제 공유 UART은 `SENSOR_UART_*`를 사용한다.
-- `BESTSHOT_ENABLED=false`가 기본이며 운영 프로필에서 BestShot은 시작하지 않는다.
+- `BESTSHOT_ENABLED=false`가 기본이라 레거시 Vehicle/Plate BestShot(BestShot이
+  직접 PARKING_SESSION을 만드는 경로)은 운영 프로필에서 시작하지 않는다. 단
+  `ENTRANCE_ENABLED=true`가 운영 기본값이라 `BestShotReceiver` 자체는 CH2 입구
+  인식을 위해 여전히 시작된다 — 두 플래그는 같은 스레드를 공유하는 별개
+  기능이다.
 - MQTT는 기본 `1883` 평문 연결이며 username/password/TLS 설정이 없다.
 - HTTP API는 TLS를 선택할 수 있지만 API 인증은 없다.
 - `SystemEventReporter`는 UART/LoRa/홀센서에 연결되어 있고 MQTT/RTSP 오류와는
@@ -384,14 +430,20 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 | 타이머 | `src/timer/ParkingSlotManager.cpp`, `TimerManager.cpp` |
 | Qt MQTT event | `src/timer/EventManager.cpp`, `src/main.cpp` |
 | Qt HTTP/HTTPS API | `src/http/ParkingHttpServer.cpp` |
-| IVA | `src/event/CameraEventParser.cpp`, `src/mqtt/MqttEventBridge.cpp` |
-| BestShot | `src/bestshot/BestShotReceiver.cpp` |
+| IVA (MQTT 입력) | `src/event/CameraEventParser.cpp`, `src/mqtt/MqttEventBridge.cpp` |
+| IVA (ONVIF PullPoint 입력) | `src/camera/OnvifIvaEventSource.cpp`, `src/event/OnvifIvaEventAdapter.cpp` |
+| IVA 슬롯 매핑(공통) | `src/event/IvaEventResolver.cpp` |
+| BestShot 수신(레거시+CH2 공용) | `src/bestshot/BestShotReceiver.cpp` |
+| CH2 입구 인식 | `src/entrance/EntranceBestShotCoordinator.cpp`, `EntranceVehicleService.cpp`, `EntranceEvWorker.cpp`, `EntranceImageDeduplicator.cpp` |
 | 시스템 오류 | `src/event/SystemEventReporter.cpp` |
 
 ## 11. 관련 문서
 
 - `docs/ARCHITECTURE_TRACEABILITY.md`: 외부 인터페이스와 실제 코드 대응
-- `docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`: 카메라 촬영 draft 규약과 30/60초 OCR
+- `docs/IVA_VEHICLE_DETECTION.md`: WiseAI IVA 슬롯 매핑과 MQTT/ONVIF 계약
+- `docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md`: CH2 입구 BestShot·EV 판정·번호판 매칭
+- `docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`: 카메라 촬영 draft 규약(현재는
+  Camera Snapshot API로 구현 확정, `docs/CAMERA_SNAPSHOT_API_INTEGRATION.md` 참고)
 - `docs/HTTP_API.md`: Qt 조회 API
 - `docs/DB_IMPLEMENTATION.md`: SQLite 구현
 - `docs/SENSOR_COMMUNICATION_ERROR_HANDLING.md`: 센서·UART·LoRa 오류 처리

@@ -1,5 +1,7 @@
 #include "ocr/GeminiOcrClient.hpp"
 
+#include "util/Logger.hpp"
+
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
@@ -63,7 +65,24 @@ bool appendImagePart(nlohmann::json& parts, const std::string& image_path,
     }
     parts.push_back({{"inline_data", {{"mime_type", png ? "image/png" : "image/jpeg"},
                                        {"data", base64Encode(bytes)}}}});
+    result.image_count += 1;
+    result.image_bytes += static_cast<long long>(bytes.size());
     return true;
+}
+
+// 요청 1건이 실제로 청구한 토큰을 남긴다. 태그가 LOG_GEMINI_USAGE 로 매핑되므로
+// 필요 없을 때 끌 수 있다. 토큰 값이 -1 이면 응답에 usageMetadata 가 없었다는 뜻이다.
+void logUsage(const std::string& model, const ocr::OcrResult& result) {
+    if (!util::logEnabled("GEMINI_USAGE")) return;
+    util::logLine("GEMINI_USAGE",
+        "model=" + model +
+        " images=" + std::to_string(result.image_count) +
+        " image_bytes=" + std::to_string(result.image_bytes) +
+        " prompt=" + std::to_string(result.prompt_token_count) +
+        " candidates=" + std::to_string(result.candidates_token_count) +
+        " total=" + std::to_string(result.total_token_count) +
+        " http=" + std::to_string(result.http_status) +
+        " ok=" + (result.success ? "true" : "false"));
 }
 
 ocr::GeminiHttpResponse performCurlRequest(
@@ -228,6 +247,15 @@ OcrResult GeminiOcrClient::recognizePlateWithModel(
 
     try {
         nlohmann::json envelope = nlohmann::json::parse(response.body);
+        // 토큰은 응답이 도착한 시점에 이미 청구됐다. 그러니 candidates 파싱보다
+        // 먼저 읽어서, 응답 형식이 바뀌어 아래에서 실패하더라도 사용량은 남긴다.
+        const auto usage = envelope.find("usageMetadata");
+        if (usage != envelope.end() && usage->is_object()) {
+            result.prompt_token_count = usage->value("promptTokenCount", -1);
+            result.candidates_token_count =
+                usage->value("candidatesTokenCount", -1);
+            result.total_token_count = usage->value("totalTokenCount", -1);
+        }
         std::string text = envelope.at("candidates").at(0).at("content")
                                .at("parts").at(0).at("text").get<std::string>();
         result.raw_text = text;
@@ -241,6 +269,9 @@ OcrResult GeminiOcrClient::recognizePlateWithModel(
         result.error = std::string("Gemini response parse failed: ") + error.what();
         result.error_kind = OcrErrorKind::ResponseParse;
     }
+    // 2xx 응답 1건당 정확히 한 줄. fallback 모델로 재시도하면 각 호출이 따로 남아
+    // 실제 청구 건수와 로그 줄 수가 일치한다.
+    logUsage(model, result);
     return result;
 }
 

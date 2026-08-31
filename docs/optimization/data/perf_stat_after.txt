@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '1188807':
+
+       652,994,726      task-clock:u                     #    0.033 CPUs utilized             
+       559,822,550      cycles:u                         #    0.857 GHz                       
+       342,055,998      instructions:u                   #    0.61  insn per cycle            
+        82,458,550      cache-references:u               #  126.278 M/sec                     
+         1,926,423      cache-misses:u                   #    2.34% of all cache refs         
+         1,484,439      branch-misses:u                                                       
+
+      20.005507132 seconds time elapsed
+

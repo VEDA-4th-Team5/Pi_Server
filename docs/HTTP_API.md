@@ -108,6 +108,8 @@ Authorization: Bearer <accessToken>
 
 기존 API의 성공 응답 JSON은 인증 추가 전과 동일하다. 이미지 목록은 같은 HTTPS
 origin의 상대 URL을 반환하고, `HTTP_DATA_ROOT` 밖의 파일은 제공하지 않는다.
+`overstay-threshold`는 `/api/settings/...`(버전 없는) 경로도 같은 핸들러로
+등록돼 있어 구버전 클라이언트와 호환된다.
 
 ## 사용자 관리
 

@@ -120,6 +120,39 @@ int main() {
                     calls == 2,
                 "404 model fallback");
 
+        // usageMetadata 가 있으면 실제 청구 토큰이 결과에 실려야 한다.
+        ocr::GeminiOcrClient usageClient(
+            "secret", "model", 1, 2, "",
+            [](const ocr::GeminiHttpRequest&) {
+                std::string body = successEnvelope();
+                body.insert(body.size() - 1,
+                    ",\"usageMetadata\":{\"promptTokenCount\":273,"
+                    "\"candidatesTokenCount\":18,\"totalTokenCount\":291}");
+                return ocr::GeminiHttpResponse{true, 200, body, {}};
+            });
+        result = usageClient.recognizePlate(jpeg.string());
+        require(result.success && result.prompt_token_count == 273 &&
+                    result.candidates_token_count == 18 &&
+                    result.total_token_count == 291,
+                "usageMetadata must be captured from the response");
+        require(result.image_count == 1 && result.image_bytes == 4,
+                "single image request must report one image and its bytes");
+
+        // 이미지 2장이면 image_count 가 2 여야 한다(§7.2 중복 전송 추적용).
+        ocr::GeminiOcrClient twoImageClient(
+            "secret", "model", 1, 2, "",
+            [](const ocr::GeminiHttpRequest&) {
+                return ocr::GeminiHttpResponse{true, 200, successEnvelope(), {}};
+            });
+        result = twoImageClient.recognizePlate(jpeg.string(), jpeg.string());
+        require(result.image_count == 2 && result.image_bytes == 8,
+                "two image request must report both images");
+
+        // usageMetadata 가 없으면 0 이 아니라 -1(미측정)로 남아야 한다.
+        require(result.prompt_token_count == -1 &&
+                    result.total_token_count == -1,
+                "absent usageMetadata must stay -1, not 0");
+
         fs::remove_all(root);
         return 0;
     } catch (...) {

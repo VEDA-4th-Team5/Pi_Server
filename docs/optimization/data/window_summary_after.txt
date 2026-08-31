@@ -1,0 +1,6 @@
+=== WINDOW 121.754s (HZ=100) ===
+cpu_total_pct=3.47  user_pct=2.00  sys_pct=1.47
+rchar=0.8 KB/s  wchar=2.39 KB/s  syscr=4.75 /s  syscw=2.62 /s
+eth0 rx=317.2 KB/s  tx=51.3 KB/s
+vol_ctxsw=1.0 /s  nonvol_ctxsw=0.0 /s
+loadavg: 0.60 1.03 1.48 1/1351 1240525

@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '1252806':
+
+    44,970,898,492      task-clock:u                     #    2.246 CPUs utilized             
+    67,638,736,456      cycles:u                         #    1.504 GHz                       
+    43,186,979,699      instructions:u                   #    0.64  insn per cycle            
+    23,574,201,928      cache-references:u               #  524.210 M/sec                     
+       423,098,040      cache-misses:u                   #    1.79% of all cache refs         
+        54,096,381      branch-misses:u                                                       
+
+      20.019919625 seconds time elapsed
+

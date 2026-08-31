@@ -1,0 +1,40 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+# symbol: sqlite3Parser
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cycles:Pu'
+# Event count (approx.): 13717455404
+#
+# Children      Self  Command    Shared Object           
+# ........  ........  .........  ........................
+#
+     2.66%     2.66%  pi-server  libsqlite3.so.0.8.6     
+            |
+            ---0x7fb06ade9c
+               0x7fb0645f38
+               0x7fb094b4e0
+               |          
+                --2.65%--parking::SlotTransitionActor::run()
+                          |          
+                           --1.57%--parking::SlotTransitionActor::processRunnable(long)
+                                     database::SessionTransitionStore::listRunnable(long) const
+                                     database::EventDatabase::listRunnableSlotTransitionCommands(long) const
+                                     database::(anonymous namespace)::Statement::Statement(sqlite3*, std::basic_string_view<char, std::char_traits<char> >)
+                                     0x7fb3dfee64
+                                     0x7fb3dfe19c
+                                     sqlite3RunParser
+                                     sqlite3Parser
+
+     2.66%     0.00%  pi-server  libc.so.6               
+            |
+            ---0x7fb06ade9c
+               0x7fb0645f38
+               0x7fb094b4e0
+               |          
+                --2.65%--parking::SlotTransitionActor::run()
+                          |          
+                           --1.57%--parking::SlotTransitionActor::processRunnable(long)
+                                     database::SessionTransitionStore::listRunnable(long) const
+                                     database::EventDatabase::listRunnableSlotTransitionCommands(long) const

@@ -1,0 +1,58 @@
+# Pi CPU 실측 — 옛 방식 vs 현재 방식
+# 측정일 2026-08-28 / Raspberry Pi 4 Model B (8GB) / aarch64 / OpenCV 4.10.0 / g++ -O2 -std=c++20
+#
+# 방법: 재현이 아니라 d41e2f09 의 src/ocr/PlateImageEnhancer.cpp 를 git 에서 그대로 꺼내
+#       실제로 컴파일하고 ocr::enhanceIvaSceneImage() 를 직접 호출해 측정했다.
+#       입력도 d41e2f09 에 커밋된 원본 프레임(scene/…_222758_794.jpg, 1280x720, 160.7KB)이다.
+#       비교군 cropJpeg() 는 현재 src/snapshot/SnapshotStorage.cpp:63-91 본문 그대로다.
+# 정합성 근거: 출력 PNG 가 811.9 KB 로 d41e2f09 에 커밋된 실제 파일과 바이트 단위로 일치.
+#
+== [A] 총시간 (반복 15회 중앙값) ==
+
+[옛 방식] ocr::enhanceIvaSceneImage()  — d41e2f09 원본 코드
+  wall 중앙값    270.4 ms   CPU(user+sys) 중앙값    270.4 ms
+  출력 PNG 811.9 KB  (실파일 811.9 KB)
+
+[현재 방식] cropJpeg()  — SnapshotStorage.cpp
+  wall 중앙값     12.2 ms   CPU(user+sys) 중앙값     12.2 ms
+  출력 JPEG 39.4 KB
+
+  wall 비율 22.1x   CPU 비율 22.1x
+
+
+[옛 방식] ocr::enhanceIvaSceneImage()  — d41e2f09 원본 코드
+  wall 중앙값    207.6 ms   CPU(user+sys) 중앙값    292.3 ms
+  출력 PNG 811.9 KB  (실파일 811.9 KB)
+
+[현재 방식] cropJpeg()  — SnapshotStorage.cpp
+  wall 중앙값     12.4 ms   CPU(user+sys) 중앙값     12.4 ms
+  출력 JPEG 39.4 KB
+
+  wall 비율 16.7x   CPU 비율 23.5x
+
+== [B] 단계별 내역 (1스레드) ==
+
+단계별 (중앙값 ms)                        비중
+  imread JPEG 1280x720            9.6    3.6%
+  bilateralFilter(3,18,18)       33.2   12.5%
+  Lab + CLAHE(1.25,8x8)          54.6   20.5%
+  GaussianBlur + addWeighted     26.6   10.0%
+  imwrite PNG(COMPRESSION=2)    142.6   53.5%
+  ── 단계 합                    266.6
+
+검증: 실제 enhanceIvaSceneImage() 총시간   268.2 ms  (단계합 대비 오차 -0.6%)
+
+== [C] 재현 방법 ==
+  W=$(mktemp -d); mkdir -p $W/include/ocr $W/scene
+  git show d41e2f09:src/ocr/PlateImageEnhancer.cpp     > $W/PlateImageEnhancer.cpp
+  git show d41e2f09:include/ocr/PlateImageEnhancer.hpp > $W/include/ocr/PlateImageEnhancer.hpp
+  git show d41e2f09:data/snapshots/ch1/EV01/scene/cam01_ch01_EV01_IVA_ROI_1280x720_20260714_222758_794.jpg \
+      > $W/scene/frame.jpg
+  cp docs/optimization/data/file_size_cpu_bench.cpp  $W/bench.cpp
+  cp docs/optimization/data/file_size_cpu_stages.cpp $W/stages.cpp
+  cd $W && g++ -O2 -std=c++20 -w -I include bench.cpp  PlateImageEnhancer.cpp $(pkg-config --cflags --libs opencv4) -o bench
+           g++ -O2 -std=c++20 -w -I include stages.cpp PlateImageEnhancer.cpp $(pkg-config --cflags --libs opencv4) -o stages
+  ./bench 15 1     # 1스레드 총시간
+  ./bench 15       # 기본(4스레드) wall + CPU
+  ./stages 15 1    # 단계별 내역
+  # 출력 PNG 가 811.9 KB 로 나오면 옛 경로를 정확히 재현한 것이다.

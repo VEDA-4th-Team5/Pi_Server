@@ -3,7 +3,7 @@
 > 이 파일은 자동 생성됩니다. 직접 수정하지 말고 C/C++ 소스의 Doxygen 주석 또는 `docs/architecture/README.md`를 수정한 뒤 문서 빌드를 다시 실행하십시오.
 
 - 생성 기준: 현재 작업 트리
-- 분석 파일 수: 192
+- 분석 파일 수: 232
 - 생성 명령: `cmake --build cmake-build --target docs`
 
 # Pi Server Architecture
@@ -11,9 +11,9 @@
 WiseAI IVA 차량 탐지의 MQTT parsing 및 슬롯 매핑 계약은
 [`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
 
-기준일: 2026-08-12
+기준일: 2026-08-24
 
-기준 코드: `chore/cleanup-unused-features_EVDA-205` (`7968a58`)
+기준 코드: `develop` (`08a0341`, EVDA-238 CH2 입구·CH1·CH3 ONVIF IVA 통합)
 
 이 문서는 외부 발표 자료가 아니라 현재 `Pi_Server` C/C++ 코드에 실제로
 연결된 런타임 아키텍처를 설명한다. 외부 기획서와 발표 자료는
@@ -32,8 +32,15 @@ flowchart LR
 
     Camera[Hanwha Vision Camera] -->|RTSP video| FrameBuffer[CameraChannel FrameBuffer]
     Camera -->|CV Snapshot OpenAPI / JPEG| CameraApi[CameraSnapshotApiClient]
-    Camera -->|ONVIF MQTT event| Mosquitto
-    Camera -.->|BESTSHOT_ENABLED=true일 때 RTSP metadata| BestShot[BestShotReceiver]
+    Camera -->|ONVIF MQTT event, CAMERA_IVA_EVENT_SOURCE=MQTT| Mosquitto
+    Camera -->|ONVIF PullPoint long-poll, CAMERA_IVA_EVENT_SOURCE=ONVIF| OnvifSource[OnvifIvaEventSource]
+    OnvifSource --> HallService
+    Camera -.->|BESTSHOT_ENABLED=true 또는 ENTRANCE_ENABLED=true일 때 RTSP metadata| BestShot[BestShotReceiver]
+    BestShot --> EntranceCoord[EntranceBestShotCoordinator]
+    EntranceCoord --> EntranceEv[EntranceEvWorker Python EV 판정]
+    EntranceCoord --> EntranceOcr[Gemini OCR]
+    EntranceCoord --> EntranceRecog[(SQLite ENTRANCE_RECOGNITION)]
+    EntranceRecog -.->|번호판 fuzzy/exact 매칭| Session
 
     HallService --> Session[(SQLite PARKING_SESSION)]
     HallService --> Evidence[EvidenceCaptureWorker]
@@ -63,14 +70,31 @@ Pi도 RTSP를 수신하지 않고 이벤트 시점에 original/enhanced JPEG만 
 실시간 영상 표시는 카메라와 Qt 사이의 직접 RTSP 연결 책임이다.
 
 EVDA-192에서는 CH1의 WiseAI `name1`~`name4`를 EV01~EV04에 1:1로
-묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다.
+묶고 네이티브 IvaArea 상태를 슬롯별 OR 조건으로 집계한다. EVDA-238에서는 같은
+매핑 규약(`camera_id + video_source_token + rule_name`)을 CH3(`vs-2`)에도 적용해
+`name5`~`name8`을 EV05~EV08에 연결했다 — 코드 경로는 채널을 구분하지 않고
+`config/parking_slots.json`의 `camera_bindings`만으로 슬롯을 결정한다.
 `PARKING_OCCUPANCY_SOURCE=HYBRID_OR`이면 영역 하나의 INTRUSION 또는 5초 유지된
 Hall OCCUPIED 중 먼저 확정된 입력으로 세션 하나를 만들고, 나중 입력은 동일
 세션의 확인 상태만 보강한다. IVA만 확인한 세션은 IVA EXIT, Hall만 확인한 세션은
 Hall VACANT이 종료 권한을 가지며, 둘 다 확인한 세션은 두 입력이 모두 VACANT일
 때 종료한다. IVA EXIT는 기본 10초 확인 후 확정한다. 신규 이미지는
-`ch1/EV01/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
+`ch{1,3}/EVxx/<stage>/`에 저장하고 파일명과 DB에 `session_id`를 보존한다. Snapshot
 API 모드에서는 좌표 확정 전까지 카메라의 전체 original/enhanced 프레임을 저장한다.
+
+EVDA-238은 IVA 이벤트 입력을 `CAMERA_IVA_EVENT_SOURCE`로 선택 가능하게 만들었다.
+기본값은 기존 호환을 위한 `MQTT`이고, 운영값은 카메라 ONVIF PullPoint를 직접
+long-poll하는 `ONVIF`다. 두 경로 모두 같은 `OnvifIvaEventAdapter` /
+`IvaEventResolver`로 수렴하므로 슬롯 매핑 규약과 이벤트 의미는 동일하다. `ONVIF`
+선택 시 `MqttEventBridge`는 중복 처리를 막기 위해 자신의 IVA 처리 경로를
+건너뛴다(`MqttEventBridge.cpp:383`). 자세한 계약은
+[`docs/IVA_VEHICLE_DETECTION.md`](../IVA_VEHICLE_DETECTION.md)를 참고한다.
+
+CH2 입구는 별도 점유 판정이 아니라 번호판 매칭 보조 입력이다. RTSP metadata의
+Plate BestShot을 `EntranceBestShotCoordinator`가 EV 아이콘 판정(Python worker)과
+Gemini OCR로 처리해 `ENTRANCE_RECOGNITION`에 저장하고, 주차 세션 시작 시 최근
+입구 이벤트 중 번호판이 일치하는 것을 찾아 연결한다. 상세 구조는
+[`docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md`](ENTRANCE_BESTSHOT_PIPELINE.md)에 있다.
 
 ## 2. 프로세스 시작 순서
 
@@ -81,14 +105,17 @@ AppConfig 환경변수 로드
 → CameraChannel 생성
 → SQLite open / runtime migration
 → SystemEventReporter 시작
-→ ParkingHttpServer 시작
+→ `ENTRANCE_ENABLED=true`일 때만 EntranceEvWorker(Python EV 판정) 시작
 → 선택적 RTSP, Snapshot API, Scheduler, Timer, OCR 객체 구성
 → EvidenceCaptureWorker 시작
 → RTSP fallback 모드일 때만 RtspStreamReceiver 시작·최초 frame 대기
 → OcrWorker 시작
-→ `BESTSHOT_ENABLED=true`일 때만 BestShotReceiver 시작
-→ MqttEventBridge 연결
+→ `ENTRANCE_ENABLED=true`일 때만 EntranceVehicleService 시작
+→ `BESTSHOT_ENABLED=true` 또는 `ENTRANCE_ENABLED=true`일 때만 BestShotReceiver 시작
 → CaptureSchedulerRuntime 시작
+→ MqttEventBridge 연결
+→ ParkingHttpServer 시작
+→ `CAMERA_IVA_EVENT_SOURCE=ONVIF`일 때만 OnvifIvaEventSource 시작
 → UART/LoRa SensorLinkManager 시작
 → 기존 ACTIVE 타이머 복구
 → SIGINT/SIGTERM 대기
@@ -133,8 +160,8 @@ sequenceDiagram
         C->>DB: HALL_60S IMAGE_LOG
         C->>O: 60초 이미지 OCR 재시도
     end
-    O->>DB: VEHICLE EV/PHEV/NON_EV/UNKNOWN 조회
-    alt EV or PHEV
+    O->>DB: VEHICLE EV/NON_EV/UNKNOWN 조회
+    alt EV
         O->>T: 같은 session_id로 타이머 등록
     else NON_EV or UNKNOWN
         O->>T: 경고 이벤트, EV 장기점유 타이머 미등록
@@ -235,11 +262,13 @@ TimerManager
 ### 5.1 IVA MQTT
 
 ```text
-Camera ONVIF MQTT
-→ MqttEventBridge
-→ CameraEventParser
+Camera ONVIF MQTT (CAMERA_IVA_EVENT_SOURCE=MQTT)
+  또는 ONVIF PullPoint long-poll (CAMERA_IVA_EVENT_SOURCE=ONVIF, 운영 기본)
+→ MqttEventBridge 또는 OnvifIvaEventSource
+→ CameraEventParser 또는 OnvifIvaEventAdapter
 → active IVA Area 확인
-→ Area name 또는 channel로 EV01~EV04 매핑
+→ camera_id + video_source_token + rule_name으로 슬롯 매핑
+  (CH1 EV01~EV04, CH3 EV05~EV08)
 → Snapshot API original/enhanced 다운로드 후 ROI crop
 → scene JPEG + OpenCV enhanced 생성
 → EVENT_LOG / IMAGE_LOG
@@ -247,24 +276,34 @@ Camera ONVIF MQTT
 → Qt 카메라 이벤트 topic 발행
 ```
 
+두 입력은 같은 `IvaEventResolver`로 수렴하므로 이벤트 의미와 매핑 실패 시
+거부 사유(`camera/token/rule mapping not found` 등)가 동일하다. ONVIF PullPoint
+선택 시 MQTT 경로는 중복 이벤트를 막기 위해 자신의 IVA 처리를 건너뛴다.
 MotionAlarm, MotionDetection, ObjectDetection 등 비 IVA 이벤트는 중복 사진을 막기 위해
 현재 Snapshot을 저장하지 않는다.
 
-### 5.2 선택적 BestShot metadata
+### 5.2 CH2 입구 BestShot과 레거시 Vehicle/Plate BestShot
+
+`BestShotReceiver`는 하나의 RTSP metadata 연결을 두 콜백 경로에 공유한다.
+`ENTRANCE_ENABLED` 또는 `BESTSHOT_ENABLED` 둘 중 하나만 `true`여도 스레드가 시작된다.
 
 ```text
 Camera RTSP metadata track
 → BestShotReceiver
 → ONVIF XML Object / ImageRef 파싱
 → Camera HTTPS Digest 인증 JPEG 다운로드
-→ Vehicle BestShot이 별도 PARKING_SESSION 생성
-→ Plate BestShot을 같은 채널 세션에 연결
-→ Gemini OCR
+→ (ENTRANCE_ENABLED=true, 운영 기본) EntranceBestShotCoordinator
+   → EntranceEvWorker EV 아이콘 판정 → Gemini OCR
+   → ENTRANCE_RECOGNITION 저장, PARKING_SESSION은 직접 만들지 않음
+→ (BESTSHOT_ENABLED=true, 현재 비활성) Vehicle BestShot이 별도 PARKING_SESSION 생성
+   → Plate BestShot을 같은 채널 세션에 연결 → Gemini OCR
 ```
 
-이 경로는 현재 `BESTSHOT_ENABLED=false`로 비활성화되어 스레드,
-RTSP metadata 연결, JPEG 다운로드를 시작하지 않는다. 운영 기본 경로는
-WiseAI IVA MQTT → Snapshot API → ROI crop → Gemini OCR이다.
+`ENTRANCE_ENABLED=true`, `BESTSHOT_ENABLED=false`가 현재 운영값이다. 레거시
+Vehicle/Plate BestShot 경로는 코드에 남아 있지만 비활성이며, 운영 기본 점유
+경로는 WiseAI IVA(MQTT 또는 ONVIF) → Snapshot API → ROI crop → Gemini OCR이고
+입구 CH2는 그 세션에 번호판을 사후 연결하는 보조 입력이다. 상세는
+[`docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md`](ENTRANCE_BESTSHOT_PIPELINE.md) 참고.
 
 ## 6. 저장 구조
 
@@ -272,7 +311,7 @@ WiseAI IVA MQTT → Snapshot API → ROI crop → Gemini OCR이다.
 
 | 테이블 | 책임 |
 |---|---|
-| `VEHICLE` | 번호판, EV/PHEV 등록 정보 |
+| `VEHICLE` | 번호판, 이진 EV 등록 정보 |
 | `PARKING_SLOT` | 슬롯 종류, 점유 상태, 센서 종류 |
 | `PARKING_SESSION` | 입차, 출차, 위반, 번호판, 차량 연결 |
 | `IMAGE_LOG` | 원본/개선 파일 경로, OCR, 촬영 사유 |
@@ -317,6 +356,8 @@ Qt → Pi HTTP/HTTPS:
 
 ```text
 GET /api/v1/health
+POST /api/v1/auth/login
+POST /api/v1/auth/logout
 GET /api/v1/parking-slots
 GET /api/v1/parking-slots/{slot_id}
 GET /api/v1/parking-sessions/active
@@ -325,9 +366,10 @@ GET /api/v1/images/{image_id}/original
 GET /api/v1/images/{image_id}/enhanced
 ```
 
-인증서와 개인키를 둘 다 설정하면 `cpp-httplib` `SSLServer`로 HTTPS를 사용하고,
-둘 다 비우면 HTTP로 동작한다. 현재 API token, 로그인, 클라이언트 인증서는
-구현되지 않았다.
+`GET /api/v1/health`와 `POST /api/v1/auth/login`만 공개한다. 나머지 API는
+SQLite `app_sessions`에 저장한 SHA-256 token digest로 Bearer 인증한다. 비밀번호는
+libsodium Argon2id PHC 문자열로 저장한다. 원격 listener는 인증서와 개인키가
+없거나 잘못되면 시작을 거부하며 HTTP로 fallback하지 않는다.
 
 ## 8. 오류 보고와 동시성
 
@@ -349,7 +391,10 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 
 - `CAPTURE_SCHED_ENABLED`의 기본값은 `false`라 30/60초 경로는 운영 설정에서
   명시적으로 켜야 한다.
-- EV01~EV04의 기본 카메라 채널은 모두 `ch01`이다.
+- EV01~EV04의 기본 카메라 채널은 `ch01`(CH1), EV05~EV08은 `ch03`(CH3)이다.
+- IVA 이벤트 입력은 `CAMERA_IVA_EVENT_SOURCE=MQTT|ONVIF`로 선택한다. 코드
+  기본값은 `MQTT`이지만 운영값은 카메라 ONVIF PullPoint를 직접 수신하는
+  `ONVIF`다.
 - SQLite와 `IVA_EVxx_ROI_*` 설정에 ROI가 모두 없으면 해당 슬롯 ROI는
   미설정 상태로 유지한다. 촬영/OCR은 전체 프레임을 임의로 사용하지 않고
   명확한 오류를 남긴 뒤 건너뛴다.
@@ -360,7 +405,11 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 - `FIRE_ALARM_ENABLED=true`이면 `SensorLinkManager` → `FireAlarmManager` → Qt MQTT와
   ACK 명령 경로가 `main.cpp`에 배선된다.
 - `FIRE_UART_*`는 구형 설정이며 실제 공유 UART은 `SENSOR_UART_*`를 사용한다.
-- `BESTSHOT_ENABLED=false`가 기본이며 운영 프로필에서 BestShot은 시작하지 않는다.
+- `BESTSHOT_ENABLED=false`가 기본이라 레거시 Vehicle/Plate BestShot(BestShot이
+  직접 PARKING_SESSION을 만드는 경로)은 운영 프로필에서 시작하지 않는다. 단
+  `ENTRANCE_ENABLED=true`가 운영 기본값이라 `BestShotReceiver` 자체는 CH2 입구
+  인식을 위해 여전히 시작된다 — 두 플래그는 같은 스레드를 공유하는 별개
+  기능이다.
 - MQTT는 기본 `1883` 평문 연결이며 username/password/TLS 설정이 없다.
 - HTTP API는 TLS를 선택할 수 있지만 API 인증은 없다.
 - `SystemEventReporter`는 UART/LoRa/홀센서에 연결되어 있고 MQTT/RTSP 오류와는
@@ -389,14 +438,20 @@ RTSP worker는 Snapshot API 비사용 또는 fallback 활성 시에만 시작한
 | 타이머 | `src/timer/ParkingSlotManager.cpp`, `TimerManager.cpp` |
 | Qt MQTT event | `src/timer/EventManager.cpp`, `src/main.cpp` |
 | Qt HTTP/HTTPS API | `src/http/ParkingHttpServer.cpp` |
-| IVA | `src/event/CameraEventParser.cpp`, `src/mqtt/MqttEventBridge.cpp` |
-| BestShot | `src/bestshot/BestShotReceiver.cpp` |
+| IVA (MQTT 입력) | `src/event/CameraEventParser.cpp`, `src/mqtt/MqttEventBridge.cpp` |
+| IVA (ONVIF PullPoint 입력) | `src/camera/OnvifIvaEventSource.cpp`, `src/event/OnvifIvaEventAdapter.cpp` |
+| IVA 슬롯 매핑(공통) | `src/event/IvaEventResolver.cpp` |
+| BestShot 수신(레거시+CH2 공용) | `src/bestshot/BestShotReceiver.cpp` |
+| CH2 입구 인식 | `src/entrance/EntranceBestShotCoordinator.cpp`, `EntranceVehicleService.cpp`, `EntranceEvWorker.cpp`, `EntranceImageDeduplicator.cpp` |
 | 시스템 오류 | `src/event/SystemEventReporter.cpp` |
 
 ## 11. 관련 문서
 
 - `docs/ARCHITECTURE_TRACEABILITY.md`: 외부 인터페이스와 실제 코드 대응
-- `docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`: 카메라 촬영 draft 규약과 30/60초 OCR
+- `docs/IVA_VEHICLE_DETECTION.md`: WiseAI IVA 슬롯 매핑과 MQTT/ONVIF 계약
+- `docs/architecture/ENTRANCE_BESTSHOT_PIPELINE.md`: CH2 입구 BestShot·EV 판정·번호판 매칭
+- `docs/CAMERA_MQTT_CAPTURE_PROTOCOL.md`: 카메라 촬영 draft 규약(현재는
+  Camera Snapshot API로 구현 확정, `docs/CAMERA_SNAPSHOT_API_INTEGRATION.md` 참고)
 - `docs/HTTP_API.md`: Qt 조회 API
 - `docs/DB_IMPLEMENTATION.md`: SQLite 구현
 - `docs/SENSOR_COMMUNICATION_ERROR_HANDLING.md`: 센서·UART·LoRa 오류 처리
@@ -474,6 +529,35 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool app::RuntimeShutdown::shutdown() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool app::RuntimeShutdown::stopped() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+## include/auth
+
+### include/auth/AuthService.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `LoginResult auth::AuthService::login(const std::string &account_id, const std::string &password, const std::string &source_ip)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `auth::AuthService::AuthService(database::EventDatabase &database, AuthConfig config={}, Clock clock={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::addUser(const std::string &account_id, const std::string &password, const std::string &display_name, std::int64_t *user_id, std::string *error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::logoutBearer(std::string_view authorization_header)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::resetPassword(const std::string &account_id, const std::string &password, std::string *error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::setUserEnabled(const std::string &account_id, bool enabled, std::string *error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::validPassword(std::string_view password) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::verifyPassword(std::string_view password, const std::string &password_hash) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< AuthenticatedUser > auth::AuthService::authenticateBearer(std::string_view authorization_header) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< int > auth::AuthService::rateLimitRetryAfter(const std::string &key, std::int64_t now)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::string > auth::AuthService::normalizeAccountId(std::string_view account_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::string_view > auth::AuthService::extractBearer(std::string_view authorization_header) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::vector< unsigned char > > auth::AuthService::tokenDigest(std::string_view bearer_token) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::formatUtc(std::int64_t epoch_seconds)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::generateToken()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::hashPassword(std::string_view password)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::trim(std::string_view value)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< database::AppUserRecord > auth::AuthService::listUsers() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::boundRateTable(std::int64_t now)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::clearFailures(const std::string &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::pruneFailures(RateState &state, std::int64_t now) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::recordFailure(const std::string &key, std::int64_t now)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ## include/bestshot
 
 ### include/bestshot/BestShotMetadata.hpp
@@ -487,9 +571,9 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
 - `BestShotProcessResult bestshot::BestShotReceiver::processOne(PendingMetadata metadata, bool may_requeue)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bestshot::BestShotReceiver::BestShotReceiver(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::atomic< bool > &running, std::string output_root="data/bestshots", DownloadCallback downloader={}, OcrCallback ocr_callback={}, std::size_t pending_capacity=64)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bestshot::BestShotReceiver::BestShotReceiver(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::atomic< bool > &running, std::string output_root="data/bestshots", DownloadCallback downloader={}, OcrCallback ocr_callback={}, std::size_t pending_capacity=64, MetadataCallback metadata_callback={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bestshot::BestShotReceiver::~BestShotReceiver()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool bestshot::BestShotReceiver::downloadImage(const std::string &rtsp_url, const std::string &image_ref, const std::string &destination)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool bestshot::BestShotReceiver::downloadImageReference(const std::string &rtsp_url, const std::string &image_ref, const std::string &destination)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool bestshot::BestShotReceiver::enqueuePending(PendingMetadata metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string bestshot::BestShotReceiver::evidenceIdentity(const PendingMetadata &metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string bestshot::BestShotReceiver::exactIdentityKey(const PendingMetadata &metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -529,6 +613,21 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `const std::vector< std::string > & camera::CameraSnapshotApiClient::filters() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void camera::CameraSnapshotApiClient::setError(std::string message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### include/camera/OnvifIvaEventSource.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `OnvifIvaEventSource & camera::OnvifIvaEventSource::operator=(const OnvifIvaEventSource &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool camera::OnvifIvaEventSource::start()` — worker를 시작한다. 설정 오류나 curl 초기화 실패 시 false다.
+- `bool camera::OnvifIvaEventSource::started() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `camera::OnvifIvaEventSource::OnvifIvaEventSource(Config config, EventHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `camera::OnvifIvaEventSource::OnvifIvaEventSource(const OnvifIvaEventSource &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `camera::OnvifIvaEventSource::~OnvifIvaEventSource()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `static std::string camera::OnvifIvaEventSource::deriveEventEndpoint(const std::string &cameraBaseUrl)` — Snapshot OpenAPI 주소 등에서 ONVIF Event Service 주소를 만든다.
+- `static std::vector< OnvifIvaEvent > camera::OnvifIvaEventSource::parseEvents(const std::string &xml)` — PullMessages XML에서 IvaArea 이벤트를 순서대로 분리한다.
+- `void camera::OnvifIvaEventSource::run() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void camera::OnvifIvaEventSource::stop() noexcept` — 진행 중인 long-poll을 중단하고 worker를 join한다.
+
 ### include/camera/RtspStreamReceiver.hpp
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
@@ -547,13 +646,16 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 - `EvidenceInsertResult database::EventDatabase::insertEvidenceImage(std::int64_t session_id, const std::string &original_path, const std::string &evidence_reason, const std::string &captured_at, const std::string &enhanced_path={}, snapshot::NormalizedRoi applied_roi={}, std::uint64_t roi_revision=0)` — 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다.
 - `EvidenceInsertResult database::EventDatabase::insertHallCaptureImage(std::int64_t session_id, const std::string &original_path, const std::string &enhanced_path, const std::string &enhancement_type, const std::string &captured_at, snapshot::NormalizedRoi applied_roi={}, std::uint64_t roi_revision=0)` — 활성 세션에 30/60초 ROI 촬영본을 단계별 최대 한 장 연결한다.
-- `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev/is_phev로 차량 종류를 분류한다.
+- `ParkingPlateResolution database::EventDatabase::applyPlateOcrWithEntrance(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &plate_number, double confidence, std::int64_t entrance_match_window_ms, double entrance_min_confidence)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev로 차량 종류를 분류한다.
 - `bool database::EventDatabase::acknowledgeFireDelivery(const std::string &delivery_key, std::uint64_t fire_revision)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::attachEnhancedPlateImage(const std::string &image_path, const std::string &enhanced_image_path)` — 원본 IMAGE_LOG 행에 OpenCV 전처리 파일 경로를 연결한다.
 - `bool database::EventDatabase::attachPlateBestShot(int session_id, const std::string &image_path, const std::string &plate_text)` — 번호판 BestShot과 선택적 카메라 plate text를 기존 세션에 연결한다.
 - `bool database::EventDatabase::attachVehicleBestShot(int session_id, const std::string &image_path, const std::string &object_id)` — 이미 활성 세션이 있는 슬롯에 차량 BestShot 이미지만 연결한다(세션/슬롯상태는 건드리지 않음).
 - `bool database::EventDatabase::cancelUnscheduled(std::int64_t log_id, const std::string &canceled_at)` — DB 생성 뒤 timer enqueue 실패 시 세션을 보상 종료한다.
 - `bool database::EventDatabase::completeSlotTransitionEffects(const std::string &command_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::createAppSession(std::int64_t user_id, const std::vector< unsigned char > &token_hash, std::int64_t created_at_utc, std::int64_t expires_at_utc)` — 원문 토큰이 아닌 SHA-256 digest로 로그인 세션을 만든다.
+- `bool database::EventDatabase::createAppUser(const std::string &account_id, const std::string &password_hash, const std::string &display_name, std::int64_t now_utc, std::int64_t *user_id)` — Argon2id PHC 문자열을 가진 앱 사용자를 생성한다.
 - `bool database::EventDatabase::createEntryWithBestShot(const std::string &slot_id, const std::string &image_path, const std::string &object_id, int *session_id)` — Vehicle BestShot을 근거로 OCCUPIED 슬롯과 ACTIVE 세션을 원자적으로 연결한다.
 - `bool database::EventDatabase::createEntryWithSnapshot(const std::string &slot_id, const std::string &image_path, const std::string &source_id, int *session_id)` — 홀센서 입차 Snapshot으로 ACTIVE 세션과 IMAGE/EVENT 로그를 만든다.
 - `bool database::EventDatabase::deferSlotTransitionCommand(const std::string &command_id, std::int64_t next_attempt_at_epoch_ms, const std::string &error) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -561,19 +663,26 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool database::EventDatabase::deleteSessionImageRecords(int session_id)` — 파일 삭제가 끝난 조기 출차 세션의 IMAGE_LOG 행을 모두 제거한다.
 - `bool database::EventDatabase::getImage(int image_id, ImageView &row)` — image_id로 이미지 경로와 OCR 메타데이터를 조회한다.
 - `bool database::EventDatabase::getParkingSlot(const std::string &slot_id, ParkingSlotView &row)` — slot_id 한 건의 상태를 조회한다.
+- `bool database::EventDatabase::incrementEntranceDuplicateCount(std::int64_t event_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::insertEvent(const EventRecord &record)` — 정규화된 카메라 이벤트와 선택적 Snapshot을 IMAGE_LOG/EVENT_LOG에 기록한다.
 - `bool database::EventDatabase::insertSystemEvent(const std::string &event_type, const std::string &slot_id, const std::string &message)` — 센서·통신 운영 이벤트를 기존 EVENT_LOG schema에 저장한다.
 - `bool database::EventDatabase::isSensorBootIdRetired(const std::string &source_kind, const std::string &sensor_id, const std::string &boot_id) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::listParkingSlots(std::vector< ParkingSlotView > &rows)` — 전체 주차면과 활성 세션을 조회한다.
 - `bool database::EventDatabase::listSessionImages(int session_id, std::vector< ImageView > &rows)` — 세션에 연결된 모든 이미지 메타데이터를 조회한다.
+- `bool database::EventDatabase::markEntranceArtifactsDeleted(std::int64_t event_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::markFireDeliveryInFlight(const std::string &delivery_key, std::uint64_t fire_revision)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::markFireDeliveryPending(const std::string &delivery_key, std::uint64_t fire_revision, const std::string &error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::markPlateOcrUnresolved(std::int64_t session_id, const std::string &slot_id, int attempts)` — OCR 시도 소진을 UNKNOWN으로 한 번만 EVENT_LOG에 기록한다.
 - `bool database::EventDatabase::markViolation(std::int64_t log_id, const std::string &violation_at, const std::string &image_path_2)` — 아직 ACTIVE인 세션만 VIOLATION으로 조건부 갱신한다.
 - `bool database::EventDatabase::occupancySchemaReady() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::open(const std::string &db_path)` — SQLite 파일을 열고 FK 검사를 활성화한다.
+- `bool database::EventDatabase::resetAppUserPassword(const std::string &account_id, const std::string &password_hash, std::int64_t now_utc)` — 비밀번호를 교체하고 해당 사용자의 세션을 모두 폐기한다.
 - `bool database::EventDatabase::resetFireInFlightDeliveries()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::revokeAppSession(const std::vector< unsigned char > &token_hash, std::int64_t now_utc)` — 현재 토큰 하나만 폐기한다.
 - `bool database::EventDatabase::runtimeSchemaReady() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::setAppUserEnabled(const std::string &account_id, bool enabled, std::int64_t now_utc)` — 계정 활성 상태를 변경하며 비활성화 시 세션을 모두 폐기한다.
+- `bool database::EventDatabase::updateEntranceImage(std::int64_t event_id, bool plate, const std::string &image_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::updateEntranceVisionAnalysis(std::int64_t event_id, const EntranceVisionAnalysis &analysis)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool database::EventDatabase::upsertSystemSetting(const std::string &key, const std::string &value)` — 런타임 설정을 원자적으로 추가하거나 갱신한다.
 - `database::EventDatabase::EventDatabase()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `database::EventDatabase::EventDatabase(const std::filesystem::path &database_path)` — SQLite 이벤트 DB를 열고 프로토타입에 필요한 연결 옵션을 설정한다.
@@ -584,8 +693,11 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `parking::CommittedOccupancyTransition database::EventDatabase::applySlotTransitionCommand(const std::string &command_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::ParkingCorrelationMatch database::EventDatabase::resolveParkingCorrelation(const std::string &camera_id, const std::string &channel_id, const std::string &object_id, std::int64_t now_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::SlotAdmissionResult database::EventDatabase::admitSlotTransitionCommand(const parking::SlotTransitionCommand &command, std::size_t pending_capacity)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::int64_t database::EventDatabase::createEntranceRecognition(const std::string &camera_id, const std::string &channel_id, const std::string &object_id, std::int64_t first_seen_epoch_ms)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::int64_t database::EventDatabase::createHallSession(const std::string &slot_id, const std::string &source_id, const std::string &entry_time)` — 홀센서 입차의 ACTIVE 세션을 만들고 실제 SQLite ID를 반환한다.
-- `std::int64_t database::EventDatabase::insertParked(const std::string &car_number, const std::string &slot_id, const std::string &parked_at, const std::string &image_path_1)` — EV/PHEV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다.
+- `std::int64_t database::EventDatabase::insertParked(const std::string &car_number, const std::string &slot_id, const std::string &parked_at, const std::string &image_path_1)` — EV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다.
+- `std::optional< AppSessionPrincipal > database::EventDatabase::findActiveAppSession(const std::vector< unsigned char > &token_hash, std::int64_t now_utc) const` — digest와 현재 시각으로 활성 세션을 검증한다.
+- `std::optional< AppUserRecord > database::EventDatabase::findAppUser(const std::string &account_id) const` — 정규화된 account ID로 앱 사용자를 조회한다.
 - `std::optional< LogRecord > database::EventDatabase::departActiveBySlot(const std::string &slot_id, const std::string &departed_at)` — slot_id의 활성 세션을 ENDED로 바꾸고 점유시간을 계산한다.
 - `std::optional< LogRecord > database::EventDatabase::findActiveBySlot(const std::string &slot_id) const` — 주차면의 출차되지 않은 최신 세션을 조회한다.
 - `std::optional< LogRecord > database::EventDatabase::findLogById(std::int64_t log_id) const` — 불변 session ID로 타이머 읽기 모델을 조회한다.
@@ -599,7 +711,10 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::size_t database::EventDatabase::pendingSlotTransitionDrainCount(std::int64_t shutdown_cutoff_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::size_t database::EventDatabase::pendingSlotTransitionEffectCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string database::EventDatabase::applyPlateOcr(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &plate_number, double confidence)` — OCR 결과를 저장하고 VEHICLE 조회 결과(EV/NON_EV/UNKNOWN)를 반환한다.
+- `std::string database::EventDatabase::finishEntranceRecognition(std::int64_t event_id, const std::string &plate_number, double confidence, int attempts, const std::string &error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string database::EventDatabase::readTextFile(const std::filesystem::path &path)` — SQL/config 보조 파일 전체를 문자열로 읽는다.
+- `std::vector< AppUserRecord > database::EventDatabase::listAppUsers() const` — 비밀번호 해시를 제외한 앱 사용자 목록을 반환한다.
+- `std::vector< EntranceArtifactRecord > database::EventDatabase::listEntranceArtifactsForCleanup(std::int64_t failed_before_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< LogRecord > database::EventDatabase::listLogs() const` — 타이머 CLI 표시용 전체 세션을 생성 순서로 반환한다.
 - `std::vector< event::FireAlarmStateRecord > database::EventDatabase::listFireAlarmStates() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< event::FireOutboxRecord > database::EventDatabase::listFireLifecycleDeliveries() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -607,7 +722,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::vector< event::FireOutboxRecord > database::EventDatabase::listPendingFireLifecycleDeliveries(const std::optional< std::string > &channel_id=std::nullopt) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< parking::CommittedOccupancyTransition > database::EventDatabase::listPendingSlotTransitionEffects(std::int64_t now_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< parking::DurableSlotCommand > database::EventDatabase::listRunnableSlotTransitionCommands(std::int64_t now_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `std::vector< std::pair< std::string, std::string > > database::EventDatabase::listVehicles() const` — 차량번호와 EV/PHEV/NON_EV 문자열 목록을 반환한다.
+- `std::vector< std::pair< std::string, std::string > > database::EventDatabase::listVehicles() const` — 차량번호와 EV/NON_EV 문자열 목록을 반환한다.
 - `void database::EventDatabase::clearTimerLogs()` — TIMER_ENTRY로 식별되는 데모 타이머 세션만 정리한다.
 - `void database::EventDatabase::close()` — 열린 DB 연결을 닫는다.
 - `void database::EventDatabase::executeSqlUnlocked(const std::string &sql)` — 준비 과정이 필요 없는 SQL 문자열을 SQLite 연결에서 직접 실행한다.
@@ -642,7 +757,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `int db_delete_session_images(int session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_end_parking_session(int session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_get_image_by_id(int image_id, DbImageRow *row)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev, int *is_phev)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_insert_event_log(int session_id, const char *slot_id, const char *event_type, const char *message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_insert_image_log(int session_id, const char *original_path, const char *enhanced_path, const char *enhancement_type, const char *ocr_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_insert_image_log_with_roi(int session_id, const char *original_path, const char *enhanced_path, const char *enhancement_type, const char *ocr_result, double roi_x, double roi_y, double roi_width, double roi_height, unsigned long long roi_revision)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -691,6 +806,16 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::vector< LoRaFrame > device::LoRaDriver::consume(std::span< const std::uint8_t > bytes)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< std::uint8_t > device::LoRaDriver::encode(const LoRaFrame &frame)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### include/device/ParkingAlertController.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `bool device::ParkingAlertController::handleEvent(std::string_view eventType, std::int64_t sessionId, std::string_view slotId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool device::ParkingAlertController::initialize(const std::vector< std::pair< std::string, std::int64_t > > &activeAlerts)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `device::ParkingAlertController::ParkingAlertController(std::string slotMap, Backend backend)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t device::ParkingAlertController::mappedSlotCount() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::unordered_map< std::string, std::uint32_t > device::ParkingAlertController::parseSlotMap(const std::string &value)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ### include/device/SensorLinkManager.hpp
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
@@ -726,6 +851,88 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `device::UartDriver::~UartDriver()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int device::UartDriver::readSome(std::span< std::uint8_t > output, std::string *error=nullptr)` — poll 후 수신 가능한 byte를 읽는다.
 - `void device::UartDriver::disconnect()` — 열려 있는 descriptor를 닫는다.
+
+## include/entrance
+
+### include/entrance/EntranceBestShotCoordinator.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `ObserveResult entrance::EntranceBestShotCoordinator::observe(const BestShotEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::beginFinalization(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::bindEventId(const ObjectKey &key, std::int64_t eventId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::complete(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::fail(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markEvProcessing(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markImageDuplicate(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markOcrProcessing(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markOcrQueued(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceBestShotCoordinator::EntranceBestShotCoordinator(std::chrono::milliseconds objectTtl, std::size_t capacity)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< ObjectState > entrance::EntranceBestShotCoordinator::state(const ObjectKey &key) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::int64_t > entrance::EntranceBestShotCoordinator::eventId(const ObjectKey &key) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceBestShotCoordinator::duplicateCount(const ObjectKey &key) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceBestShotCoordinator::trackedCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< ExpiredObject > entrance::EntranceBestShotCoordinator::sweep(std::int64_t nowEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceBestShotCoordinator::eraseExpiredTerminalLocked(std::int64_t nowEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/entrance/EntranceEvWorker.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `EntranceEvResult entrance::EntranceEvWorker::process(const EntranceEvTask &task)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `EntranceEvResult entrance::EntranceEvWorker::reviewResult(const EntranceEvTask &task, std::string error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `EntranceEvWorker & entrance::EntranceEvWorker::operator=(const EntranceEvWorker &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::enqueue(EntranceEvTask task, EntranceEvCallback callback)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::spawnChild()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::writeRequest(const std::string &request)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceEvWorker::EntranceEvWorker(Config config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceEvWorker::EntranceEvWorker(const EntranceEvWorker &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceEvWorker::~EntranceEvWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::string > entrance::EntranceEvWorker::readResponseLine(int timeoutMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceEvWorker::queuedCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceEvWorker::run()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceEvWorker::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceEvWorker::stopChild() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/entrance/EntranceImageDeduplicator.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `ImageDedupResult entrance::EntranceImageDeduplicator::observe(const ObjectKey &key, const std::string &imagePath, std::int64_t receivedAtEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceImageDeduplicator::bindEventId(const ObjectKey &key, std::int64_t eventId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceImageDeduplicator::EntranceImageDeduplicator(std::chrono::milliseconds window, int hammingThreshold, std::size_t capacity)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `int entrance::EntranceImageDeduplicator::hammingDistance(const std::array< std::uint8_t, 8 > &left, const std::array< std::uint8_t, 8 > &right)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::array< std::uint8_t, 8 > > entrance::EntranceImageDeduplicator::fingerprint(const std::string &imagePath)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceImageDeduplicator::trackedCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceImageDeduplicator::eraseExpiredLocked(std::int64_t nowEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/entrance/EntranceTypes.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `bool entrance::ObjectKey::operator==(const ObjectKey &) const =default` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::ObjectKeyHash::operator()(const ObjectKey &key) const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string entrance::ObjectKey::text() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/entrance/EntranceVehicleService.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `bool entrance::EntranceVehicleService::cleanupArtifacts(std::int64_t eventId, const std::string &artifactDirectory)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceVehicleService::handle(const BestShotEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceVehicleService::EntranceVehicleService(EntranceBestShotCoordinator &coordinator, EntranceVehiclePorts ports, std::string outputRoot, std::chrono::milliseconds dedupWindow=std::chrono::seconds(20), int dedupHammingThreshold=10, std::size_t dedupCapacity=64, bool deleteArtifactsOnSuccess=true, std::chrono::hours failureRetention=std::chrono::hours(24))` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceVehicleService::~EntranceVehicleService()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::int64_t entrance::EntranceVehicleService::nowEpochMs()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string entrance::EntranceVehicleService::artifactDirectory(const database::EntranceArtifactRecord &record) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string entrance::EntranceVehicleService::imagePath(const BestShotEvent &event) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::cleanupDueArtifacts()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::cleanupLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::failEvent(std::int64_t eventId, const ObjectKey &key, const std::string &reason)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::handleEvResult(std::int64_t eventId, const ObjectKey &key, const std::string &plateImagePath, const std::string &artifactDirectory, const EntranceEvResult &result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::handleOcrResult(const ObjectKey &key, const std::string &artifactDirectory, const ocr::GenericOcrResult &result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ## include/event
 
@@ -769,8 +976,10 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `FireCommandResult event::FireAlarmService::enqueue(Command command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::process(const Command &command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::processAcknowledge(const Command &command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `FireCommandResult event::FireAlarmService::processManualClear(const Command &command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::processSignal(const Command &command, const FireChannelBinding &binding)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::submitAcknowledge(std::string channel_id, std::string alarm_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `FireCommandResult event::FireAlarmService::submitManualClear(std::string channel_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::submitSignal(FireSignal signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireStoreMutationResult event::FireAlarmService::applyTransition(const FireStateMutation &mutation)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool event::FireAlarmService::configurationValid() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -845,6 +1054,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
 - `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolve(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolveSmartParkingPublication(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — smart-parking-iva-v1 Publication을 선언된 slot/rule/channel로 검증한다.
 
 ### include/event/IvaOccupancyCoordinator.hpp
 
@@ -862,6 +1072,12 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `event::IvaSlotOccupancyAggregator::IvaSlotOccupancyAggregator(const std::vector< parking::ParkingSlotConfig > &slots)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< IvaSlotOccupancyUpdate > event::IvaSlotOccupancyAggregator::update(const std::string &slotId, const std::string &cameraId, const std::string &videoSourceToken, const std::string &ruleName, bool active)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::IvaSlotOccupancyAggregator::observationKey(const std::string &cameraId, const std::string &videoSourceToken, const std::string &ruleName)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### include/event/OnvifIvaEventAdapter.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- `std::optional< IvaOccupancySignal > event::OnvifIvaEventAdapter::adapt(const camera::OnvifIvaEvent &source, const app::AppConfig &config, const std::vector< parking::ParkingSlotConfig > &slots, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### include/event/SystemEventReporter.hpp
 
@@ -895,7 +1111,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool http::ParkingHttpServer::stop(std::chrono::milliseconds timeout=std::chrono::seconds(30)) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::usesTls() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::ParkingHttpServer(const ParkingHttpServer &)=delete` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr, settings::ParkingRoiSettingsService *roi_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, auth::AuthService &auth_service, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr, settings::ParkingRoiSettingsService *roi_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::~ParkingHttpServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::closeIngress() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::closeIngressLocked() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -947,6 +1163,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `bool mqtt::MqttEventBridge::abortActiveEpoch(MqttConnectionEpoch expectedEpoch) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindCameraSnapshotGenerator(CameraSnapshotGenerator generator)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindFireAckHandler(FireAckHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool mqtt::MqttEventBridge::bindFireClearHandler(FireClearHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindIvaOccupancyHandler(IvaOccupancyHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindParkingRoiResolver(RoiResolver resolver)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindRegularEgressAdmission(RegularEgressAdmission admission)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1026,6 +1243,8 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
+- `bool notification::TelegramMessageFormatter::shouldNotify(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string notification::TelegramMessageFormatter::eventId(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string notification::TelegramMessageFormatter::format(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string notification::TelegramMessageFormatter::truncate(const std::string &text)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
@@ -1046,19 +1265,26 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
 - `bool ocr::OcrWorker::enabled() const` — Gemini client가 실제 요청 가능한 상태인지 반환한다.
-- `ocr::OcrWorker::OcrWorker(GeminiOcrClient client, database::EventDatabase &database, bool preprocess_enabled, ResultCallback result_callback={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool ocr::OcrWorker::enqueueGeneric(const std::string &task_id, const std::string &image_path, GenericOcrCallback callback)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `ocr::OcrWorker::OcrWorker(GeminiOcrClient client, database::EventDatabase &database, bool preprocess_enabled, ResultCallback result_callback={}, std::int64_t entrance_match_window_ms=30LL *60LL *1000LL, double entrance_match_min_confidence=0.85)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `ocr::OcrWorker::~OcrWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::cancelSession(int session_id)` — 조기 출차 세션의 대기/진행 OCR 결과가 DB와 타이머에 반영되지 않게 한다.
 - `void ocr::OcrWorker::enqueue(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path={})` — BestShot 이미지를 기존 session의 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueHallCapture(const HallCaptureTask &task)` — 30/60초 홀 촬영본을 전용 결과 callback이 있는 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueScene(const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path)` — 세션이 아직 없는 IVA scene을 후보 탐색 OCR 작업으로 등록한다.
-- `void ocr::OcrWorker::process(const Task &task, HallCaptureResult &hall_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void ocr::OcrWorker::process(const Task &task, HallCaptureResult &hall_result, GenericOcrResult *generic_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::run()` — queue 대기, 전처리, OCR, 정규화와 DB 반영을 반복한다.
 - `void ocr::OcrWorker::setHallCaptureCallback(HallCaptureCallback callback)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::start()` — OCR worker thread를 시작한다.
 - `void ocr::OcrWorker::stop()` — 남은 worker를 깨워 종료하고 join한다.
 
 ### include/ocr/PlateImageEnhancer.hpp
+
+공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
+
+- 함수 없음: 타입·상수·구조체 선언 또는 데이터 전용 파일
+
+### include/ocr/PlateMatcher.hpp
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
@@ -1353,7 +1579,7 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 
 공개 인터페이스, 타입 또는 클래스 선언을 정의한다.
 
-- `EntryResult parking_timer::ParkingSlotManager::handleEntry(const std::string &slot_id, const std::string &car_number, const std::string &image_path_1={})` — EV/PHEV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다.
+- `EntryResult parking_timer::ParkingSlotManager::handleEntry(const std::string &slot_id, const std::string &car_number, const std::string &image_path_1={})` — EV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다.
 - `EntryResult parking_timer::ParkingSlotManager::handleRecognizedSession(std::int64_t session_id, const std::string &slot_id, const std::string &car_number)` — 카메라 흐름이 이미 만든 세션을 중복 INSERT 없이 타이머에 등록한다.
 - `bool parking_timer::ParkingSlotManager::start() noexcept` — Starts the owned timer worker after runtime teardown is armed.
 - `parking_timer::ParkingSlotManager::ParkingSlotManager(EventDatabase &database, EventManager &events, std::chrono::milliseconds parking_timeout, TimerManager::EvidenceProvider evidence_provider={})` — 입·출차 상태 전이와 EV 점유 타이머를 조정하는 관리자를 생성한다.
@@ -1361,8 +1587,8 @@ Linux 커널 드라이버 또는 사용자 공간 ABI를 구현한다.
 - `std::optional< LogRecord > parking_timer::ParkingSlotManager::handleCommittedExit(std::int64_t session_id, const std::string &slot_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< LogRecord > parking_timer::ParkingSlotManager::handleExit(const std::string &slot_id)` — 활성 세션을 출차 처리하며 없으면 nullopt를 반환한다.
 - `std::size_t parking_timer::ParkingSlotManager::pendingTimerCount() const` — lazy-canceled 항목을 포함한 현재 우선순위 큐 크기를 반환한다.
-- `std::size_t parking_timer::ParkingSlotManager::restoreActiveSessions()` — 서버 재시작 시 DB의 EV/PHEV 활성 세션을 타이머 큐에 복구한다.
-- `std::size_t parking_timer::ParkingSlotManager::updateParkingTimeout(std::chrono::milliseconds parking_timeout)` — 활성 EV/PHEV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다.
+- `std::size_t parking_timer::ParkingSlotManager::restoreActiveSessions()` — 서버 재시작 시 DB의 EV 활성 세션을 타이머 큐에 복구한다.
+- `std::size_t parking_timer::ParkingSlotManager::updateParkingTimeout(std::chrono::milliseconds parking_timeout)` — 활성 EV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다.
 
 ### include/parking_timer/RuntimeConfig.hpp
 
@@ -1570,6 +1796,35 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool app::RuntimeShutdown::shutdown() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool app::RuntimeShutdown::stopped() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+## src/auth
+
+### src/auth/AuthService.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `LoginResult auth::AuthService::login(const std::string &account_id, const std::string &password, const std::string &source_ip)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `auth::AuthService::AuthService(database::EventDatabase &database, AuthConfig config={}, Clock clock={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::addUser(const std::string &account_id, const std::string &password, const std::string &display_name, std::int64_t *user_id, std::string *error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::logoutBearer(std::string_view authorization_header)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::resetPassword(const std::string &account_id, const std::string &password, std::string *error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::setUserEnabled(const std::string &account_id, bool enabled, std::string *error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::validPassword(std::string_view password) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool auth::AuthService::verifyPassword(std::string_view password, const std::string &password_hash) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< AuthenticatedUser > auth::AuthService::authenticateBearer(std::string_view authorization_header) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< int > auth::AuthService::rateLimitRetryAfter(const std::string &key, std::int64_t now)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::string > auth::AuthService::normalizeAccountId(std::string_view account_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::string_view > auth::AuthService::extractBearer(std::string_view authorization_header) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::vector< unsigned char > > auth::AuthService::tokenDigest(std::string_view bearer_token) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::formatUtc(std::int64_t epoch_seconds)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::generateToken()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::hashPassword(std::string_view password)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string auth::AuthService::trim(std::string_view value)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< database::AppUserRecord > auth::AuthService::listUsers() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::boundRateTable(std::int64_t now)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::clearFailures(const std::string &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::pruneFailures(RateState &state, std::int64_t now) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void auth::AuthService::recordFailure(const std::string &key, std::int64_t now)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ## src/bestshot
 
 ### src/bestshot/BestShotReceiver.cpp
@@ -1577,9 +1832,9 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `BestShotProcessResult bestshot::BestShotReceiver::processOne(PendingMetadata metadata, bool may_requeue)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bestshot::BestShotReceiver::BestShotReceiver(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::atomic< bool > &running, std::string output_root="data/bestshots", DownloadCallback downloader={}, OcrCallback ocr_callback={}, std::size_t pending_capacity=64)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bestshot::BestShotReceiver::BestShotReceiver(std::vector< std::shared_ptr< camera::CameraChannel > > &channels, parking::ParkingTriggerCoordinator &trigger_coordinator, ocr::OcrWorker &ocr_worker, std::atomic< bool > &running, std::string output_root="data/bestshots", DownloadCallback downloader={}, OcrCallback ocr_callback={}, std::size_t pending_capacity=64, MetadataCallback metadata_callback={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bestshot::BestShotReceiver::~BestShotReceiver()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `bool bestshot::BestShotReceiver::downloadImage(const std::string &rtsp_url, const std::string &image_ref, const std::string &destination)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool bestshot::BestShotReceiver::downloadImageReference(const std::string &rtsp_url, const std::string &image_ref, const std::string &destination)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool bestshot::BestShotReceiver::enqueuePending(PendingMetadata metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string bestshot::BestShotReceiver::evidenceIdentity(const PendingMetadata &metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string bestshot::BestShotReceiver::exactIdentityKey(const PendingMetadata &metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1612,6 +1867,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `const std::vector< int > & camera::CameraSnapshotApiClient::channels() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `const std::vector< std::string > & camera::CameraSnapshotApiClient::filters() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void camera::CameraSnapshotApiClient::setError(std::string message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/camera/OnvifIvaEventSource.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- 함수 없음: 타입·상수·구조체 선언 또는 데이터 전용 파일
 
 ### src/camera/RtspStreamReceiver.cpp
 
@@ -1649,12 +1910,38 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::string database::EventDatabase::applyPlateOcr(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &plate_number, double confidence)` — OCR 결과를 저장하고 VEHICLE 조회 결과(EV/NON_EV/UNKNOWN)를 반환한다.
 - `void database::EventDatabase::close()` — 열린 DB 연결을 닫는다.
 
+### src/database/EventDatabaseAuth.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `bool database::EventDatabase::createAppSession(std::int64_t user_id, const std::vector< unsigned char > &token_hash, std::int64_t created_at_utc, std::int64_t expires_at_utc)` — 원문 토큰이 아닌 SHA-256 digest로 로그인 세션을 만든다.
+- `bool database::EventDatabase::createAppUser(const std::string &account_id, const std::string &password_hash, const std::string &display_name, std::int64_t now_utc, std::int64_t *user_id)` — Argon2id PHC 문자열을 가진 앱 사용자를 생성한다.
+- `bool database::EventDatabase::resetAppUserPassword(const std::string &account_id, const std::string &password_hash, std::int64_t now_utc)` — 비밀번호를 교체하고 해당 사용자의 세션을 모두 폐기한다.
+- `bool database::EventDatabase::revokeAppSession(const std::vector< unsigned char > &token_hash, std::int64_t now_utc)` — 현재 토큰 하나만 폐기한다.
+- `bool database::EventDatabase::setAppUserEnabled(const std::string &account_id, bool enabled, std::int64_t now_utc)` — 계정 활성 상태를 변경하며 비활성화 시 세션을 모두 폐기한다.
+- `std::optional< AppSessionPrincipal > database::EventDatabase::findActiveAppSession(const std::vector< unsigned char > &token_hash, std::int64_t now_utc) const` — digest와 현재 시각으로 활성 세션을 검증한다.
+- `std::optional< AppUserRecord > database::EventDatabase::findAppUser(const std::string &account_id) const` — 정규화된 account ID로 앱 사용자를 조회한다.
+- `std::vector< AppUserRecord > database::EventDatabase::listAppUsers() const` — 비밀번호 해시를 제외한 앱 사용자 목록을 반환한다.
+
 ### src/database/EventDatabaseCorrelation.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `parking::BestShotAttachResult database::EventDatabase::attachBestShotIfActive(const parking::CommittedCorrelationLease &lease, parking::BestShotEvidenceKind kind, const std::string &image_ref, const std::string &image_path, const std::string &plate_text, std::int64_t now_epoch_ms)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `parking::ParkingCorrelationMatch database::EventDatabase::resolveParkingCorrelation(const std::string &camera_id, const std::string &channel_id, const std::string &object_id, std::int64_t now_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/database/EventDatabaseEntrance.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `ParkingPlateResolution database::EventDatabase::applyPlateOcrWithEntrance(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &plate_number, double confidence, std::int64_t entrance_match_window_ms, double entrance_min_confidence)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::incrementEntranceDuplicateCount(std::int64_t event_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::markEntranceArtifactsDeleted(std::int64_t event_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::updateEntranceImage(std::int64_t event_id, bool plate, const std::string &image_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool database::EventDatabase::updateEntranceVisionAnalysis(std::int64_t event_id, const EntranceVisionAnalysis &analysis)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::int64_t database::EventDatabase::createEntranceRecognition(const std::string &camera_id, const std::string &channel_id, const std::string &object_id, std::int64_t first_seen_epoch_ms)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string database::EventDatabase::finishEntranceRecognition(std::int64_t event_id, const std::string &plate_number, double confidence, int attempts, const std::string &error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< EntranceArtifactRecord > database::EventDatabase::listEntranceArtifactsForCleanup(std::int64_t failed_before_epoch_ms) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/database/EventDatabaseFire.cpp
 
@@ -1697,14 +1984,14 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `EvidenceInsertResult database::EventDatabase::insertEvidenceImage(std::int64_t session_id, const std::string &original_path, const std::string &evidence_reason, const std::string &captured_at, const std::string &enhanced_path={}, snapshot::NormalizedRoi applied_roi={}, std::uint64_t roi_revision=0)` — 활성 세션에 종류별 증거 이미지 한 장만 원자적으로 연결한다.
 - `EvidenceInsertResult database::EventDatabase::insertHallCaptureImage(std::int64_t session_id, const std::string &original_path, const std::string &enhanced_path, const std::string &enhancement_type, const std::string &captured_at, snapshot::NormalizedRoi applied_roi={}, std::uint64_t roi_revision=0)` — 활성 세션에 30/60초 ROI 촬영본을 단계별 최대 한 장 연결한다.
-- `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev/is_phev로 차량 종류를 분류한다.
+- `VehicleCategory database::EventDatabase::classifyVehicle(std::string_view car_number) const` — VEHICLE의 is_ev로 차량 종류를 분류한다.
 - `bool database::EventDatabase::cancelUnscheduled(std::int64_t log_id, const std::string &canceled_at)` — DB 생성 뒤 timer enqueue 실패 시 세션을 보상 종료한다.
 - `bool database::EventDatabase::markPlateOcrUnresolved(std::int64_t session_id, const std::string &slot_id, int attempts)` — OCR 시도 소진을 UNKNOWN으로 한 번만 EVENT_LOG에 기록한다.
 - `bool database::EventDatabase::markViolation(std::int64_t log_id, const std::string &violation_at, const std::string &image_path_2)` — 아직 ACTIVE인 세션만 VIOLATION으로 조건부 갱신한다.
 - `bool database::EventDatabase::upsertSystemSetting(const std::string &key, const std::string &value)` — 런타임 설정을 원자적으로 추가하거나 갱신한다.
 - `database::EventDatabase::EventDatabase(const std::filesystem::path &database_path)` — SQLite 이벤트 DB를 열고 프로토타입에 필요한 연결 옵션을 설정한다.
 - `std::int64_t database::EventDatabase::createHallSession(const std::string &slot_id, const std::string &source_id, const std::string &entry_time)` — 홀센서 입차의 ACTIVE 세션을 만들고 실제 SQLite ID를 반환한다.
-- `std::int64_t database::EventDatabase::insertParked(const std::string &car_number, const std::string &slot_id, const std::string &parked_at, const std::string &image_path_1)` — EV/PHEV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다.
+- `std::int64_t database::EventDatabase::insertParked(const std::string &car_number, const std::string &slot_id, const std::string &parked_at, const std::string &image_path_1)` — EV 장기 점유용 ACTIVE 세션과 최초 이미지를 트랜잭션으로 생성한다.
 - `std::optional< LogRecord > database::EventDatabase::departActiveBySlot(const std::string &slot_id, const std::string &departed_at)` — slot_id의 활성 세션을 ENDED로 바꾸고 점유시간을 계산한다.
 - `std::optional< LogRecord > database::EventDatabase::findActiveBySlot(const std::string &slot_id) const` — 주차면의 출차되지 않은 최신 세션을 조회한다.
 - `std::optional< LogRecord > database::EventDatabase::findLogById(std::int64_t log_id) const` — 불변 session ID로 타이머 읽기 모델을 조회한다.
@@ -1712,7 +1999,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::optional< std::string > database::EventDatabase::getSystemSetting(const std::string &key) const` — 런타임 설정 문자열을 조회한다. 키가 없으면 nullopt를 반환한다.
 - `std::string database::EventDatabase::readTextFile(const std::filesystem::path &path)` — SQL/config 보조 파일 전체를 문자열로 읽는다.
 - `std::vector< LogRecord > database::EventDatabase::listLogs() const` — 타이머 CLI 표시용 전체 세션을 생성 순서로 반환한다.
-- `std::vector< std::pair< std::string, std::string > > database::EventDatabase::listVehicles() const` — 차량번호와 EV/PHEV/NON_EV 문자열 목록을 반환한다.
+- `std::vector< std::pair< std::string, std::string > > database::EventDatabase::listVehicles() const` — 차량번호와 EV/NON_EV 문자열 목록을 반환한다.
 - `void database::EventDatabase::clearTimerLogs()` — TIMER_ENTRY로 식별되는 데모 타이머 세션만 정리한다.
 - `void database::EventDatabase::executeSqlUnlocked(const std::string &sql)` — 준비 과정이 필요 없는 SQL 문자열을 SQLite 연결에서 직접 실행한다.
 - `void database::EventDatabase::initialize(const std::filesystem::path &schema_file, const std::filesystem::path &seed_file)` — schema와 seed SQL을 적용하며 구형 컬럼을 먼저 호환 마이그레이션한다.
@@ -1746,7 +2033,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `int db_delete_session_images(int session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_end_parking_session(int session_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_get_image_by_id(int image_id, DbImageRow *row)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev, int *is_phev)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `int db_get_vehicle_by_plate(const char *plate_number, int *vehicle_id, int *is_ev)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_insert_event_log(int session_id, const char *slot_id, const char *event_type, const char *message)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_insert_image_log(int session_id, const char *original_path, const char *enhanced_path, const char *enhancement_type, const char *ocr_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int db_insert_image_log_with_roi(int session_id, const char *original_path, const char *enhanced_path, const char *enhancement_type, const char *ocr_result, double roi_x, double roi_y, double roi_width, double roi_height, unsigned long long roi_revision)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1799,6 +2086,16 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::vector< LoRaFrame > device::LoRaDriver::consume(std::span< const std::uint8_t > bytes)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::vector< std::uint8_t > device::LoRaDriver::encode(const LoRaFrame &frame)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### src/device/ParkingAlertController.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `bool device::ParkingAlertController::handleEvent(std::string_view eventType, std::int64_t sessionId, std::string_view slotId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool device::ParkingAlertController::initialize(const std::vector< std::pair< std::string, std::int64_t > > &activeAlerts)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `device::ParkingAlertController::ParkingAlertController(std::string slotMap, Backend backend)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t device::ParkingAlertController::mappedSlotCount() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::unordered_map< std::string, std::uint32_t > device::ParkingAlertController::parseSlotMap(const std::string &value)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ### src/device/SensorLinkManager.cpp
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
@@ -1828,6 +2125,78 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `device::UartDriver::~UartDriver()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `int device::UartDriver::readSome(std::span< std::uint8_t > output, std::string *error=nullptr)` — poll 후 수신 가능한 byte를 읽는다.
 - `void device::UartDriver::disconnect()` — 열려 있는 descriptor를 닫는다.
+
+## src/entrance
+
+### src/entrance/EntranceBestShotCoordinator.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `ObserveResult entrance::EntranceBestShotCoordinator::observe(const BestShotEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::beginFinalization(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::bindEventId(const ObjectKey &key, std::int64_t eventId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::complete(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::fail(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markEvProcessing(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markImageDuplicate(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markOcrProcessing(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceBestShotCoordinator::markOcrQueued(const ObjectKey &key)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceBestShotCoordinator::EntranceBestShotCoordinator(std::chrono::milliseconds objectTtl, std::size_t capacity)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< ObjectState > entrance::EntranceBestShotCoordinator::state(const ObjectKey &key) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::int64_t > entrance::EntranceBestShotCoordinator::eventId(const ObjectKey &key) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceBestShotCoordinator::duplicateCount(const ObjectKey &key) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceBestShotCoordinator::trackedCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< ExpiredObject > entrance::EntranceBestShotCoordinator::sweep(std::int64_t nowEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceBestShotCoordinator::eraseExpiredTerminalLocked(std::int64_t nowEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/entrance/EntranceEvWorker.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `EntranceEvResult entrance::EntranceEvWorker::process(const EntranceEvTask &task)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `EntranceEvResult entrance::EntranceEvWorker::reviewResult(const EntranceEvTask &task, std::string error)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::enqueue(EntranceEvTask task, EntranceEvCallback callback)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::spawnChild()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceEvWorker::writeRequest(const std::string &request)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceEvWorker::EntranceEvWorker(Config config)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceEvWorker::~EntranceEvWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::string > entrance::EntranceEvWorker::readResponseLine(int timeoutMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceEvWorker::queuedCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceEvWorker::run()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceEvWorker::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceEvWorker::stopChild() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/entrance/EntranceImageDeduplicator.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `ImageDedupResult entrance::EntranceImageDeduplicator::observe(const ObjectKey &key, const std::string &imagePath, std::int64_t receivedAtEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceImageDeduplicator::bindEventId(const ObjectKey &key, std::int64_t eventId)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceImageDeduplicator::EntranceImageDeduplicator(std::chrono::milliseconds window, int hammingThreshold, std::size_t capacity)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `int entrance::EntranceImageDeduplicator::hammingDistance(const std::array< std::uint8_t, 8 > &left, const std::array< std::uint8_t, 8 > &right)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< std::array< std::uint8_t, 8 > > entrance::EntranceImageDeduplicator::fingerprint(const std::string &imagePath)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::size_t entrance::EntranceImageDeduplicator::trackedCount() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceImageDeduplicator::eraseExpiredLocked(std::int64_t nowEpochMs)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/entrance/EntranceVehicleService.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `bool entrance::EntranceVehicleService::cleanupArtifacts(std::int64_t eventId, const std::string &artifactDirectory)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool entrance::EntranceVehicleService::handle(const BestShotEvent &event)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceVehicleService::EntranceVehicleService(EntranceBestShotCoordinator &coordinator, EntranceVehiclePorts ports, std::string outputRoot, std::chrono::milliseconds dedupWindow=std::chrono::seconds(20), int dedupHammingThreshold=10, std::size_t dedupCapacity=64, bool deleteArtifactsOnSuccess=true, std::chrono::hours failureRetention=std::chrono::hours(24))` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `entrance::EntranceVehicleService::~EntranceVehicleService()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::int64_t entrance::EntranceVehicleService::nowEpochMs()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string entrance::EntranceVehicleService::artifactDirectory(const database::EntranceArtifactRecord &record) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string entrance::EntranceVehicleService::imagePath(const BestShotEvent &event) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::cleanupDueArtifacts()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::cleanupLoop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::failEvent(std::int64_t eventId, const ObjectKey &key, const std::string &reason)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::handleEvResult(std::int64_t eventId, const ObjectKey &key, const std::string &plateImagePath, const std::string &artifactDirectory, const EntranceEvResult &result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::handleOcrResult(const ObjectKey &key, const std::string &artifactDirectory, const ocr::GenericOcrResult &result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void entrance::EntranceVehicleService::stop()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ## src/event
 
@@ -1859,8 +2228,10 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `FireCommandResult event::FireAlarmService::enqueue(Command command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::process(const Command &command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::processAcknowledge(const Command &command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `FireCommandResult event::FireAlarmService::processManualClear(const Command &command)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::processSignal(const Command &command, const FireChannelBinding &binding)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::submitAcknowledge(std::string channel_id, std::string alarm_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `FireCommandResult event::FireAlarmService::submitManualClear(std::string channel_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireCommandResult event::FireAlarmService::submitSignal(FireSignal signal)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `FireStoreMutationResult event::FireAlarmService::applyTransition(const FireStateMutation &mutation)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool event::FireAlarmService::configurationValid() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -1937,6 +2308,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolve(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::optional< IvaResolvedTarget > event::IvaEventResolver::resolveSmartParkingPublication(const std::string &cameraId, const CameraEvent &cameraEvent, const std::vector< parking::ParkingSlotConfig > &slots, const std::vector< app::IvaAreaConfig > &areas, std::string *error=nullptr)` — smart-parking-iva-v1 Publication을 선언된 slot/rule/channel로 검증한다.
 
 ### src/event/IvaOccupancyCoordinator.cpp
 
@@ -1954,6 +2326,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `event::IvaSlotOccupancyAggregator::IvaSlotOccupancyAggregator(const std::vector< parking::ParkingSlotConfig > &slots)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< IvaSlotOccupancyUpdate > event::IvaSlotOccupancyAggregator::update(const std::string &slotId, const std::string &cameraId, const std::string &videoSourceToken, const std::string &ruleName, bool active)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string event::IvaSlotOccupancyAggregator::observationKey(const std::string &cameraId, const std::string &videoSourceToken, const std::string &ruleName)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/event/OnvifIvaEventAdapter.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `std::optional< IvaOccupancySignal > event::OnvifIvaEventAdapter::adapt(const camera::OnvifIvaEvent &source, const app::AppConfig &config, const std::vector< parking::ParkingSlotConfig > &slots, std::string *error=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/event/SystemEventReporter.cpp
 
@@ -1989,7 +2367,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool http::ParkingHttpServer::start()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::stop(std::chrono::milliseconds timeout=std::chrono::seconds(30)) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool http::ParkingHttpServer::usesTls() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
-- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr, settings::ParkingRoiSettingsService *roi_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `http::ParkingHttpServer::ParkingHttpServer(database::EventDatabase &database, auth::AuthService &auth_service, ServerConfig config, settings::OverstayThresholdService *overstay_settings=nullptr, settings::ParkingRoiSettingsService *roi_settings=nullptr)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `http::ParkingHttpServer::~ParkingHttpServer()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::closeIngress() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void http::ParkingHttpServer::closeIngressLocked() noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -2049,6 +2427,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `bool mqtt::MqttEventBridge::abortActiveEpoch(MqttConnectionEpoch expectedEpoch) noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindCameraSnapshotGenerator(CameraSnapshotGenerator generator)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindFireAckHandler(FireAckHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool mqtt::MqttEventBridge::bindFireClearHandler(FireClearHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindIvaOccupancyHandler(IvaOccupancyHandler handler)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindParkingRoiResolver(RoiResolver resolver)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `bool mqtt::MqttEventBridge::bindRegularEgressAdmission(RegularEgressAdmission admission)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
@@ -2094,6 +2473,8 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
+- `bool notification::TelegramMessageFormatter::shouldNotify(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string notification::TelegramMessageFormatter::eventId(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string notification::TelegramMessageFormatter::format(const TelegramMessage &message) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string notification::TelegramMessageFormatter::truncate(const std::string &text)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
@@ -2114,13 +2495,14 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 이미지 전처리·Gemini OCR·DB 반영 비동기 worker 구현.
 
 - `bool ocr::OcrWorker::enabled() const` — Gemini client가 실제 요청 가능한 상태인지 반환한다.
-- `ocr::OcrWorker::OcrWorker(GeminiOcrClient client, database::EventDatabase &database, bool preprocess_enabled, ResultCallback result_callback={})` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `bool ocr::OcrWorker::enqueueGeneric(const std::string &task_id, const std::string &image_path, GenericOcrCallback callback)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `ocr::OcrWorker::OcrWorker(GeminiOcrClient client, database::EventDatabase &database, bool preprocess_enabled, ResultCallback result_callback={}, std::int64_t entrance_match_window_ms=30LL *60LL *1000LL, double entrance_match_min_confidence=0.85)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `ocr::OcrWorker::~OcrWorker()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::cancelSession(int session_id)` — 조기 출차 세션의 대기/진행 OCR 결과가 DB와 타이머에 반영되지 않게 한다.
 - `void ocr::OcrWorker::enqueue(int session_id, const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path={})` — BestShot 이미지를 기존 session의 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueHallCapture(const HallCaptureTask &task)` — 30/60초 홀 촬영본을 전용 결과 callback이 있는 OCR 작업으로 등록한다.
 - `void ocr::OcrWorker::enqueueScene(const std::string &slot_id, const std::string &image_path, const std::string &enhanced_image_path)` — 세션이 아직 없는 IVA scene을 후보 탐색 OCR 작업으로 등록한다.
-- `void ocr::OcrWorker::process(const Task &task, HallCaptureResult &hall_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void ocr::OcrWorker::process(const Task &task, HallCaptureResult &hall_result, GenericOcrResult *generic_result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::run()` — queue 대기, 전처리, OCR, 정규화와 DB 반영을 반복한다.
 - `void ocr::OcrWorker::setHallCaptureCallback(HallCaptureCallback callback)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `void ocr::OcrWorker::start()` — OCR worker thread를 시작한다.
@@ -2133,6 +2515,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `PlatePreprocessResult ocr::preprocessPlateImage(const std::string &original_path, bool detect_candidate)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string ocr::enhanceIvaSceneImage(const std::string &original_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::string ocr::enhancePlateImage(const std::string &original_path)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### src/ocr/PlateMatcher.cpp
+
+Raspberry Pi 서버의 런타임 구현을 담당한다.
+
+- `PlateSimilarity ocr::comparePlateNumbers(std::string_view observed, std::string_view candidate)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### src/ocr/PlateNormalizer.cpp
 
@@ -2471,7 +2859,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 Raspberry Pi 서버의 런타임 구현을 담당한다.
 
-- `EntryResult parking_timer::ParkingSlotManager::handleEntry(const std::string &slot_id, const std::string &car_number, const std::string &image_path_1={})` — EV/PHEV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다.
+- `EntryResult parking_timer::ParkingSlotManager::handleEntry(const std::string &slot_id, const std::string &car_number, const std::string &image_path_1={})` — EV 입차만 세션과 타이머로 등록하고 중복 입차를 거부한다.
 - `EntryResult parking_timer::ParkingSlotManager::handleRecognizedSession(std::int64_t session_id, const std::string &slot_id, const std::string &car_number)` — 카메라 흐름이 이미 만든 세션을 중복 INSERT 없이 타이머에 등록한다.
 - `bool parking_timer::ParkingSlotManager::start() noexcept` — Starts the owned timer worker after runtime teardown is armed.
 - `parking_timer::ParkingSlotManager::ParkingSlotManager(EventDatabase &database, EventManager &events, std::chrono::milliseconds parking_timeout, TimerManager::EvidenceProvider evidence_provider={})` — 입·출차 상태 전이와 EV 점유 타이머를 조정하는 관리자를 생성한다.
@@ -2479,8 +2867,8 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `std::optional< LogRecord > parking_timer::ParkingSlotManager::handleCommittedExit(std::int64_t session_id, const std::string &slot_id)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `std::optional< LogRecord > parking_timer::ParkingSlotManager::handleExit(const std::string &slot_id)` — 활성 세션을 출차 처리하며 없으면 nullopt를 반환한다.
 - `std::size_t parking_timer::ParkingSlotManager::pendingTimerCount() const` — lazy-canceled 항목을 포함한 현재 우선순위 큐 크기를 반환한다.
-- `std::size_t parking_timer::ParkingSlotManager::restoreActiveSessions()` — 서버 재시작 시 DB의 EV/PHEV 활성 세션을 타이머 큐에 복구한다.
-- `std::size_t parking_timer::ParkingSlotManager::updateParkingTimeout(std::chrono::milliseconds parking_timeout)` — 활성 EV/PHEV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다.
+- `std::size_t parking_timer::ParkingSlotManager::restoreActiveSessions()` — 서버 재시작 시 DB의 EV 활성 세션을 타이머 큐에 복구한다.
+- `std::size_t parking_timer::ParkingSlotManager::updateParkingTimeout(std::chrono::milliseconds parking_timeout)` — 활성 EV 세션을 원래 T0 기준 새 제한시간으로 모두 재예약한다.
 
 ### src/timer/RuntimeConfig.cpp
 
@@ -2545,6 +2933,7 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 이벤트와 파일명에 사용하는 시각 변환 구현.
 
+- `std::optional< std::chrono::system_clock::time_point > util::parseIso8601Utc(const std::string &value)` — 카메라 UtcTime 등 timezone이 포함된 ISO-8601 시각을 파싱한다.
 - `std::string util::isoString(std::chrono::system_clock::time_point value)` — 지정한 system_clock 시각을 로컬 ISO-8601 문자열로 변환한다.
 - `std::string util::nowIsoString()` — 이벤트 payload와 DB에 사용할 ISO 형식 현재 시각을 반환한다.
 - `std::string util::nowStringForFilename()` — 파일명에 안전한 현재 시각 문자열을 반환한다.
@@ -2555,7 +2944,45 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `std::string util::hideUrlForLog(const std::string &url)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+## tests/hardware
+
+### tests/hardware/HardwareTestReport.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `ReportPaths hardware_test::HardwareTestReport::writeTo(const std::filesystem::path &directory) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `const RunMetadata & hardware_test::HardwareTestReport::metadata() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `const std::vector< CaseResult > & hardware_test::HardwareTestReport::results() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `hardware_test::HardwareTestReport::HardwareTestReport(RunMetadata metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string hardware_test::defaultRunId()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::string hardware_test::utcTimestamp()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< CaseSummary > hardware_test::HardwareTestReport::summaries() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void hardware_test::HardwareTestReport::record(CaseResult result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/hardware/HardwareTestReport.hpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `ReportPaths hardware_test::HardwareTestReport::writeTo(const std::filesystem::path &directory) const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `const RunMetadata & hardware_test::HardwareTestReport::metadata() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `const std::vector< CaseResult > & hardware_test::HardwareTestReport::results() const noexcept` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `hardware_test::HardwareTestReport::HardwareTestReport(RunMetadata metadata)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `std::vector< CaseSummary > hardware_test::HardwareTestReport::summaries() const` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+- `void hardware_test::HardwareTestReport::record(CaseResult result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/hardware/SensorLinkHardwareAcceptanceTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main(const int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ## tests/integration
+
+### tests/integration/AuthServiceTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tests/integration/CameraIvaOccupancyIntegrationTest.cpp
 
@@ -2575,6 +3002,30 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `int main(int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 - `static int check(const char *name, int result)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/integration/EntranceDatabaseTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main(int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/integration/EntranceEvWorkerTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main(int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/integration/EntranceOcrWorkerTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/integration/EntranceVehicleServiceTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tests/integration/EvidenceCaptureWorkerTest.cpp
 
@@ -2676,6 +3127,18 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### tests/unit/EntranceBestShotCoordinatorTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/unit/EntranceImageDeduplicatorTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ### tests/unit/FireAlarmTest.cpp
 
 자동 테스트와 회귀 검증 시나리오를 구현한다.
@@ -2700,7 +3163,25 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### tests/unit/HardwareTestReportTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ### tests/unit/MqttTrackedTransportTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/unit/OnvifIvaEventSourceTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/unit/ParkingAlertControllerTest.cpp
 
 자동 테스트와 회귀 검증 시나리오를 구현한다.
 
@@ -2730,6 +3211,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 - `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
+### tests/unit/PlateMatcherTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ### tests/unit/SensorParkingPipelineTest.cpp
 
 자동 테스트와 회귀 검증 시나리오를 구현한다.
@@ -2737,6 +3224,12 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 - `int main(int argc, char *argv[])` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tests/unit/SystemEventReporterTest.cpp
+
+자동 테스트와 회귀 검증 시나리오를 구현한다.
+
+- `int main()` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tests/unit/TelegramMessageFormatterTest.cpp
 
 자동 테스트와 회귀 검증 시나리오를 구현한다.
 
@@ -2750,11 +3243,33 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 
 ## tools
 
+### tools/app_user.cpp
+
+개발·운영·문서화를 지원하는 독립 도구다.
+
+- `int main(int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
 ### tools/code_doc_generator.cpp
 
 개발·운영·문서화를 지원하는 독립 도구다.
 
 - `int main(int argc, char *argv[])` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+## tools/fire
+
+### tools/fire/fire_alarm_ctl.cpp
+
+개발·운영·문서화를 지원하는 독립 도구다.
+
+- `int main(const int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+## tools
+
+### tools/lora_console.cpp
+
+개발·운영·문서화를 지원하는 독립 도구다.
+
+- `int main(int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
 
 ### tools/parking_alert_ctl.c
 
@@ -2775,3 +3290,9 @@ Raspberry Pi 서버의 런타임 구현을 담당한다.
 개발·운영·문서화를 지원하는 독립 도구다.
 
 - `int main(int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
+
+### tools/watch_onvif_iva_events.cpp
+
+개발·운영·문서화를 지원하는 독립 도구다.
+
+- `int main(const int argc, char **argv)` — Doxygen 설명이 없어 선언과 호출부를 함께 확인해야 한다.
